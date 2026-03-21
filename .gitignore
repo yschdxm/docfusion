@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/
+
+# Database
+*.db
+*.sqlite3
+
+# Uploads
+uploads/
+!uploads/.gitkeep
+
+dataset/
