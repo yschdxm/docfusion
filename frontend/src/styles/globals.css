@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary: #6366f1;
+    --color-secondary: #8b5cf6;
+    --color-accent: #06b6d4;
+  }
+  
+  body {
+    @apply text-slate-100 antialiased;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl;
+  }
+  
+  .glass-dark {
+    @apply bg-slate-900/70 backdrop-blur-xl border border-slate-700/50 rounded-2xl;
+  }
+  
+  .glass-light {
+    @apply bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl;
+  }
+  
+  .btn-primary {
+    @apply px-6 py-3 bg-gradient-to-r from-primary-500 to-purple-500 
+           text-white font-medium rounded-xl
+           hover:from-primary-600 hover:to-purple-600
+           transform hover:scale-105 active:scale-95
+           transition-all duration-200 shadow-lg
+           hover:shadow-primary-500/25;
+  }
+  
+  .btn-secondary {
+    @apply px-6 py-3 bg-white/10 text-white font-medium rounded-xl
+           border border-white/20
+           hover:bg-white/20 hover:border-white/30
+           transform hover:scale-105 active:scale-95
+           transition-all duration-200;
+  }
+  
+  .card {
+    @apply glass p-6 hover:border-primary-500/30 
+           transition-all duration-300 hover:shadow-xl hover:shadow-primary-500/10;
+  }
+  
+  .input {
+    @apply w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+           text-white placeholder-slate-400
+           focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500/50
+           transition-all duration-200;
+  }
+  
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary-400 to-purple-400 bg-clip-text text-transparent;
+  }
+  
+  .stat-card {
+    @apply glass p-5 text-center hover:scale-105 transition-transform duration-300;
+  }
+  
+  .nav-link {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-slate-300
+           hover:bg-white/10 hover:text-white transition-all duration-200;
+  }
+  
+  .nav-link-active {
+    @apply bg-primary-500/20 text-primary-400 border border-primary-500/30;
+  }
+  
+  .upload-zone {
+    @apply border-2 border-dashed border-white/20 rounded-2xl p-8
+           hover:border-primary-500/50 hover:bg-primary-500/5
+           transition-all duration-300 cursor-pointer;
+  }
+  
+  .upload-zone-active {
+    @apply border-primary-500 bg-primary-500/10;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.2) transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgba(255,255,255,0.2);
+    border-radius: 3px;
+  }
+}
+
+.animate-in {
+  animation: fadeIn 0.5s ease-out, slideUp 0.5s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}

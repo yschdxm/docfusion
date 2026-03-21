@@ -1,15 +1,20 @@
-# Dependencies
-node_modules/
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
 venv/
+env/
 .env
-
-# Build outputs
+*.egg-info/
 dist/
 build/
-*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vite/
 
 # IDE
 .vscode/
@@ -17,25 +22,22 @@ build/
 *.swp
 *.swo
 
+# Uploads
+uploads/
+!uploads/.gitkeep
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-npm-debug.log*
-
-# Test coverage
-htmlcov/
-.coverage
-.pytest_cache/
-
-# Database
-*.db
-*.sqlite3
-
-# Uploads
-uploads/
-!uploads/.gitkeep
+# Docker
+docker-compose.override.yml
 
 dataset/

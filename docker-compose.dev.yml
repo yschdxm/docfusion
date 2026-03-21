@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: docker.1ms.run/postgres:16-alpine
+    environment:
+      - POSTGRES_USER=docfusion
+      - POSTGRES_PASSWORD=docfusion123
+      - POSTGRES_DB=docfusion
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  mongo:
+    image: docker.1ms.run/mongo:7
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  neo4j:
+    image: docker.1ms.run/neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/neo4j123
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+  redis:
+    image: docker.1ms.run/redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+  mongo_data:
+  neo4j_data:
+  redis_data:

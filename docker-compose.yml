@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/uploads
+    environment:
+      - POSTGRES_URL=postgresql://docfusion:docfusion123@postgres:5432/docfusion
+      - MONGODB_URL=mongodb://mongo:27017/docfusion
+      - NEO4J_URL=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neo4j123
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - MIMO_API_KEY=sk-cnp5q8ys4bj0xmked6o0913fyq6jzjt1cs5o5ucxik57a49q
+      - MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+      - MIMO_MODEL=mimo-v2-flash
+      - DEBUG=true
+    depends_on:
+      - postgres
+      - mongo
+      - neo4j
+      - redis
+    networks:
+      - docfusion-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - docfusion-net
+
+  postgres:
+    image: docker.1ms.run/postgres:16-alpine
+    environment:
+      - POSTGRES_USER=docfusion
+      - POSTGRES_PASSWORD=docfusion123
+      - POSTGRES_DB=docfusion
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - docfusion-net
+
+  mongo:
+    image: docker.1ms.run/mongo:7
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - docfusion-net
+
+  neo4j:
+    image: docker.1ms.run/neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/neo4j123
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks:
+      - docfusion-net
+
+  redis:
+    image: docker.1ms.run/redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - docfusion-net
+
+volumes:
+  uploads:
+  postgres_data:
+  mongo_data:
+  neo4j_data:
+  redis_data:
+
+networks:
+  docfusion-net:
+    driver: bridge
