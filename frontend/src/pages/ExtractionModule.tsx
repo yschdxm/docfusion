@@ -19,13 +19,16 @@ export default function ExtractionModule() {
   const [isLoading, setIsLoading] = useState(false)
   const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all')
 
+  // 只显示源文档，不显示模板
+  const sourceDocs = documents.filter(d => d.doc_category === 'source')
+
   useEffect(() => {
     fetchDocuments()
   }, [fetchDocuments])
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
-      await addDocuments(acceptedFiles)
+      await addDocuments(acceptedFiles, 'source')
       toast.success(`成功上传 ${acceptedFiles.length} 个文件`)
     } catch (error) {
       toast.error('上传失败')
@@ -105,7 +108,7 @@ export default function ExtractionModule() {
           <div className="glass p-4">
             <h3 className="text-sm font-medium text-slate-400 mb-3">选择要提取的文档</h3>
             <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-thin">
-              {documents.map((doc) => (
+              {sourceDocs.map((doc) => (
                 <label
                   key={doc.id}
                   className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all
@@ -125,7 +128,7 @@ export default function ExtractionModule() {
                   <span className="text-sm text-white truncate">{doc.original_filename}</span>
                 </label>
               ))}
-              {documents.length === 0 && (
+              {sourceDocs.length === 0 && (
                 <p className="text-sm text-slate-500 text-center py-4">请先上传文档</p>
               )}
             </div>

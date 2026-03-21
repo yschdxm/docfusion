@@ -9,6 +9,7 @@ from app.models.document import Document, TableFillTask
 from app.schemas.table_fill import TableFillRequest, TableFillResponse
 from app.services.table_filling_service import table_filling_service
 from datetime import datetime
+import os
 
 router = APIRouter()
 
@@ -64,10 +65,12 @@ async def fill_table(
                 user_instruction=request.user_instruction
             )
         
+        # 保存填写结果为 output 类型的文档
         filled_doc = Document(
             filename=fill_result["output_filename"],
             original_filename=f"filled_{template_doc.original_filename}",
             file_type="xlsx" if template_doc.file_type == "xlsx" else "docx",
+            doc_category="output",  # 输出类型，不是源文档
             file_path=fill_result["output_path"],
             status="completed"
         )
@@ -108,6 +111,36 @@ async def download_filled_table(
     return FileResponse(
         doc.file_path,
         filename=doc.original_filename,
+        media_type="application/octet-stream"
+    )
+
+
+@router.get("/output-files")
+async def list_output_files(
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+):
+    """列出所有输出文件（填写结果）"""
+    result = await db.execute(
+        select(Document)
+        .where(Document.doc_category == "output")
+        .offset(skip)
+        .limit(limit)
+        .order_by(Document.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/download-file/{filename}")
+async def download_filled_file(filename: str):
+    file_path = os.path.join("./uploads/output", filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(
+        file_path,
+        filename=filename,
         media_type="application/octet-stream"
     )
 

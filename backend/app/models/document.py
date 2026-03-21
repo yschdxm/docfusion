@@ -11,7 +11,8 @@ class Document(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
-    file_type = Column(String(20), nullable=False)
+    file_type = Column(String(20), nullable=False)  # docx, xlsx, md, txt
+    doc_category = Column(String(20), default="source")  # source, template
     file_size = Column(BigInteger)
     file_path = Column(String(500))
     status = Column(String(20), default="pending")

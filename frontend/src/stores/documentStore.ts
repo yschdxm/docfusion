@@ -6,6 +6,7 @@ export interface DocumentInfo {
   filename: string
   original_filename: string
   file_type: string
+  doc_category: string  // 'source' | 'template'
   file_size?: number
   status: string
   created_at: string
@@ -14,8 +15,8 @@ export interface DocumentInfo {
 interface DocumentStore {
   documents: DocumentInfo[]
   isLoading: boolean
-  fetchDocuments: () => Promise<void>
-  addDocuments: (files: File[]) => Promise<DocumentInfo[]>
+  fetchDocuments: (category?: string) => Promise<void>
+  addDocuments: (files: File[], category?: string) => Promise<DocumentInfo[]>
   deleteDocument: (id: string) => Promise<void>
 }
 
@@ -23,11 +24,16 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
   documents: [],
   isLoading: false,
 
-  fetchDocuments: async () => {
+  fetchDocuments: async (category?: string) => {
     set({ isLoading: true })
     try {
-      const response = await api.get('/documents')
-      set({ documents: response.data || [] })
+      const url = category ? `/documents?doc_category=${category}` : '/documents'
+      const response = await api.get(url)
+      if (category) {
+        set({ documents: response.data || [] })
+      } else {
+        set({ documents: response.data || [] })
+      }
     } catch (error) {
       console.error('Failed to fetch documents:', error)
     } finally {
@@ -35,14 +41,14 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
     }
   },
 
-  addDocuments: async (files: File[]) => {
+  addDocuments: async (files: File[], category: string = 'source') => {
     const formData = new FormData()
     files.forEach((file) => {
       formData.append('files', file)
     })
 
     try {
-      const response = await api.post('/documents/upload', formData, {
+      const response = await api.post(`/documents/upload?doc_category=${category}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       const newDocs = response.data || []

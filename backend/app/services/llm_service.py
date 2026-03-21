@@ -1,3 +1,4 @@
+import json
 import httpx
 from typing import List, Dict, Any, Optional
 from app.core.config import get_settings
@@ -67,7 +68,6 @@ class LLMService:
         messages = [{"role": "user", "content": prompt}]
         response = await self.chat_completion(messages, temperature=0.3)
         
-        import json
         try:
             json_str = response.strip()
             if "```json" in json_str:
@@ -103,7 +103,6 @@ class LLMService:
         messages = [{"role": "user", "content": prompt}]
         response = await self.chat_completion(messages, temperature=0.3)
         
-        import json
         try:
             json_str = response.strip()
             if "```json" in json_str:
@@ -145,7 +144,6 @@ class LLMService:
         messages = [{"role": "user", "content": prompt}]
         response = await self.chat_completion(messages, temperature=0.3)
         
-        import json
         try:
             json_str = response.strip()
             if "```json" in json_str:
@@ -181,7 +179,6 @@ class LLMService:
         messages = [{"role": "user", "content": prompt}]
         response = await self.chat_completion(messages, temperature=0.3)
         
-        import json
         try:
             json_str = response.strip()
             if "```json" in json_str:

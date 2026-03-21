@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { 
   LayoutDashboard, 
+  FolderOpen,
   FileText, 
   Search, 
   Table, 
@@ -10,6 +11,7 @@ import {
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘' },
+  { path: '/documents', icon: FolderOpen, label: '文档管理' },
   { path: '/document-operation', icon: FileText, label: '文档智能操作' },
   { path: '/extraction', icon: Search, label: '信息提取' },
   { path: '/table-fill', icon: Table, label: '表格填写' },

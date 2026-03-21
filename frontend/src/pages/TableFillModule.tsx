@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle } from 'lucide-react'
+import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore, DocumentInfo } from '../stores/documentStore'
@@ -21,28 +21,53 @@ export default function TableFillModule() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [taskResult, setTaskResult] = useState<TaskResult | null>(null)
 
+  // 分别获取源文档和模板
+  const sourceDocs = documents.filter(d => d.doc_category === 'source')
+  const templateDocs = documents.filter(d => d.doc_category === 'template')
+
   useEffect(() => {
     fetchDocuments()
   }, [fetchDocuments])
 
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+  // 上传源文档
+  const onSourceDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
-      await addDocuments(acceptedFiles)
-      toast.success(`上传了 ${acceptedFiles.length} 个文件`)
+      await addDocuments(acceptedFiles, 'source')
+      toast.success(`上传了 ${acceptedFiles.length} 个源文档`)
     } catch {
       toast.error('上传失败')
     }
   }, [addDocuments])
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'text/markdown': ['.md'],
-      'text/plain': ['.txt'],
-    },
-  })
+  // 上传模板
+  const onTemplateDrop = useCallback(async (acceptedFiles: File[]) => {
+    try {
+      await addDocuments(acceptedFiles, 'template')
+      toast.success(`上传了 ${acceptedFiles.length} 个模板文件`)
+    } catch {
+      toast.error('上传失败')
+    }
+  }, [addDocuments])
+
+  const { getRootProps: getSourceRootProps, getInputProps: getSourceInputProps, isDragActive: isSourceDragActive } =
+    useDropzone({
+      onDrop: onSourceDrop,
+      accept: {
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+        'text/markdown': ['.md'],
+        'text/plain': ['.txt'],
+      },
+    })
+
+  const { getRootProps: getTemplateRootProps, getInputProps: getTemplateInputProps, isDragActive: isTemplateDragActive } =
+    useDropzone({
+      onDrop: onTemplateDrop,
+      accept: {
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      },
+    })
 
   const toggleSourceDoc = (docId: string) => {
     setSelectedSourceDocs((prev) =>
@@ -94,30 +119,34 @@ export default function TableFillModule() {
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-4">
+          {/* 源文档区域 */}
           <div className="glass p-4">
-            <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-primary-400" />
-              上传文件
-            </h3>
-            <div
-              {...getRootProps()}
-              className={`upload-zone ${isDragActive ? 'upload-zone-active' : ''}`}
-            >
-              <input {...getInputProps()} />
-              <Upload className="w-8 h-8 mx-auto mb-2 text-slate-400" />
-              <p className="text-slate-400 text-sm">上传源文档和模板文件</p>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-400" />
+                源文档（数据来源）
+              </h3>
+              <span className="text-sm text-slate-400">共 {sourceDocs.length} 个</span>
             </div>
-          </div>
+            
+            <div
+              {...getSourceRootProps()}
+              className={`upload-zone mb-4 ${isSourceDragActive ? 'upload-zone-active' : ''}`}
+            >
+              <input {...getSourceInputProps()} />
+              <div className="flex items-center justify-center gap-2">
+                <Plus className="w-5 h-5 text-slate-400" />
+                <span className="text-slate-400 text-sm">添加源文档</span>
+              </div>
+            </div>
 
-          <div className="glass p-4">
-            <h3 className="text-sm font-medium text-slate-400 mb-3">选择源文档（数据来源）</h3>
-            <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-thin">
-              {documents.map((doc) => (
+            <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
+              {sourceDocs.length > 0 ? sourceDocs.map((doc) => (
                 <label
                   key={doc.id}
                   className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all
                     ${selectedSourceDocs.includes(doc.id)
-                      ? 'bg-primary-500/20 border border-primary-500/30'
+                      ? 'bg-blue-500/20 border border-blue-500/30'
                       : 'bg-white/5 hover:bg-white/10 border border-transparent'
                     }`}
                 >
@@ -125,22 +154,43 @@ export default function TableFillModule() {
                     type="checkbox"
                     checked={selectedSourceDocs.includes(doc.id)}
                     onChange={() => toggleSourceDoc(doc.id)}
-                    className="w-4 h-4 rounded border-white/20 bg-white/10 text-primary-500"
+                    className="w-4 h-4 rounded border-white/20 bg-white/10 text-blue-500"
                   />
-                  <FileText className="w-4 h-4 text-slate-400" />
-                  <span className="text-sm text-white truncate">{doc.original_filename}</span>
+                  <FileText className="w-4 h-4 text-blue-400" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm text-white truncate block">{doc.original_filename}</span>
+                    <span className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</span>
+                  </div>
                 </label>
-              ))}
-              {documents.length === 0 && (
-                <p className="text-sm text-slate-500 text-center py-4">请先上传文档</p>
+              )) : (
+                <p className="text-sm text-slate-500 text-center py-4">暂无源文档，请上传</p>
               )}
             </div>
           </div>
 
+          {/* 模板区域 */}
           <div className="glass p-4">
-            <h3 className="text-sm font-medium text-slate-400 mb-3">选择模板文件</h3>
-            <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-thin">
-              {documents.map((doc) => (
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-white flex items-center gap-2">
+                <Table className="w-5 h-5 text-green-400" />
+                模板文件
+              </h3>
+              <span className="text-sm text-slate-400">共 {templateDocs.length} 个</span>
+            </div>
+
+            <div
+              {...getTemplateRootProps()}
+              className={`upload-zone mb-4 ${isTemplateDragActive ? 'upload-zone-active' : ''}`}
+            >
+              <input {...getTemplateInputProps()} />
+              <div className="flex items-center justify-center gap-2">
+                <Plus className="w-5 h-5 text-slate-400" />
+                <span className="text-slate-400 text-sm">添加模板文件</span>
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
+              {templateDocs.length > 0 ? templateDocs.map((doc) => (
                 <button
                   key={doc.id}
                   onClick={() => setSelectedTemplateDoc(doc.id)}
@@ -152,13 +202,22 @@ export default function TableFillModule() {
                 >
                   <div className="flex items-center gap-2">
                     <Table className="w-4 h-4 text-green-400" />
-                    <span className="text-sm text-white truncate">{doc.original_filename}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm text-white truncate block">{doc.original_filename}</span>
+                      <span className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</span>
+                    </div>
+                    {selectedTemplateDoc === doc.id && (
+                      <CheckCircle className="w-4 h-4 text-green-400" />
+                    )}
                   </div>
                 </button>
-              ))}
+              )) : (
+                <p className="text-sm text-slate-500 text-center py-4">暂无模板，请上传</p>
+              )}
             </div>
           </div>
 
+          {/* 填写指令 */}
           <div className="glass p-4">
             <h3 className="text-sm font-medium text-slate-400 mb-3">填写指令（可选）</h3>
             <textarea
@@ -169,6 +228,7 @@ export default function TableFillModule() {
             />
           </div>
 
+          {/* 开始填写按钮 */}
           <button
             onClick={handleFill}
             disabled={isProcessing || !selectedTemplateDoc || selectedSourceDocs.length === 0}
@@ -183,22 +243,24 @@ export default function TableFillModule() {
             ) : (
               <>
                 <Play className="w-5 h-5" />
-                开始填写
+                开始填写 ({selectedSourceDocs.length} 个源文档 + 1 个模板)
               </>
             )}
           </button>
         </div>
 
+        {/* 处理结果 */}
         <div className="glass">
           <div className="p-4 border-b border-white/10">
             <h3 className="font-medium text-white">处理结果</h3>
           </div>
 
-          <div className="p-4 min-h-[400px] flex flex-col items-center justify-center">
+          <div className="p-4 min-h-[500px] flex flex-col items-center justify-center">
             {isProcessing ? (
               <div className="text-center">
                 <Loader2 className="w-12 h-12 animate-spin text-primary-400 mx-auto mb-4" />
                 <p className="text-slate-400">正在分析文档并填写表格...</p>
+                <p className="text-sm text-slate-500 mt-2">这可能需要一些时间</p>
               </div>
             ) : taskResult ? (
               <div className="w-full space-y-4">
@@ -217,6 +279,7 @@ export default function TableFillModule() {
                       <p className="font-medium text-white">
                         {taskResult.status === 'completed' ? '填写完成' : '处理中...'}
                       </p>
+                      <p className="text-sm text-slate-400">任务ID: {taskResult.taskId?.slice(0, 8)}...</p>
                     </div>
                   </div>
                 </div>
@@ -235,6 +298,9 @@ export default function TableFillModule() {
               <div className="text-center">
                 <Table className="w-16 h-16 mx-auto mb-4 text-slate-600" />
                 <p className="text-slate-400">选择源文档和模板后开始填写</p>
+                <p className="text-sm text-slate-500 mt-2">
+                  左侧分别上传源文档和模板，然后选择要使用的文件
+                </p>
               </div>
             )}
           </div>

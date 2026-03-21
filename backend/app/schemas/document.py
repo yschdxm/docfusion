@@ -7,6 +7,7 @@ from uuid import UUID
 class DocumentBase(BaseModel):
     filename: str
     file_type: str
+    doc_category: str = "source"
 
 
 class DocumentCreate(DocumentBase):

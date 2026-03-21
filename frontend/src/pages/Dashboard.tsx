@@ -1,40 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, Search, Table, Network, TrendingUp, Clock, CheckCircle, Activity } from 'lucide-react'
-import api from '../services/api'
-
-interface Stats {
-  totalDocuments: number
-  totalEntities: number
-  totalTasks: number
-  completedTasks: number
-}
+import { FileText, Search, Table, Network, TrendingUp, FolderOpen, Activity } from 'lucide-react'
+import { useDocumentStore } from '../stores/documentStore'
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<Stats>({
-    totalDocuments: 0,
-    totalEntities: 0,
-    totalTasks: 0,
-    completedTasks: 0,
-  })
+  const { documents, fetchDocuments } = useDocumentStore()
 
   useEffect(() => {
-    fetchStats()
-  }, [])
+    fetchDocuments()
+  }, [fetchDocuments])
 
-  const fetchStats = async () => {
-    try {
-      const docs = await api.get('/documents')
-      setStats(prev => ({
-        ...prev,
-        totalDocuments: docs.data?.length || 0,
-      }))
-    } catch (error) {
-      console.error('Failed to fetch stats:', error)
-    }
-  }
+  const sourceDocs = documents.filter(d => d.doc_category === 'source')
+  const templateDocs = documents.filter(d => d.doc_category === 'template')
+  const outputDocs = documents.filter(d => d.doc_category === 'output')
 
   const features = [
+    {
+      icon: FolderOpen,
+      title: '文档管理',
+      description: '管理所有上传的文档、模板和输出文件',
+      path: '/documents',
+      color: 'from-slate-500 to-slate-600',
+    },
     {
       icon: FileText,
       title: '文档智能操作',
@@ -66,10 +53,10 @@ export default function Dashboard() {
   ]
 
   const statCards = [
-    { icon: FileText, label: '文档总数', value: stats.totalDocuments, color: 'text-blue-400' },
-    { icon: Activity, label: '提取实体', value: stats.totalEntities, color: 'text-green-400' },
-    { icon: Clock, label: '任务总数', value: stats.totalTasks, color: 'text-orange-400' },
-    { icon: CheckCircle, label: '已完成', value: stats.completedTasks, color: 'text-purple-400' },
+    { icon: FileText, label: '源文档', value: sourceDocs.length, color: 'text-blue-400' },
+    { icon: Table, label: '模板', value: templateDocs.length, color: 'text-green-400' },
+    { icon: FolderOpen, label: '输出文件', value: outputDocs.length, color: 'text-orange-400' },
+    { icon: Activity, label: '文档总数', value: documents.length, color: 'text-purple-400' },
   ]
 
   return (
@@ -102,7 +89,7 @@ export default function Dashboard() {
 
       <div>
         <h2 className="text-xl font-semibold mb-6 text-white">核心功能</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {features.map((feature, index) => (
             <Link
               key={index}
