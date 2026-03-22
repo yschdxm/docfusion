@@ -60,7 +60,7 @@ class KnowledgeGraphService:
         nodes_result = await run_cypher(
             """
             MATCH (e:Entity)
-            RETURN e.name AS name, e.type AS type, e.value AS value
+            RETURN e.name AS name, e.type AS type, e.value AS value, e.document_id AS document_id
             LIMIT $limit
             """,
             {"limit": limit}
@@ -76,7 +76,13 @@ class KnowledgeGraphService:
         )
         
         nodes = [
-            {"id": r["name"], "name": r["name"], "type": r["type"], "value": r.get("value", "")}
+            {
+                "id": r["name"], 
+                "name": r["name"], 
+                "type": r["type"], 
+                "value": r.get("value", ""),
+                "document_id": r.get("document_id", "")
+            }
             for r in nodes_result
         ]
         

@@ -14,13 +14,15 @@ class KnowledgeNode(BaseModel):
     id: str
     name: str
     type: str
+    document_id: str = ""
     properties: Dict[str, Any] = {}
 
 
 class KnowledgeEdge(BaseModel):
     source: str
     target: str
-    relation_type: str
+    type: str = ""
+    relation_type: str = ""
     properties: Dict[str, Any] = {}
 
 
