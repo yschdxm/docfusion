@@ -82,16 +82,17 @@ class TableFillingService:
         template_parser = DocxParser()
         template_data = template_parser.parse(template_file.get("file_path"))
         
+        # MiMo-V2-Flash 支持 256K 上下文
         prompt = f"""根据源文档内容，填写Word模板。
 
 用户指令：
 {user_instruction}
 
 模板内容：
-{template_data.get("full_text", "")[:3000]}
+{template_data.get("full_text", "")[:50000]}
 
-源文档内容（部分）：
-{combined_source[:6000]}
+源文档内容：
+{combined_source[:80000]}
 
 请返回需要填写的内容，格式为JSON：
 ```json

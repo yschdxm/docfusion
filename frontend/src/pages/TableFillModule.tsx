@@ -1,16 +1,21 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus } from 'lucide-react'
+import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus, Clock, XCircle, List } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
-import { useDocumentStore, DocumentInfo } from '../stores/documentStore'
+import { useDocumentStore } from '../stores/documentStore'
 
-interface TaskResult {
-  taskId: string
-  status: string
-  filledFileId?: string
-  filledFileUrl?: string
-  result?: Record<string, unknown>
+interface FillTask {
+  id: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  source_files: string[]
+  source_names: string[]
+  template_name: string
+  filled_file_id?: string
+  filled_file_url?: string
+  created_at: string
+  completed_at?: string
+  error?: string
 }
 
 export default function TableFillModule() {
@@ -19,17 +24,26 @@ export default function TableFillModule() {
   const [selectedTemplateDoc, setSelectedTemplateDoc] = useState<string | null>(null)
   const [instruction, setInstruction] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
-  const [taskResult, setTaskResult] = useState<TaskResult | null>(null)
+  const [tasks, setTasks] = useState<FillTask[]>([])
+  const [activeTab, setActiveTab] = useState<'fill' | 'queue'>('queue')
 
-  // 分别获取源文档和模板
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
   const templateDocs = documents.filter(d => d.doc_category === 'template')
 
   useEffect(() => {
     fetchDocuments()
+    loadTasks()
   }, [fetchDocuments])
 
-  // 上传源文档
+  const loadTasks = async () => {
+    try {
+      const response = await api.get('/table-fill/tasks')
+      setTasks(response.data || [])
+    } catch (error) {
+      console.error('Failed to load tasks:', error)
+    }
+  }
+
   const onSourceDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
       await addDocuments(acceptedFiles, 'source')
@@ -39,7 +53,6 @@ export default function TableFillModule() {
     }
   }, [addDocuments])
 
-  // 上传模板
   const onTemplateDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
       await addDocuments(acceptedFiles, 'template')
@@ -81,9 +94,21 @@ export default function TableFillModule() {
       return
     }
 
-    setIsProcessing(true)
-    setTaskResult(null)
+    const templateDoc = templateDocs.find(d => d.id === selectedTemplateDoc)
+    const sourceNames = selectedSourceDocs.map(id => sourceDocs.find(d => d.id === id)?.original_filename || '')
 
+    const newTask: FillTask = {
+      id: `task-${Date.now()}`,
+      status: 'processing',
+      source_files: selectedSourceDocs,
+      source_names: sourceNames,
+      template_name: templateDoc?.original_filename || '',
+      created_at: new Date().toISOString(),
+    }
+    setTasks(prev => [newTask, ...prev])
+    setActiveTab('queue')
+
+    setIsProcessing(true)
     try {
       const response = await api.post('/table-fill/fill', {
         source_file_ids: selectedSourceDocs,
@@ -91,28 +116,43 @@ export default function TableFillModule() {
         user_instruction: instruction || '帮我智能填表',
       })
 
-      setTaskResult({
-        taskId: response.data.task_id,
-        status: response.data.status,
-        filledFileId: response.data.filled_file_id,
-        filledFileUrl: response.data.filled_file_url,
-        result: response.data.result,
-      })
+      setTasks(prev => prev.map(t => 
+        t.id === newTask.id 
+          ? { 
+              ...t, 
+              status: 'completed', 
+              filled_file_id: response.data.filled_file_id,
+              filled_file_url: response.data.filled_file_url,
+              completed_at: new Date().toISOString() 
+            }
+          : t
+      ))
 
-      if (response.data.status === 'completed') {
-        toast.success('表格填写完成！')
-      }
+      toast.success('表格填写完成！')
+      setSelectedSourceDocs([])
+      setSelectedTemplateDoc(null)
+      setInstruction('')
     } catch {
+      setTasks(prev => prev.map(t => 
+        t.id === newTask.id 
+          ? { ...t, status: 'failed', error: '填写失败', completed_at: new Date().toISOString() }
+          : t
+      ))
       toast.error('表格填写失败')
     } finally {
       setIsProcessing(false)
     }
   }
 
-  const handleDownload = () => {
-    if (taskResult?.filledFileUrl) {
-      window.open(taskResult.filledFileUrl, '_blank')
-    }
+  const handleDownload = (url: string) => {
+    window.open(url, '_blank')
+  }
+
+  const statusConfig = {
+    pending: { icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/20', label: '等待中' },
+    processing: { icon: Loader2, color: 'text-blue-400', bg: 'bg-blue-500/20', label: '处理中' },
+    completed: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/20', label: '已完成' },
+    failed: { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/20', label: '失败' },
   }
 
   return (
@@ -247,63 +287,176 @@ export default function TableFillModule() {
               </>
             )}
           </button>
-        </div>
 
-        {/* 处理结果 */}
-        <div className="glass">
-          <div className="p-4 border-b border-white/10">
-            <h3 className="font-medium text-white">处理结果</h3>
-          </div>
-
-          <div className="p-4 min-h-[500px] flex flex-col items-center justify-center">
-            {isProcessing ? (
-              <div className="text-center">
-                <Loader2 className="w-12 h-12 animate-spin text-primary-400 mx-auto mb-4" />
-                <p className="text-slate-400">正在分析文档并填写表格...</p>
-                <p className="text-sm text-slate-500 mt-2">这可能需要一些时间</p>
-              </div>
-            ) : taskResult ? (
-              <div className="w-full space-y-4">
-                <div className={`p-4 rounded-xl ${
-                  taskResult.status === 'completed'
-                    ? 'bg-green-500/10 border border-green-500/30'
-                    : 'bg-orange-500/10 border border-orange-500/30'
-                }`}>
-                  <div className="flex items-center gap-3">
-                    {taskResult.status === 'completed' ? (
-                      <CheckCircle className="w-6 h-6 text-green-400" />
-                    ) : (
-                      <Loader2 className="w-6 h-6 animate-spin text-orange-400" />
-                    )}
-                    <div>
-                      <p className="font-medium text-white">
-                        {taskResult.status === 'completed' ? '填写完成' : '处理中...'}
-                      </p>
-                      <p className="text-sm text-slate-400">任务ID: {taskResult.taskId?.slice(0, 8)}...</p>
-                    </div>
+          {/* 任务队列摘要 */}
+          <div className="glass p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium text-slate-400">任务队列</h3>
+              <span className="text-xs text-slate-500">{tasks.length} 个任务</span>
+            </div>
+            <div className="space-y-2">
+              {tasks.slice(0, 3).map((task) => {
+                const config = statusConfig[task.status]
+                const StatusIcon = config.icon
+                return (
+                  <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-white/5">
+                    <StatusIcon className={`w-4 h-4 ${config.color} ${task.status === 'processing' ? 'animate-spin' : ''}`} />
+                    <span className="text-xs text-white truncate flex-1">{task.template_name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
+                      {config.label}
+                    </span>
                   </div>
-                </div>
-
-                {taskResult.status === 'completed' && taskResult.filledFileUrl && (
-                  <button
-                    onClick={handleDownload}
-                    className="btn-secondary w-full flex items-center justify-center gap-2"
-                  >
-                    <Download className="w-5 h-5" />
-                    下载填写后的文件
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="text-center">
-                <Table className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-                <p className="text-slate-400">选择源文档和模板后开始填写</p>
-                <p className="text-sm text-slate-500 mt-2">
-                  左侧分别上传源文档和模板，然后选择要使用的文件
-                </p>
-              </div>
+                )
+              })}
+              {tasks.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-2">暂无任务</p>
+              )}
+            </div>
+            {tasks.length > 3 && (
+              <button
+                onClick={() => setActiveTab('queue')}
+                className="mt-3 text-xs text-primary-400 hover:text-primary-300 w-full text-center"
+              >
+                查看全部任务
+              </button>
             )}
           </div>
+        </div>
+
+        {/* 右侧结果/队列区域 */}
+        <div>
+          {/* 标签切换 */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setActiveTab('queue')}
+              className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors
+                ${activeTab === 'queue' ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}
+            >
+              <List className="w-4 h-4" />
+              任务队列 ({tasks.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('fill')}
+              className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors
+                ${activeTab === 'fill' ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}
+            >
+              <Table className="w-4 h-4" />
+              填写结果
+            </button>
+          </div>
+
+          {activeTab === 'queue' ? (
+            <div className="glass">
+              <div className="p-4 border-b border-white/10">
+                <h3 className="font-medium text-white">任务队列</h3>
+              </div>
+
+              <div className="max-h-[500px] overflow-y-auto scrollbar-thin">
+                {tasks.length > 0 ? (
+                  <div className="divide-y divide-white/5">
+                    {tasks.map((task) => {
+                      const config = statusConfig[task.status]
+                      const StatusIcon = config.icon
+                      return (
+                        <div key={task.id} className="p-4 hover:bg-white/5 transition-colors">
+                          <div className="flex items-start gap-4">
+                            <div className={`w-10 h-10 rounded-lg ${config.bg} flex items-center justify-center shrink-0`}>
+                              <StatusIcon className={`w-5 h-5 ${config.color} ${task.status === 'processing' ? 'animate-spin' : ''}`} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
+                                  {config.label}
+                                </span>
+                              </div>
+                              <p className="text-sm text-white">模板: {task.template_name}</p>
+                              <p className="text-xs text-slate-400 mt-1">
+                                源文档: {task.source_names.join(', ')}
+                              </p>
+                              {task.error && (
+                                <p className="text-xs text-red-400 mt-1">{task.error}</p>
+                              )}
+                              <p className="text-xs text-slate-500 mt-2">
+                                {new Date(task.created_at).toLocaleString()}
+                              </p>
+                            </div>
+                            {task.status === 'completed' && task.filled_file_url && (
+                              <button
+                                onClick={() => handleDownload(task.filled_file_url!)}
+                                className="px-3 py-1 text-xs rounded-lg bg-green-500/20 text-green-400 
+                                          hover:bg-green-500/30 transition-colors flex items-center gap-1"
+                              >
+                                <Download className="w-3 h-3" />
+                                下载
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-12 text-center">
+                    <List className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+                    <p className="text-slate-400">暂无任务</p>
+                    <p className="text-sm text-slate-500 mt-2">
+                      选择源文档和模板并点击"开始填写"创建新任务
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="glass">
+              <div className="p-4 border-b border-white/10">
+                <h3 className="font-medium text-white">填写结果</h3>
+              </div>
+
+              <div className="p-4 min-h-[500px] flex flex-col items-center justify-center">
+                {isProcessing ? (
+                  <div className="text-center">
+                    <Loader2 className="w-12 h-12 animate-spin text-primary-400 mx-auto mb-4" />
+                    <p className="text-slate-400">正在分析文档并填写表格...</p>
+                    <p className="text-sm text-slate-500 mt-2">这可能需要一些时间</p>
+                  </div>
+                ) : tasks.filter(t => t.status === 'completed').length > 0 ? (
+                  <div className="w-full space-y-4">
+                    {tasks.filter(t => t.status === 'completed').slice(0, 1).map((task) => (
+                      <div key={task.id} className="space-y-4">
+                        <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/30">
+                          <div className="flex items-center gap-3">
+                            <CheckCircle className="w-6 h-6 text-green-400" />
+                            <div>
+                              <p className="font-medium text-white">填写完成</p>
+                              <p className="text-sm text-slate-400">{task.template_name}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {task.filled_file_url && (
+                          <button
+                            onClick={() => handleDownload(task.filled_file_url!)}
+                            className="btn-secondary w-full flex items-center justify-center gap-2"
+                          >
+                            <Download className="w-5 h-5" />
+                            下载填写后的文件
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <Table className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+                    <p className="text-slate-400">选择源文档和模板后开始填写</p>
+                    <p className="text-sm text-slate-500 mt-2">
+                      左侧分别上传源文档和模板，然后选择要使用的文件
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

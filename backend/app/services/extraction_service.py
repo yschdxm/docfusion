@@ -29,18 +29,23 @@ class ExtractionService:
         parsed_data = parser.parse(file_path)
         full_text = parsed_data.get("full_text", "")
         
-        if len(full_text) > 50000:
-            chunks = [full_text[i:i+30000] for i in range(0, len(full_text), 30000)]
+        # 根据 MiMo-V2-Flash 能力（256K上下文，10M TPM）设置更大的块大小
+        if len(full_text) > 100000:
+            chunks = [full_text[i:i+80000] for i in range(0, len(full_text), 80000)]
             all_entities = []
             
             for chunk in chunks:
-                entities = await llm_service.extract_entities(chunk, entity_types)
-                all_entities.extend(entities)
+                try:
+                    entities = await llm_service.extract_entities(chunk, entity_types)
+                    all_entities.extend(entities)
+                except Exception as e:
+                    print(f"Chunk extraction error: {e}")
+                    continue
         else:
             all_entities = await llm_service.extract_entities(full_text, entity_types)
         
         if custom_fields:
-            custom_entities = await self._extract_custom_fields(full_text, custom_fields)
+            custom_entities = await self._extract_custom_fields(full_text[:50000], custom_fields)
             all_entities.extend(custom_entities)
         
         tables = parsed_data.get("tables", [])
@@ -67,13 +72,14 @@ class ExtractionService:
         text: str,
         custom_fields: List[str]
     ) -> List[Dict[str, Any]]:
+        # MiMo-V2-Flash 支持 256K 上下文
         prompt = f"""从文本中提取以下自定义字段的信息：
 
 自定义字段：
 {chr(10).join([f"- {field}" for field in custom_fields])}
 
 文本内容：
-{text[:8000]}
+{text[:50000]}
 
 请返回JSON格式：
 ```json

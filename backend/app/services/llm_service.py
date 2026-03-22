@@ -20,9 +20,10 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 4096
+        max_tokens: int = 65536  # mimo-v2-flash 最大输出 64K tokens
     ) -> str:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # 根据模型能力设置超时：256K上下文，10M TPM，允许更长处理时间
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self.headers,
@@ -38,10 +39,11 @@ class LLMService:
             return result["choices"][0]["message"]["content"]
     
     async def extract_entities(self, text: str, entity_types: List[str] = None) -> List[Dict[str, Any]]:
+        # MiMo-V2-Flash 支持 256K 上下文，可以处理更长的文本
         prompt = f"""请从以下文本中提取实体信息。返回JSON格式的实体列表。
 
 文本内容：
-{text[:8000]}
+{text[:80000]}
 
 请提取以下类型的实体（如未指定则提取所有）：
 - 人名 (PERSON)
@@ -84,6 +86,7 @@ class LLMService:
         template_structure: Dict[str, Any],
         user_instruction: str
     ) -> Dict[str, Any]:
+        # MiMo-V2-Flash 支持 256K 上下文
         prompt = f"""根据以下源文档内容和模板结构，提取并填写表格数据。
 
 用户指令：
@@ -92,8 +95,8 @@ class LLMService:
 模板结构：
 {json.dumps(template_structure, ensure_ascii=False, indent=2)}
 
-源文档内容（部分）：
-{source_text[:6000]}
+源文档内容：
+{source_text[:80000]}
 
 请根据模板结构从源文档中提取对应数据，返回JSON格式的填写结果。
 返回格式为一个字典，key为sheet名称，value为包含columns和data的对象。
@@ -119,12 +122,13 @@ class LLMService:
         instruction: str,
         document_type: str
     ) -> Dict[str, Any]:
+        # MiMo-V2-Flash 支持 256K 上下文
         prompt = f"""你是一个文档智能助手。根据用户的自然语言指令，对文档内容进行操作。
 
 文档类型：{document_type}
 
-文档内容（部分）：
-{document_content[:6000]}
+文档内容：
+{document_content[:80000]}
 
 用户指令：
 {instruction}
@@ -155,10 +159,11 @@ class LLMService:
             return {"operation_type": "query", "result": response, "success": True, "message": "已处理"}
     
     async def analyze_relationships(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # MiMo-V2-Flash 支持 256K 上下文，可以处理更多实体
         prompt = f"""分析以下实体之间的关系，返回关系列表。
 
 实体列表：
-{json.dumps(entities[:50], ensure_ascii=False, indent=2)}
+{json.dumps(entities[:200], ensure_ascii=False, indent=2)}
 
 请分析这些实体之间的关系，返回JSON格式的关系列表。
 

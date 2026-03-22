@@ -52,8 +52,18 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[], edges: Edge[] })
       CUSTOM: '#eab308',
     }
 
+    // 去重：保留第一个出现的节点
+    const uniqueNodes: Node[] = []
+    const seenNodeIds = new Set<string>()
+    for (const node of nodes) {
+      if (!seenNodeIds.has(node.id)) {
+        seenNodeIds.add(node.id)
+        uniqueNodes.push(node)
+      }
+    }
+
     const visNodes = new DataSet(
-      nodes.map((node) => ({
+      uniqueNodes.map((node) => ({
         id: node.id,
         label: node.name,
         color: {
@@ -150,12 +160,25 @@ export default function KnowledgeGraph() {
     }
   }, [])
 
-  // 过滤节点
-  const filteredNodes = allNodes.filter(node => {
-    const matchDoc = selectedDocs.length === 0 || selectedDocs.includes(node.document_id || '')
-    const matchType = entityTypeFilter === 'all' || node.type === entityTypeFilter
-    return matchDoc && matchType
-  })
+  // 过滤节点并去重
+  const filteredNodes = (() => {
+    const filtered = allNodes.filter(node => {
+      const matchDoc = selectedDocs.length === 0 || selectedDocs.includes(node.document_id || '')
+      const matchType = entityTypeFilter === 'all' || node.type === entityTypeFilter
+      return matchDoc && matchType
+    })
+    
+    // 去重：保留第一个出现的节点
+    const uniqueNodes: Node[] = []
+    const seenIds = new Set<string>()
+    for (const node of filtered) {
+      if (!seenIds.has(node.id)) {
+        seenIds.add(node.id)
+        uniqueNodes.push(node)
+      }
+    }
+    return uniqueNodes
+  })()
 
   // 过滤边
   const nodeIds = new Set(filteredNodes.map(n => n.id))

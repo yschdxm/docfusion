@@ -32,11 +32,12 @@ async def chat_completion(request: ChatRequest):
             context_parts = []
             collection = get_collection("document_contents")
             
+            # MiMo-V2-Flash 支持 256K 上下文
             for doc_id in request.document_ids:
                 doc_content = await collection.find_one({"document_id": doc_id})
                 if doc_content:
                     context_parts.append(
-                        f"Document {doc_id}:\n{doc_content.get('raw_content', '')[:3000]}"
+                        f"Document {doc_id}:\n{doc_content.get('raw_content', '')[:50000]}"
                     )
             
             if context_parts:
@@ -80,10 +81,11 @@ async def analyze_content(request: dict):
         content = request.get("content", "")
         instruction = request.get("instruction", "请分析以下内容")
         
+        # MiMo-V2-Flash 支持 256K 上下文
         prompt = f"""{instruction}
 
 内容：
-{content[:8000]}
+{content[:80000]}
 
 请提供详细的分析结果。"""
         

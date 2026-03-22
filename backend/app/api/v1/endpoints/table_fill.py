@@ -145,6 +145,57 @@ async def download_filled_file(filename: str):
     )
 
 
+@router.get("/tasks", response_model=List[dict])
+async def list_tasks(
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+):
+    # 获取所有文档的ID和名称映射
+    docs_result = await db.execute(
+        select(Document.id, Document.original_filename)
+    )
+    doc_map = {str(doc.id): doc.original_filename for doc in docs_result.all()}
+    
+    # 获取任务列表
+    result = await db.execute(
+        select(TableFillTask)
+        .order_by(TableFillTask.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    tasks = result.scalars().all()
+    
+    task_list = []
+    for task in tasks:
+        # 获取模板名称
+        template_name = doc_map.get(str(task.template_file_id), "未知模板")
+        
+        # 获取源文件名称
+        source_names = []
+        if task.source_file_ids:
+            for file_id in task.source_file_ids:
+                name = doc_map.get(file_id, "未知文件")
+                source_names.append(name)
+        
+        filled_file_url = f"/api/v1/table-fill/download/{task.id}" if task.filled_file_path else None
+        
+        task_list.append({
+            "id": str(task.id),
+            "status": task.status,
+            "source_files": task.source_file_ids or [],
+            "source_names": source_names,
+            "template_name": template_name,
+            "filled_file_id": str(task.id) if task.filled_file_path else None,
+            "filled_file_url": filled_file_url,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            "error": task.result.get("error") if task.result and isinstance(task.result, dict) else None
+        })
+    
+    return task_list
+
+
 @router.get("/tasks/{task_id}")
 async def get_task_status(
     task_id: UUID,

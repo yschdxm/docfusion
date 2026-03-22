@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api/v1',
-  timeout: 120000,
+  timeout: 600000,  // 600秒，与后端 LLM 超时一致
   headers: {
     'Content-Type': 'application/json',
   },
