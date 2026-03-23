@@ -3,8 +3,8 @@ from fastapi.responses import FileResponse
 from typing import List
 from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.db.postgres import get_db
+from sqlalchemy import select, update as sql_update
+from app.db.postgres import get_db, engine
 from app.models.document import Document, TableFillTask
 from app.schemas.table_fill import TableFillRequest, TableFillResponse
 from app.services.table_filling_service import table_filling_service
@@ -23,15 +23,41 @@ async def fill_table(
         template_file_id=request.template_file_id,
         source_file_ids=[str(fid) for fid in request.source_file_ids],
         user_instruction=request.user_instruction,
-        status="processing"
+        status="processing",
+        result={
+            "progress": "0%",
+            "current_step": "准备中...",
+            "total_files": len(request.source_file_ids),
+            "processed_files": 0
+        }
     )
     db.add(task)
     await db.commit()
     await db.refresh(task)
     
+    # 进度回调函数
+    async def update_progress(message: str, progress: str = None):
+        try:
+            async with AsyncSession(engine) as progress_db:
+                current_result = task.result or {}
+                current_result.update({
+                    "current_step": message,
+                    "progress": progress or current_result.get("progress", "0%"),
+                    "updated_at": datetime.utcnow().isoformat()
+                })
+                stmt = sql_update(TableFillTask).where(
+                    TableFillTask.id == task.id
+                ).values(result=current_result)
+                await progress_db.execute(stmt)
+                await progress_db.commit()
+        except Exception as e:
+            print(f"Progress update error: {e}")
+    
     try:
+        await update_progress("正在加载源文档...", "10%")
+        
         source_files = []
-        for file_id in request.source_file_ids:
+        for idx, file_id in enumerate(request.source_file_ids):
             result = await db.execute(select(Document).where(Document.id == file_id))
             doc = result.scalar_one_or_none()
             if doc:
@@ -39,6 +65,9 @@ async def fill_table(
                     "file_type": doc.file_type,
                     "file_path": doc.file_path
                 })
+                await update_progress(f"已加载文档 {idx + 1}/{len(request.source_file_ids)}", f"{20 + int((idx / len(request.source_file_ids)) * 20)}%")
+        
+        await update_progress("正在加载模板...", "40%")
         
         result = await db.execute(
             select(Document).where(Document.id == request.template_file_id)
@@ -52,18 +81,24 @@ async def fill_table(
             "file_path": template_doc.file_path
         }
         
+        await update_progress("正在分析模板结构...", "50%")
+        
         if template_doc.file_type == "xlsx":
+            await update_progress("正在填写Excel表格...", "60%")
             fill_result = await table_filling_service.fill_table(
                 source_files=source_files,
                 template_file=template_file,
                 user_instruction=request.user_instruction
             )
         else:
+            await update_progress("正在填写Word文档...", "60%")
             fill_result = await table_filling_service.fill_word_template(
                 source_files=source_files,
                 template_file=template_file,
                 user_instruction=request.user_instruction
             )
+        
+        await update_progress("正在保存结果...", "90%")
         
         # 保存填写结果为 output 类型的文档
         filled_doc = Document(
@@ -75,13 +110,19 @@ async def fill_table(
             status="completed"
         )
         db.add(filled_doc)
+        await db.commit()
+        await db.refresh(filled_doc)  # 先 refresh 获取 ID
         
         task.status = "completed"
         task.filled_file_path = fill_result["output_path"]
-        task.result = fill_result.get("filled_data", {})
+        task.result = {
+            "progress": "100%",
+            "current_step": "完成",
+            "filled_doc_id": str(filled_doc.id),
+            **fill_result.get("filled_data", {})
+        }
         task.completed_at = datetime.utcnow()
         await db.commit()
-        await db.refresh(filled_doc)
         
         return TableFillResponse(
             task_id=task.id,
@@ -93,7 +134,7 @@ async def fill_table(
         )
     except Exception as e:
         task.status = "failed"
-        task.result = {"error": str(e)}
+        task.result = {"error": str(e), "progress": "100%", "current_step": f"失败: {str(e)}"}
         await db.commit()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -178,7 +219,46 @@ async def list_tasks(
                 name = doc_map.get(file_id, "未知文件")
                 source_names.append(name)
         
-        filled_file_url = f"/api/v1/table-fill/download/{task.id}" if task.filled_file_path else None
+        # 获取进度信息和 filled_doc_id
+        progress = "0%"
+        current_step = ""
+        filled_doc_id = None
+        if task.result and isinstance(task.result, dict):
+            progress = task.result.get("progress", "0%")
+            current_step = task.result.get("current_step", "")
+            filled_doc_id = task.result.get("filled_doc_id")
+        
+        # 优化的时间预测算法
+        estimated_time = None
+        if task.status == "processing" and task.created_at:
+            elapsed = (datetime.utcnow() - task.created_at).total_seconds()
+            if progress and progress != "0%":
+                try:
+                    progress_num = int(progress.replace("%", ""))
+                    if progress_num > 0 and progress_num < 100:
+                        # 基于进度的线性预测
+                        estimated_seconds = (elapsed / progress_num) * (100 - progress_num)
+                        
+                        # 格式化输出
+                        if estimated_seconds < 60:
+                            estimated_time = f"约 {int(estimated_seconds)} 秒"
+                        elif estimated_seconds < 3600:
+                            minutes = int(estimated_seconds // 60)
+                            seconds = int(estimated_seconds % 60)
+                            estimated_time = f"约 {minutes} 分 {seconds} 秒"
+                        else:
+                            hours = int(estimated_seconds // 3600)
+                            minutes = int((estimated_seconds % 3600) // 60)
+                            estimated_time = f"约 {hours} 时 {minutes} 分"
+                except:
+                    pass
+        
+        # 构建下载 URL
+        if filled_doc_id and filled_doc_id != "None":
+            filled_file_url = f"/api/v1/table-fill/download/{filled_doc_id}"
+        else:
+            filled_file_url = None
+            filled_doc_id = None  # 重置为 None
         
         task_list.append({
             "id": str(task.id),
@@ -186,8 +266,11 @@ async def list_tasks(
             "source_files": task.source_file_ids or [],
             "source_names": source_names,
             "template_name": template_name,
-            "filled_file_id": str(task.id) if task.filled_file_path else None,
+            "filled_file_id": filled_doc_id,
             "filled_file_url": filled_file_url,
+            "progress": progress,
+            "current_step": current_step,
+            "estimated_time": estimated_time,
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "error": task.result.get("error") if task.result and isinstance(task.result, dict) else None

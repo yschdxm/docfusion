@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { Upload, FileText, Loader2, Search, Filter, Database, Clock, CheckCircle, XCircle, List, RefreshCw } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -18,6 +18,9 @@ interface ExtractionTask {
   file_ids: string[]
   file_names: string[]
   entities_count: number
+  progress?: string
+  current_step?: string
+  estimated_time?: string
   created_at: string
   completed_at?: string
   error?: string
@@ -33,28 +36,68 @@ export default function ExtractionModule() {
   const [activeTab, setActiveTab] = useState<'extract' | 'queue'>('queue')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+  
+  const pollingRef = useRef<NodeJS.Timeout | null>(null)
+  const isMountedRef = useRef(true)
 
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
 
-  useEffect(() => {
-    fetchDocuments()
-  }, [fetchDocuments])
-
-  useEffect(() => {
-    loadTasks()
-  }, [])
-
-  const loadTasks = async () => {
-    setIsLoadingTasks(true)
+  // 加载任务
+  const loadTasks = useCallback(async (silent = false) => {
+    if (!isMountedRef.current) return
+    if (!silent) setIsLoadingTasks(true)
     try {
       const response = await api.get('/extraction/tasks')
-      setTasks(response.data || [])
+      if (isMountedRef.current) {
+        setTasks(response.data || [])
+      }
     } catch (error) {
-      console.error('Failed to load tasks:', error)
+      if (!silent) console.error('Failed to load tasks:', error)
     } finally {
-      setIsLoadingTasks(false)
+      if (!silent && isMountedRef.current) {
+        setIsLoadingTasks(false)
+      }
     }
-  }
+  }, [])
+
+  // 启动轮询
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return // 已经在轮询中
+    
+    pollingRef.current = setInterval(() => {
+      if (isMountedRef.current) {
+        loadTasks(true)
+      }
+    }, 2000)
+  }, [loadTasks])
+
+  // 停止轮询
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    isMountedRef.current = true
+    fetchDocuments()
+    loadTasks()
+    startPolling()
+    
+    return () => {
+      isMountedRef.current = false
+      stopPolling()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 检查是否有处理中的任务，决定是否需要轮询
+  useEffect(() => {
+    const hasActiveTasks = tasks.some(t => t.status === 'processing' || t.status === 'pending')
+    if (hasActiveTasks && !pollingRef.current) {
+      startPolling()
+    }
+  }, [tasks, startPolling])
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
@@ -96,17 +139,24 @@ export default function ExtractionModule() {
     // 创建临时任务ID
     const tempTaskId = `temp-${Date.now()}`
     
-    // 立即添加任务到队列
+    // 立即添加任务到队列（在请求发送前）
     const newTask: ExtractionTask = {
       id: tempTaskId,
       status: 'processing',
       file_ids: selectedDocs,
       file_names: fileNames,
       entities_count: 0,
+      progress: '0%',
+      current_step: '准备中...',
       created_at: new Date().toISOString(),
     }
+    
+    // 确保任务被添加到队列
     setTasks(prev => [newTask, ...prev])
     setActiveTab('queue')
+    
+    // 确保轮询在运行
+    startPolling()
 
     setIsLoading(true)
     try {
@@ -126,6 +176,8 @@ export default function ExtractionModule() {
               id: realTaskId,
               status: 'completed', 
               entities_count: resultEntities.length,
+              progress: '100%',
+              current_step: '完成',
               completed_at: new Date().toISOString()
             }
           : t
@@ -137,7 +189,7 @@ export default function ExtractionModule() {
       toast.success(`成功提取 ${resultEntities.length} 个实体`)
       setSelectedDocs([])
       
-      // 刷新任务列表以获取最新状态
+      // 刷新任务列表
       await loadTasks()
     } catch (error: any) {
       const errorMsg = error.response?.data?.detail || error.message || '提取失败'
@@ -149,14 +201,14 @@ export default function ExtractionModule() {
               ...t, 
               status: 'failed', 
               error: errorMsg,
+              progress: '100%',
+              current_step: `失败: ${errorMsg}`,
               completed_at: new Date().toISOString()
             }
           : t
       ))
       
       toast.error(errorMsg)
-      // 刷新任务列表以获取失败状态
-      await loadTasks()
     } finally {
       setIsLoading(false)
     }
@@ -168,7 +220,6 @@ export default function ExtractionModule() {
     if (task.status === 'completed') {
       if (task.file_ids.length > 0) {
         try {
-          // 直接获取已提取的实体，而不是重新提取
           const entitiesResponse = await api.get('/extraction/entities', {
             params: { document_id: task.file_ids[0], limit: 500 }
           })
@@ -285,7 +336,7 @@ export default function ExtractionModule() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-slate-400">任务队列</h3>
               <button 
-                onClick={loadTasks} 
+                onClick={() => loadTasks()} 
                 disabled={isLoadingTasks}
                 className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
               >
@@ -351,7 +402,7 @@ export default function ExtractionModule() {
               <div className="p-4 border-b border-white/10 flex items-center justify-between">
                 <h3 className="font-medium text-white">任务队列</h3>
                 <button 
-                  onClick={loadTasks} 
+                  onClick={() => loadTasks()} 
                   disabled={isLoadingTasks}
                   className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
                 >
@@ -372,6 +423,7 @@ export default function ExtractionModule() {
                       const config = statusConfig[task.status]
                       const StatusIcon = config.icon
                       const isSelected = selectedTaskId === task.id
+                      const progressNum = task.progress ? parseInt(task.progress) || 0 : 0
                       return (
                         <div 
                           key={task.id} 
@@ -394,6 +446,26 @@ export default function ExtractionModule() {
                               <p className="text-sm text-white truncate">
                                 {task.file_names.length > 0 ? task.file_names.join(', ') : '加载中...'}
                               </p>
+                              
+                              {/* 进度条 */}
+                              {(task.status === 'processing' || task.status === 'pending') && (
+                                <div className="mt-2">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-xs text-slate-400">{task.current_step || '处理中...'}</span>
+                                    <span className="text-xs text-primary-400">{task.progress || '0%'}</span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-gradient-to-r from-primary-500 to-purple-500 transition-all duration-300"
+                                      style={{ width: `${progressNum}%` }}
+                                    />
+                                  </div>
+                                  {task.estimated_time && (
+                                    <p className="text-xs text-slate-500 mt-1">预计剩余: {task.estimated_time}</p>
+                                  )}
+                                </div>
+                              )}
+                              
                               {task.status === 'completed' && (
                                 <p className="text-xs text-slate-400 mt-1">
                                   提取了 {task.entities_count} 个实体

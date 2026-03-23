@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import List
 from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.db.postgres import get_db
+from sqlalchemy import select, update as sql_update
+from app.db.postgres import get_db, engine
 from app.models.document import Document, ExtractionTask, Entity
 from app.schemas.extraction import ExtractionRequest, ExtractionResponse, EntityInfo
 from app.services.extraction_service import extraction_service
@@ -27,6 +27,12 @@ async def extract_information(
             "entity_types": request.entity_types,
             "custom_fields": request.custom_fields
         },
+        result={
+            "progress": "0%",
+            "current_step": "准备中...",
+            "total_files": len(request.file_ids),
+            "processed_files": 0
+        },
         started_at=datetime.utcnow()
     )
     db.add(task)
@@ -35,21 +41,54 @@ async def extract_information(
     
     all_entities = []
     errors = []
+    total_files = len(request.file_ids)
+    
+    # 创建进度回调函数
+    async def update_progress(message: str, progress: str = None):
+        try:
+            # 使用新的会话来更新进度，确保立即提交
+            async with AsyncSession(engine) as progress_db:
+                current_result = task.result or {}
+                current_result.update({
+                    "current_step": message,
+                    "progress": progress or current_result.get("progress", "0%"),
+                    "updated_at": datetime.utcnow().isoformat()
+                })
+                stmt = sql_update(ExtractionTask).where(
+                    ExtractionTask.id == task.id
+                ).values(result=current_result)
+                await progress_db.execute(stmt)
+                await progress_db.commit()
+        except Exception as e:
+            print(f"Progress update error: {e}")
     
     try:
-        for file_id in request.file_ids:
+        for idx, file_id in enumerate(request.file_ids):
             result = await db.execute(select(Document).where(Document.id == file_id))
             doc = result.scalar_one_or_none()
             if not doc:
                 errors.append(f"文档 {file_id} 不存在")
                 continue
             
+            # 计算当前文件的进度范围
+            file_progress_start = int((idx / total_files) * 100)
+            file_progress_range = int(100 / total_files)
+            
+            # 更新进度
+            await update_progress(
+                f"正在处理文档 {idx + 1}/{total_files}: {doc.original_filename}",
+                f"{file_progress_start}%"
+            )
+            
             try:
                 extraction_result = await extraction_service.extract_from_document(
                     file_path=doc.file_path,
                     file_type=doc.file_type,
                     entity_types=request.entity_types,
-                    custom_fields=request.custom_fields
+                    custom_fields=request.custom_fields,
+                    progress_callback=update_progress,
+                    base_progress=file_progress_start,
+                    progress_range=file_progress_range
                 )
                 
                 for entity_data in extraction_result.get("entities", []):
@@ -80,20 +119,24 @@ async def extract_information(
         
         # 更新任务状态
         if errors and not all_entities:
-            # 全部失败
             task.status = "failed"
             task.error_message = "; ".join(errors)
+            task.result = {"progress": "100%", "error": "; ".join(errors)}
         elif errors:
-            # 部分成功
             task.status = "completed"
             task.result = {
                 "entities_count": len(all_entities),
-                "warnings": errors
+                "warnings": errors,
+                "progress": "100%",
+                "processed_files": total_files
             }
         else:
-            # 全部成功
             task.status = "completed"
-            task.result = {"entities_count": len(all_entities)}
+            task.result = {
+                "entities_count": len(all_entities),
+                "progress": "100%",
+                "processed_files": total_files
+            }
         
         task.completed_at = datetime.utcnow()
         await db.commit()
@@ -107,6 +150,7 @@ async def extract_information(
     except Exception as e:
         task.status = "failed"
         task.error_message = str(e)
+        task.result = {"progress": "100%", "error": str(e)}
         task.completed_at = datetime.utcnow()
         await db.commit()
         raise HTTPException(status_code=500, detail=str(e))
@@ -163,8 +207,37 @@ async def list_tasks(
                 file_names.append(name)
         
         entities_count = 0
+        progress = "0%"
+        current_step = ""
         if task.result and isinstance(task.result, dict):
             entities_count = task.result.get("entities_count", 0)
+            progress = task.result.get("progress", "0%")
+            current_step = task.result.get("current_step", "")
+        
+        # 优化的时间预测算法
+        estimated_time = None
+        if task.status == "processing" and task.started_at:
+            elapsed = (datetime.utcnow() - task.started_at).total_seconds()
+            if progress and progress != "0%":
+                try:
+                    progress_num = int(progress.replace("%", ""))
+                    if progress_num > 0 and progress_num < 100:
+                        # 基于进度的线性预测
+                        estimated_seconds = (elapsed / progress_num) * (100 - progress_num)
+                        
+                        # 格式化输出
+                        if estimated_seconds < 60:
+                            estimated_time = f"约 {int(estimated_seconds)} 秒"
+                        elif estimated_seconds < 3600:
+                            minutes = int(estimated_seconds // 60)
+                            seconds = int(estimated_seconds % 60)
+                            estimated_time = f"约 {minutes} 分 {seconds} 秒"
+                        else:
+                            hours = int(estimated_seconds // 3600)
+                            minutes = int((estimated_seconds % 3600) // 60)
+                            estimated_time = f"约 {hours} 时 {minutes} 分"
+                except:
+                    pass
         
         task_list.append({
             "id": str(task.id),
@@ -172,6 +245,9 @@ async def list_tasks(
             "file_ids": task.input_files or [],
             "file_names": file_names,
             "entities_count": entities_count,
+            "progress": progress,
+            "current_step": current_step,
+            "estimated_time": estimated_time,
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "error": task.error_message

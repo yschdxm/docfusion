@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus, Clock, XCircle, List } from 'lucide-react'
+import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus, Clock, XCircle, List, RefreshCw } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore } from '../stores/documentStore'
@@ -13,6 +13,9 @@ interface FillTask {
   template_name: string
   filled_file_id?: string
   filled_file_url?: string
+  progress?: string
+  current_step?: string
+  estimated_time?: string
   created_at: string
   completed_at?: string
   error?: string
@@ -26,23 +29,70 @@ export default function TableFillModule() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [tasks, setTasks] = useState<FillTask[]>([])
   const [activeTab, setActiveTab] = useState<'fill' | 'queue'>('queue')
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+  
+  const pollingRef = useRef<NodeJS.Timeout | null>(null)
+  const isMountedRef = useRef(true)
 
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
   const templateDocs = documents.filter(d => d.doc_category === 'template')
 
-  useEffect(() => {
-    fetchDocuments()
-    loadTasks()
-  }, [fetchDocuments])
-
-  const loadTasks = async () => {
+  // 加载任务
+  const loadTasks = useCallback(async (silent = false) => {
+    if (!isMountedRef.current) return
+    if (!silent) setIsLoadingTasks(true)
     try {
       const response = await api.get('/table-fill/tasks')
-      setTasks(response.data || [])
+      if (isMountedRef.current) {
+        setTasks(response.data || [])
+      }
     } catch (error) {
-      console.error('Failed to load tasks:', error)
+      if (!silent) console.error('Failed to load tasks:', error)
+    } finally {
+      if (!silent && isMountedRef.current) {
+        setIsLoadingTasks(false)
+      }
     }
-  }
+  }, [])
+
+  // 启动轮询
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return
+    
+    pollingRef.current = setInterval(() => {
+      if (isMountedRef.current) {
+        loadTasks(true)
+      }
+    }, 2000)
+  }, [loadTasks])
+
+  // 停止轮询
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    isMountedRef.current = true
+    fetchDocuments()
+    loadTasks()
+    startPolling()
+    
+    return () => {
+      isMountedRef.current = false
+      stopPolling()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 检查是否有处理中的任务
+  useEffect(() => {
+    const hasActiveTasks = tasks.some(t => t.status === 'processing' || t.status === 'pending')
+    if (hasActiveTasks && !pollingRef.current) {
+      startPolling()
+    }
+  }, [tasks, startPolling])
 
   const onSourceDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
@@ -97,16 +147,23 @@ export default function TableFillModule() {
     const templateDoc = templateDocs.find(d => d.id === selectedTemplateDoc)
     const sourceNames = selectedSourceDocs.map(id => sourceDocs.find(d => d.id === id)?.original_filename || '')
 
+    const newTaskId = `temp-${Date.now()}`
+    
+    // 立即添加任务到队列
     const newTask: FillTask = {
-      id: `task-${Date.now()}`,
+      id: newTaskId,
       status: 'processing',
       source_files: selectedSourceDocs,
       source_names: sourceNames,
       template_name: templateDoc?.original_filename || '',
+      progress: '0%',
+      current_step: '准备中...',
       created_at: new Date().toISOString(),
     }
+    
     setTasks(prev => [newTask, ...prev])
     setActiveTab('queue')
+    startPolling()
 
     setIsProcessing(true)
     try {
@@ -117,12 +174,15 @@ export default function TableFillModule() {
       })
 
       setTasks(prev => prev.map(t => 
-        t.id === newTask.id 
+        t.id === newTaskId 
           ? { 
               ...t, 
+              id: response.data.task_id,
               status: 'completed', 
               filled_file_id: response.data.filled_file_id,
               filled_file_url: response.data.filled_file_url,
+              progress: '100%',
+              current_step: '完成',
               completed_at: new Date().toISOString() 
             }
           : t
@@ -132,13 +192,24 @@ export default function TableFillModule() {
       setSelectedSourceDocs([])
       setSelectedTemplateDoc(null)
       setInstruction('')
-    } catch {
+      
+      await loadTasks()
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.detail || error.message || '填写失败'
+      
       setTasks(prev => prev.map(t => 
-        t.id === newTask.id 
-          ? { ...t, status: 'failed', error: '填写失败', completed_at: new Date().toISOString() }
+        t.id === newTaskId 
+          ? { 
+              ...t, 
+              status: 'failed', 
+              error: errorMsg,
+              progress: '100%',
+              current_step: `失败: ${errorMsg}`,
+              completed_at: new Date().toISOString() 
+            }
           : t
       ))
-      toast.error('表格填写失败')
+      toast.error(errorMsg)
     } finally {
       setIsProcessing(false)
     }
@@ -292,34 +363,38 @@ export default function TableFillModule() {
           <div className="glass p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-slate-400">任务队列</h3>
-              <span className="text-xs text-slate-500">{tasks.length} 个任务</span>
+              <button 
+                onClick={() => loadTasks()} 
+                disabled={isLoadingTasks}
+                className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
+              >
+                <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} />
+                刷新
+              </button>
             </div>
             <div className="space-y-2">
-              {tasks.slice(0, 3).map((task) => {
-                const config = statusConfig[task.status]
-                const StatusIcon = config.icon
-                return (
-                  <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-white/5">
-                    <StatusIcon className={`w-4 h-4 ${config.color} ${task.status === 'processing' ? 'animate-spin' : ''}`} />
-                    <span className="text-xs text-white truncate flex-1">{task.template_name}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
-                      {config.label}
-                    </span>
-                  </div>
-                )
-              })}
-              {tasks.length === 0 && (
+              {isLoadingTasks ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
+                </div>
+              ) : tasks.length > 0 ? (
+                tasks.slice(0, 3).map((task) => {
+                  const config = statusConfig[task.status]
+                  const StatusIcon = config.icon
+                  return (
+                    <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-white/5">
+                      <StatusIcon className={`w-4 h-4 ${config.color} ${task.status === 'processing' ? 'animate-spin' : ''}`} />
+                      <span className="text-xs text-white truncate flex-1">{task.template_name}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
+                        {config.label}
+                      </span>
+                    </div>
+                  )
+                })
+              ) : (
                 <p className="text-xs text-slate-500 text-center py-2">暂无任务</p>
               )}
             </div>
-            {tasks.length > 3 && (
-              <button
-                onClick={() => setActiveTab('queue')}
-                className="mt-3 text-xs text-primary-400 hover:text-primary-300 w-full text-center"
-              >
-                查看全部任务
-              </button>
-            )}
           </div>
         </div>
 
@@ -328,7 +403,7 @@ export default function TableFillModule() {
           {/* 标签切换 */}
           <div className="flex gap-2 mb-4">
             <button
-              onClick={() => setActiveTab('queue')}
+              onClick={() => { setActiveTab('queue'); loadTasks(); }}
               className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors
                 ${activeTab === 'queue' ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}
             >
@@ -357,6 +432,7 @@ export default function TableFillModule() {
                     {tasks.map((task) => {
                       const config = statusConfig[task.status]
                       const StatusIcon = config.icon
+                      const progressNum = task.progress ? parseInt(task.progress) || 0 : 0
                       return (
                         <div key={task.id} className="p-4 hover:bg-white/5 transition-colors">
                           <div className="flex items-start gap-4">
@@ -373,8 +449,31 @@ export default function TableFillModule() {
                               <p className="text-xs text-slate-400 mt-1">
                                 源文档: {task.source_names.join(', ')}
                               </p>
+                              
+                              {/* 进度条 */}
+                              {(task.status === 'processing' || task.status === 'pending') && (
+                                <div className="mt-2">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-xs text-slate-400">{task.current_step || '处理中...'}</span>
+                                    <span className="text-xs text-primary-400">{task.progress || '0%'}</span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-gradient-to-r from-primary-500 to-purple-500 transition-all duration-300"
+                                      style={{ width: `${progressNum}%` }}
+                                    />
+                                  </div>
+                                  {task.estimated_time && (
+                                    <p className="text-xs text-slate-500 mt-1">预计剩余: {task.estimated_time}</p>
+                                  )}
+                                </div>
+                              )}
+                              
                               {task.error && (
-                                <p className="text-xs text-red-400 mt-1">{task.error}</p>
+                                <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/30">
+                                  <p className="text-xs text-red-400">错误详情:</p>
+                                  <p className="text-xs text-red-300 mt-1 break-words">{task.error}</p>
+                                </div>
                               )}
                               <p className="text-xs text-slate-500 mt-2">
                                 {new Date(task.created_at).toLocaleString()}
