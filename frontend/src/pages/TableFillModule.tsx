@@ -1,6 +1,5 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
-import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, Loader2, Download, Table, Play, CheckCircle, Plus, Clock, XCircle, List, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { FileText, Loader2, Download, Table, Play, CheckCircle, Clock, XCircle, List, RefreshCw } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore } from '../stores/documentStore'
@@ -22,7 +21,7 @@ interface FillTask {
 }
 
 export default function TableFillModule() {
-  const { documents, fetchDocuments, addDocuments } = useDocumentStore()
+  const { documents, fetchDocuments } = useDocumentStore()
   const [selectedSourceDocs, setSelectedSourceDocs] = useState<string[]>([])
   const [selectedTemplateDoc, setSelectedTemplateDoc] = useState<string | null>(null)
   const [instruction, setInstruction] = useState('')
@@ -30,6 +29,7 @@ export default function TableFillModule() {
   const [tasks, setTasks] = useState<FillTask[]>([])
   const [activeTab, setActiveTab] = useState<'fill' | 'queue'>('queue')
   const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+  const [extractedDocIds, setExtractedDocIds] = useState<Set<string>>(new Set())
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null)
   const isMountedRef = useRef(true)
@@ -37,8 +37,27 @@ export default function TableFillModule() {
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
   const templateDocs = documents.filter(d => d.doc_category === 'template')
 
-  // 加载任务
-  const loadTasks = useCallback(async (silent = false) => {
+  const loadExtractedDocs = async () => {
+    try {
+      const response = await api.get('/extraction/tasks')
+      const tasks = response.data || []
+      const extractedIds = new Set<string>()
+      
+      for (const task of tasks) {
+        if (task.status === 'completed' && task.file_ids) {
+          task.file_ids.forEach((id: string) => extractedIds.add(id))
+        }
+      }
+      
+      if (isMountedRef.current) {
+        setExtractedDocIds(extractedIds)
+      }
+    } catch (error) {
+      console.error('Failed to load extracted docs:', error)
+    }
+  }
+
+  const loadTasks = async (silent = false) => {
     if (!isMountedRef.current) return
     if (!silent) setIsLoadingTasks(true)
     try {
@@ -53,31 +72,29 @@ export default function TableFillModule() {
         setIsLoadingTasks(false)
       }
     }
-  }, [])
+  }
 
-  // 启动轮询
-  const startPolling = useCallback(() => {
+  const startPolling = () => {
     if (pollingRef.current) return
-    
     pollingRef.current = setInterval(() => {
       if (isMountedRef.current) {
         loadTasks(true)
       }
     }, 2000)
-  }, [loadTasks])
+  }
 
-  // 停止轮询
-  const stopPolling = useCallback(() => {
+  const stopPolling = () => {
     if (pollingRef.current) {
       clearInterval(pollingRef.current)
       pollingRef.current = null
     }
-  }, [])
+  }
 
   useEffect(() => {
     isMountedRef.current = true
     fetchDocuments()
     loadTasks()
+    loadExtractedDocs()
     startPolling()
     
     return () => {
@@ -86,53 +103,31 @@ export default function TableFillModule() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 检查是否有处理中的任务
   useEffect(() => {
     const hasActiveTasks = tasks.some(t => t.status === 'processing' || t.status === 'pending')
     if (hasActiveTasks && !pollingRef.current) {
       startPolling()
     }
-  }, [tasks, startPolling])
+  }, [tasks])
 
-  const onSourceDrop = useCallback(async (acceptedFiles: File[]) => {
-    try {
-      await addDocuments(acceptedFiles, 'source')
-      toast.success(`上传了 ${acceptedFiles.length} 个源文档`)
-    } catch {
-      toast.error('上传失败')
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadExtractedDocs()
+      }
     }
-  }, [addDocuments])
-
-  const onTemplateDrop = useCallback(async (acceptedFiles: File[]) => {
-    try {
-      await addDocuments(acceptedFiles, 'template')
-      toast.success(`上传了 ${acceptedFiles.length} 个模板文件`)
-    } catch {
-      toast.error('上传失败')
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [addDocuments])
-
-  const { getRootProps: getSourceRootProps, getInputProps: getSourceInputProps, isDragActive: isSourceDragActive } =
-    useDropzone({
-      onDrop: onSourceDrop,
-      accept: {
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-        'text/markdown': ['.md'],
-        'text/plain': ['.txt'],
-      },
-    })
-
-  const { getRootProps: getTemplateRootProps, getInputProps: getTemplateInputProps, isDragActive: isTemplateDragActive } =
-    useDropzone({
-      onDrop: onTemplateDrop,
-      accept: {
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      },
-    })
+  }, [])
 
   const toggleSourceDoc = (docId: string) => {
+    if (!extractedDocIds.has(docId)) {
+      toast.error('该文档尚未进行信息提取，请先在"信息提取"页面提取数据')
+      return
+    }
+    
     setSelectedSourceDocs((prev) =>
       prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]
     )
@@ -144,12 +139,20 @@ export default function TableFillModule() {
       return
     }
 
+    const unextractedDocs = selectedSourceDocs.filter(id => !extractedDocIds.has(id))
+    if (unextractedDocs.length > 0) {
+      const unextractedNames = unextractedDocs.map(id => 
+        sourceDocs.find(d => d.id === id)?.original_filename || '未知'
+      ).join(', ')
+      toast.error(`以下文档尚未进行信息提取：${unextractedNames}`)
+      return
+    }
+
     const templateDoc = templateDocs.find(d => d.id === selectedTemplateDoc)
     const sourceNames = selectedSourceDocs.map(id => sourceDocs.find(d => d.id === id)?.original_filename || '')
 
     const newTaskId = `temp-${Date.now()}`
     
-    // 立即添加任务到队列
     const newTask: FillTask = {
       id: newTaskId,
       status: 'processing',
@@ -237,45 +240,66 @@ export default function TableFillModule() {
                 <FileText className="w-5 h-5 text-blue-400" />
                 源文档（数据来源）
               </h3>
-              <span className="text-sm text-slate-400">共 {sourceDocs.length} 个</span>
-            </div>
-            
-            <div
-              {...getSourceRootProps()}
-              className={`upload-zone mb-4 ${isSourceDragActive ? 'upload-zone-active' : ''}`}
-            >
-              <input {...getSourceInputProps()} />
-              <div className="flex items-center justify-center gap-2">
-                <Plus className="w-5 h-5 text-slate-400" />
-                <span className="text-slate-400 text-sm">添加源文档</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadExtractedDocs}
+                  className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  刷新状态
+                </button>
+                <span className="text-sm text-slate-400">共 {sourceDocs.length} 个</span>
               </div>
             </div>
 
-            <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
-              {sourceDocs.length > 0 ? sourceDocs.map((doc) => (
-                <label
-                  key={doc.id}
-                  className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all
-                    ${selectedSourceDocs.includes(doc.id)
-                      ? 'bg-blue-500/20 border border-blue-500/30'
-                      : 'bg-white/5 hover:bg-white/10 border border-transparent'
-                    }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedSourceDocs.includes(doc.id)}
-                    onChange={() => toggleSourceDoc(doc.id)}
-                    className="w-4 h-4 rounded border-white/20 bg-white/10 text-blue-500"
-                  />
-                  <FileText className="w-4 h-4 text-blue-400" />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm text-white truncate block">{doc.original_filename}</span>
-                    <span className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</span>
+            <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-thin">
+              {sourceDocs.length > 0 ? sourceDocs.map((doc) => {
+                const isExtracted = extractedDocIds.has(doc.id)
+                return (
+                  <div
+                    key={doc.id}
+                    onClick={() => toggleSourceDoc(doc.id)}
+                    className={`flex items-center gap-3 p-3 rounded-lg transition-all
+                      ${!isExtracted 
+                        ? 'opacity-50 cursor-not-allowed bg-white/5' 
+                        : selectedSourceDocs.includes(doc.id)
+                          ? 'bg-blue-500/20 border border-blue-500/30 cursor-pointer'
+                          : 'bg-white/5 hover:bg-white/10 border border-transparent cursor-pointer'
+                      }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedSourceDocs.includes(doc.id)}
+                      disabled={!isExtracted}
+                      onChange={() => toggleSourceDoc(doc.id)}
+                      className="w-4 h-4 rounded border-white/20 bg-white/10 text-blue-500 disabled:opacity-50"
+                    />
+                    <FileText className={`w-4 h-4 ${isExtracted ? 'text-blue-400' : 'text-slate-600'}`} />
+                    <div className="flex-1 min-w-0">
+                      <span className={`text-sm truncate block ${isExtracted ? 'text-white' : 'text-slate-500'}`}>
+                        {doc.original_filename}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {doc.file_type.toUpperCase()}
+                        {!isExtracted && ' - 尚未提取'}
+                      </span>
+                    </div>
+                    {!isExtracted && (
+                      <span className="text-xs text-yellow-400 bg-yellow-500/20 px-2 py-0.5 rounded">
+                        需提取
+                      </span>
+                    )}
                   </div>
-                </label>
-              )) : (
-                <p className="text-sm text-slate-500 text-center py-4">暂无源文档，请上传</p>
+                )
+              }) : (
+                <p className="text-sm text-slate-500 text-center py-4">暂无源文档，请先在文档管理页面上传</p>
               )}
+            </div>
+            
+            <div className="mt-3 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+              <p className="text-xs text-yellow-400">
+                ⚠️ 注意：使用表格填写前，需要先在"信息提取"页面对文档进行信息提取
+              </p>
             </div>
           </div>
 
@@ -287,17 +311,6 @@ export default function TableFillModule() {
                 模板文件
               </h3>
               <span className="text-sm text-slate-400">共 {templateDocs.length} 个</span>
-            </div>
-
-            <div
-              {...getTemplateRootProps()}
-              className={`upload-zone mb-4 ${isTemplateDragActive ? 'upload-zone-active' : ''}`}
-            >
-              <input {...getTemplateInputProps()} />
-              <div className="flex items-center justify-center gap-2">
-                <Plus className="w-5 h-5 text-slate-400" />
-                <span className="text-slate-400 text-sm">添加模板文件</span>
-              </div>
             </div>
 
             <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
@@ -323,7 +336,7 @@ export default function TableFillModule() {
                   </div>
                 </button>
               )) : (
-                <p className="text-sm text-slate-500 text-center py-4">暂无模板，请上传</p>
+                <p className="text-sm text-slate-500 text-center py-4">暂无模板，请先在文档管理页面上传</p>
               )}
             </div>
           </div>
@@ -339,7 +352,6 @@ export default function TableFillModule() {
             />
           </div>
 
-          {/* 开始填写按钮 */}
           <button
             onClick={handleFill}
             disabled={isProcessing || !selectedTemplateDoc || selectedSourceDocs.length === 0}
@@ -358,49 +370,10 @@ export default function TableFillModule() {
               </>
             )}
           </button>
-
-          {/* 任务队列摘要 */}
-          <div className="glass p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium text-slate-400">任务队列</h3>
-              <button 
-                onClick={() => loadTasks()} 
-                disabled={isLoadingTasks}
-                className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
-              >
-                <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} />
-                刷新
-              </button>
-            </div>
-            <div className="space-y-2">
-              {isLoadingTasks ? (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
-                </div>
-              ) : tasks.length > 0 ? (
-                tasks.slice(0, 3).map((task) => {
-                  const config = statusConfig[task.status]
-                  const StatusIcon = config.icon
-                  return (
-                    <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-white/5">
-                      <StatusIcon className={`w-4 h-4 ${config.color} ${task.status === 'processing' ? 'animate-spin' : ''}`} />
-                      <span className="text-xs text-white truncate flex-1">{task.template_name}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
-                        {config.label}
-                      </span>
-                    </div>
-                  )
-                })
-              ) : (
-                <p className="text-xs text-slate-500 text-center py-2">暂无任务</p>
-              )}
-            </div>
-          </div>
         </div>
 
         {/* 右侧结果/队列区域 */}
         <div>
-          {/* 标签切换 */}
           <div className="flex gap-2 mb-4">
             <button
               onClick={() => { setActiveTab('queue'); loadTasks(); }}
@@ -450,7 +423,6 @@ export default function TableFillModule() {
                                 源文档: {task.source_names.join(', ')}
                               </p>
                               
-                              {/* 进度条 */}
                               {(task.status === 'processing' || task.status === 'pending') && (
                                 <div className="mt-2">
                                   <div className="flex items-center justify-between mb-1">
@@ -516,7 +488,6 @@ export default function TableFillModule() {
                   <div className="text-center">
                     <Loader2 className="w-12 h-12 animate-spin text-primary-400 mx-auto mb-4" />
                     <p className="text-slate-400">正在分析文档并填写表格...</p>
-                    <p className="text-sm text-slate-500 mt-2">这可能需要一些时间</p>
                   </div>
                 ) : tasks.filter(t => t.status === 'completed').length > 0 ? (
                   <div className="w-full space-y-4">
@@ -548,9 +519,6 @@ export default function TableFillModule() {
                   <div className="text-center">
                     <Table className="w-16 h-16 mx-auto mb-4 text-slate-600" />
                     <p className="text-slate-400">选择源文档和模板后开始填写</p>
-                    <p className="text-sm text-slate-500 mt-2">
-                      左侧分别上传源文档和模板，然后选择要使用的文件
-                    </p>
                   </div>
                 )}
               </div>

@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 import os
 from app.services.llm_service import llm_service
 from app.services.document_processor import DocxParser, XlsxParser
+from app.db.neo4j_db import run_cypher
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -13,6 +14,92 @@ class TableFillingService:
         self.parsers = {
             "docx": DocxParser(),
             "xlsx": XlsxParser()
+        }
+    
+    async def get_entities_from_neo4j(
+        self,
+        document_ids: List[str],
+        entity_types: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """从Neo4j获取指定文档的实体数据"""
+        if not document_ids:
+            return []
+        
+        if entity_types:
+            result = await run_cypher(
+                """
+                MATCH (d:Document)-[:HAS_ENTITY]->(e:Entity)
+                WHERE d.id IN $doc_ids AND e.type IN $entity_types
+                RETURN e.name AS name, e.type AS type, e.value AS value, e.context AS context
+                """,
+                {"doc_ids": document_ids, "entity_types": entity_types}
+            )
+        else:
+            result = await run_cypher(
+                """
+                MATCH (d:Document)-[:HAS_ENTITY]->(e:Entity)
+                WHERE d.id IN $doc_ids
+                RETURN e.name AS name, e.type AS type, e.value AS value, e.context AS context
+                """,
+                {"doc_ids": document_ids}
+            )
+        
+        return [
+            {
+                "entity_name": r["name"],
+                "entity_type": r["type"],
+                "entity_value": r.get("value", ""),
+                "context": r.get("context", "")
+            }
+            for r in result
+        ]
+    
+    async def fill_table_from_entities(
+        self,
+        document_ids: List[str],
+        template_file: Dict[str, str],
+        user_instruction: str,
+        entity_types: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """使用Neo4j中的实体数据填写表格"""
+        # 从Neo4j获取实体数据
+        entities = await self.get_entities_from_neo4j(document_ids, entity_types)
+        
+        if not entities:
+            raise ValueError("未找到实体数据，请先进行信息提取")
+        
+        # 构建实体数据文本
+        entities_text = "\n".join([
+            f"- {e['entity_type']}: {e['entity_name']} = {e['entity_value']} (上下文: {e['context'][:100]})"
+            for e in entities
+        ])
+        
+        # 解析模板
+        template_parser = self.parsers.get(template_file.get("file_type"))
+        if not template_parser:
+            raise ValueError("Unsupported template file type")
+        
+        template_data = template_parser.parse(template_file.get("file_path"))
+        
+        # 使用LLM提取表格数据
+        filled_data = await llm_service.extract_table_data(
+            source_text=entities_text,
+            template_structure=template_data,
+            user_instruction=user_instruction
+        )
+        
+        # 生成输出文件
+        output_filename = f"filled_{uuid4().hex}.xlsx"
+        output_path = os.path.join(settings.UPLOAD_DIR, "output", output_filename)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        XlsxParser.write_from_dict(filled_data, output_path)
+        
+        return {
+            "filled_data": filled_data,
+            "output_path": output_path,
+            "output_filename": output_filename,
+            "entities_used": len(entities)
         }
     
     async def fill_table(

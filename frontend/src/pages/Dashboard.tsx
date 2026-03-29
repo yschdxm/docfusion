@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, Search, Table, Network, TrendingUp, FolderOpen, Activity } from 'lucide-react'
+import { FileText, Table, Network, TrendingUp, FolderOpen, Activity } from 'lucide-react'
 import { useDocumentStore } from '../stores/documentStore'
 
 export default function Dashboard() {
@@ -18,7 +18,7 @@ export default function Dashboard() {
     {
       icon: FolderOpen,
       title: '文档管理',
-      description: '管理所有上传的文档、模板和输出文件',
+      description: '管理所有上传的文档、模板和输出文件，上传文档自动提取信息',
       path: '/documents',
       color: 'from-slate-500 to-slate-600',
     },
@@ -28,13 +28,6 @@ export default function Dashboard() {
       description: '通过自然语言指令操作文档，支持内容提取、格式转换等操作',
       path: '/document-operation',
       color: 'from-blue-500 to-cyan-500',
-    },
-    {
-      icon: Search,
-      title: '信息提取',
-      description: '自动识别和提取文档中的关键信息、实体数据',
-      path: '/extraction',
-      color: 'from-green-500 to-emerald-500',
     },
     {
       icon: Table,

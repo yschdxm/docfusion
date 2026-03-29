@@ -15,14 +15,12 @@ class KnowledgeGraphService:
             await run_cypher(
                 """
                 MERGE (e:Entity {name: $name, type: $type})
-                SET e.document_id = $document_id,
-                    e.value = $value,
+                SET e.value = $value,
                     e.context = $context
                 """,
                 {
                     "name": entity.get("entity_name"),
                     "type": entity.get("entity_type"),
-                    "document_id": document_id,
                     "value": entity.get("entity_value", ""),
                     "context": entity.get("context", "")
                 }
@@ -35,6 +33,20 @@ class KnowledgeGraphService:
             """,
             {"doc_id": document_id, "count": len(entities)}
         )
+        
+        for entity in entities:
+            await run_cypher(
+                """
+                MATCH (d:Document {id: $doc_id})
+                MATCH (e:Entity {name: $name, type: $type})
+                MERGE (d)-[:HAS_ENTITY]->(e)
+                """,
+                {
+                    "doc_id": document_id,
+                    "name": entity.get("entity_name"),
+                    "type": entity.get("entity_type")
+                }
+            )
         
         relations = await llm_service.analyze_relationships(entities)
         
@@ -59,8 +71,9 @@ class KnowledgeGraphService:
     async def get_graph(self, limit: int = 100) -> Dict[str, Any]:
         nodes_result = await run_cypher(
             """
-            MATCH (e:Entity)
-            RETURN e.name AS name, e.type AS type, e.value AS value, e.document_id AS document_id
+            MATCH (e:Entity)<-[:HAS_ENTITY]-(d:Document)
+            RETURN e.name AS name, e.type AS type, e.value AS value, 
+                   collect(DISTINCT d.id) AS document_ids
             LIMIT $limit
             """,
             {"limit": limit}
@@ -81,7 +94,7 @@ class KnowledgeGraphService:
                 "name": r["name"], 
                 "type": r["type"], 
                 "value": r.get("value", ""),
-                "document_id": r.get("document_id", "")
+                "document_ids": r.get("document_ids", [])
             }
             for r in nodes_result
         ]
@@ -142,29 +155,26 @@ class KnowledgeGraphService:
     async def find_document_relations(self, doc_ids: List[str]) -> Dict[str, Any]:
         result = await run_cypher(
             """
-            MATCH (e1:Entity)-[r:RELATED_TO]-(e2:Entity)
-            WHERE e1.document_id IN $doc_ids AND e2.document_id IN $doc_ids
-              AND e1.document_id <> e2.document_id
-            RETURN e1.name AS entity1, e1.document_id AS doc1,
-                   e2.name AS entity2, e2.document_id AS doc2,
-                   r.type AS relation_type
+            MATCH (d1:Document {id: $doc_id1})-[:HAS_ENTITY]->(e:Entity)<-[:HAS_ENTITY]-(d2:Document {id: $doc_id2})
+            WHERE d1.id < d2.id
+            RETURN e.name AS entity_name, e.type AS entity_type,
+                   d1.id AS doc1, d2.id AS doc2
             LIMIT 50
             """,
-            {"doc_ids": doc_ids}
+            {"doc_id1": doc_ids[0] if doc_ids else "", "doc_id2": doc_ids[1] if len(doc_ids) > 1 else ""}
         )
         
-        cross_relations = [
+        shared_entities = [
             {
-                "entity1": r["entity1"],
+                "entity_name": r["entity_name"],
+                "entity_type": r["entity_type"],
                 "doc1": r["doc1"],
-                "entity2": r["entity2"],
-                "doc2": r["doc2"],
-                "relation_type": r["relation_type"]
+                "doc2": r["doc2"]
             }
             for r in result
         ]
         
-        return {"cross_relations": cross_relations}
+        return {"shared_entities": shared_entities}
 
 
 knowledge_graph_service = KnowledgeGraphService()

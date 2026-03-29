@@ -3,8 +3,8 @@ import { Bell, Settings, User } from 'lucide-react'
 
 const pageTitles: Record<string, string> = {
   '/': '仪表盘',
+  '/documents': '文档管理',
   '/document-operation': '文档智能操作',
-  '/extraction': '信息提取',
   '/table-fill': '表格填写',
   '/knowledge': '知识图谱',
 }

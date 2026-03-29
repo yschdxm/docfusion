@@ -72,13 +72,16 @@ class XlsxParser:
             else:
                 sheet = workbook.create_sheet(sheet_name)
             
-            if "columns" in sheet_data:
+            if "data" in sheet_data and isinstance(sheet_data["data"], list):
+                for row_data in sheet_data["data"]:
+                    if isinstance(row_data, list):
+                        sheet.append(row_data)
+            elif "columns" in sheet_data:
                 sheet.append(sheet_data["columns"])
-            
-            for row_data in sheet_data.get("data", []):
-                if isinstance(row_data, dict):
-                    sheet.append(list(row_data.values()))
-                elif isinstance(row_data, list):
-                    sheet.append(row_data)
+                for row_data in sheet_data.get("data", []):
+                    if isinstance(row_data, dict):
+                        sheet.append(list(row_data.values()))
+                    elif isinstance(row_data, list):
+                        sheet.append(row_data)
         
         workbook.save(output_path)

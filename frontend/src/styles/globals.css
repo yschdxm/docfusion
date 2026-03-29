@@ -17,16 +17,32 @@
 }
 
 @layer components {
+  /* 毛玻璃效果 - 不使用 backdrop-filter 以避免层叠上下文问题 */
   .glass {
-    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 1rem;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
   
   .glass-dark {
-    @apply bg-slate-900/70 backdrop-blur-xl border border-slate-700/50 rounded-2xl;
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 1rem;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
   
   .glass-light {
-    @apply bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 1rem;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
   }
   
   .btn-primary {
@@ -83,6 +99,37 @@
   
   .upload-zone-active {
     @apply border-primary-500 bg-primary-500/10;
+  }
+  
+  /* 下拉菜单 */
+  .dropdown-menu {
+    background: #0f172a;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 0.75rem;
+    box-shadow: 
+      0 20px 50px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(255, 255, 255, 0.05);
+    min-width: 100%;
+  }
+  
+  .dropdown-item {
+    @apply flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors;
+  }
+  
+  .dropdown-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  
+  .dropdown-item-active {
+    background: rgba(99, 102, 241, 0.25);
+  }
+  
+  .dropdown-item:first-child {
+    @apply rounded-t-xl;
+  }
+  
+  .dropdown-item:last-child {
+    @apply rounded-b-xl;
   }
 }
 

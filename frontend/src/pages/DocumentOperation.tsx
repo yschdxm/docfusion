@@ -1,251 +1,588 @@
-import { useState, useCallback, useEffect } from 'react'
-import { useDropzone } from 'react-dropzone'
-import { Upload, Send, FileText, Loader2, Plus, CheckCircle, Table } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore } from '../stores/documentStore'
+import { useChatStore } from '../stores/chatStore'
+import ActionCard, { ActionData } from '../components/ActionCard'
 
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  action?: ActionData
+  timestamp: number
 }
 
 export default function DocumentOperation() {
-  const { documents, fetchDocuments, addDocuments } = useDocumentStore()
-  const [selectedDocs, setSelectedDocs] = useState<string[]>([])
-  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
-  const [messages, setMessages] = useState<Message[]>([])
+  const { documents, fetchDocuments } = useDocumentStore()
+  const { 
+    sessions, 
+    activeSessionId, 
+    createSession,
+    setActiveSession,
+    deleteSession,
+    updateSessionFiles,
+    addMessage,
+    loadSessions,
+    setMinimized
+  } = useChatStore()
+  
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [showDocDropdown, setShowDocDropdown] = useState(false)
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const [localMessages, setLocalMessages] = useState<Message[]>([])
+  const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const docDropdownRef = useRef<HTMLDivElement>(null)
+  const templateDropdownRef = useRef<HTMLDivElement>(null)
 
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
   const templateDocs = documents.filter(d => d.doc_category === 'template')
+  
+  const activeSession = sessions.find(s => s.id === activeSessionId)
 
   useEffect(() => {
     fetchDocuments()
-  }, [fetchDocuments])
+    loadSessions()  // 从数据库加载会话
+    setMinimized(true)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onSourceDrop = useCallback(async (acceptedFiles: File[]) => {
-    try {
-      await addDocuments(acceptedFiles, 'source')
-      toast.success(`成功上传 ${acceptedFiles.length} 个源文档`)
-    } catch (error) {
-      toast.error('上传失败')
+  // 恢复会话时加载消息和选择状态
+  useEffect(() => {
+    if (activeSessionId) {
+      // 如果会话没有消息，从数据库加载
+      const session = sessions.find(s => s.id === activeSessionId)
+      if (session && session.messages.length === 0) {
+        // 从数据库加载消息
+        const { loadSessionMessages } = useChatStore.getState()
+        loadSessionMessages(activeSessionId).then(() => {
+          const updatedSession = useChatStore.getState().sessions.find(s => s.id === activeSessionId)
+          if (updatedSession) {
+            setLocalMessages(updatedSession.messages.map(m => ({
+              role: m.role,
+              content: m.content,
+              action: m.action_data,
+              timestamp: m.timestamp
+            })))
+            // 恢复文档和模板选择
+            if (updatedSession.fileIds && updatedSession.fileIds.length > 0) {
+              setSelectedDocIds([...updatedSession.fileIds])
+            }
+            if (updatedSession.templateId) {
+              setSelectedTemplateId(updatedSession.templateId)
+            }
+          }
+        })
+      } else if (session && session.messages.length > 0) {
+        setLocalMessages(session.messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          action: m.action_data,
+          timestamp: m.timestamp
+        })))
+        // 恢复文档和模板选择
+        if (session.fileIds && session.fileIds.length > 0) {
+          setSelectedDocIds([...session.fileIds])
+        }
+        if (session.templateId) {
+          setSelectedTemplateId(session.templateId)
+        }
+      }
+    } else {
+      setLocalMessages([])
     }
-  }, [addDocuments])
+  }, [activeSessionId])
 
-  const onTemplateDrop = useCallback(async (acceptedFiles: File[]) => {
-    try {
-      await addDocuments(acceptedFiles, 'template')
-      toast.success(`成功上传 ${acceptedFiles.length} 个模板`)
-    } catch (error) {
-      toast.error('上传失败')
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (docDropdownRef.current && !docDropdownRef.current.contains(event.target as Node)) {
+        setShowDocDropdown(false)
+      }
+      if (templateDropdownRef.current && !templateDropdownRef.current.contains(event.target as Node)) {
+        setShowTemplateDropdown(false)
+      }
     }
-  }, [addDocuments])
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
-  const { getRootProps: getSourceRootProps, getInputProps: getSourceInputProps, isDragActive: isSourceDragActive } =
-    useDropzone({
-      onDrop: onSourceDrop,
-      accept: {
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-        'text/markdown': ['.md'],
-        'text/plain': ['.txt'],
-      },
-    })
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [localMessages])
 
-  const { getRootProps: getTemplateRootProps, getInputProps: getTemplateInputProps, isDragActive: isTemplateDragActive } =
-    useDropzone({
-      onDrop: onTemplateDrop,
-      accept: {
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      },
-    })
+  // 新建对话
+  const handleNewChat = async () => {
+    // 清空当前选择
+    setSelectedDocIds([])
+    setSelectedTemplateId(null)
+    
+    // 创建新会话
+    const sessionId = await createSession(null, '通用对话', [], null)
+    setActiveSession(sessionId)
+    setLocalMessages([])
+    setPendingAction(null)
+    toast.success('已创建新对话')
+  }
 
+  // 切换文档选择（多选）
   const toggleDocSelection = (docId: string) => {
-    setSelectedDocs((prev) =>
-      prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]
+    setSelectedDocIds(prev => 
+      prev.includes(docId) 
+        ? prev.filter(id => id !== docId)
+        : [...prev, docId]
     )
   }
 
-  const getActiveDoc = () => {
-    if (selectedDocs.length > 0) {
-      return documents.find(d => d.id === selectedDocs[0])
-    }
-    if (selectedTemplate) {
-      return documents.find(d => d.id === selectedTemplate)
-    }
-    return null
+  // 选择模板
+  const handleTemplateSelect = (docId: string) => {
+    setSelectedTemplateId(selectedTemplateId === docId ? null : docId)
+    setShowTemplateDropdown(false)
   }
 
-  const handleSend = async () => {
-    if (!inputValue.trim()) {
+  // 发送消息
+  const handleSend = async (actionConfirmed = false, actionId?: string) => {
+    if (!inputValue.trim() && !actionConfirmed) {
       toast.error('请输入指令')
       return
     }
 
-    const activeDocId = selectedDocs[0] || selectedTemplate
-    if (!activeDocId) {
-      toast.error('请选择一个文档或模板')
-      return
+
+    const userMessage = inputValue || '确认执行'
+    
+    // 如果没有活跃会话，创建一个
+    let currentSessionId = activeSessionId
+    const isNewSession = !currentSessionId
+    if (!currentSessionId) {
+      const firstDoc = documents.find(d => d.id === selectedDocIds[0] || d.id === selectedTemplateId)
+      const docCount = selectedDocIds.length + (selectedTemplateId ? 1 : 0)
+      const sessionName = docCount === 0
+        ? '通用对话'
+        : docCount === 1
+          ? firstDoc?.original_filename || '新对话'
+          : `${firstDoc?.original_filename || '文档'}等${docCount}个文件`
+      currentSessionId = await createSession(selectedDocIds[0] || selectedTemplateId || null, sessionName, selectedDocIds, selectedTemplateId)
+    } else {
+      // 更新会话的文件选择
+      await updateSessionFiles(currentSessionId, selectedDocIds, selectedTemplateId)
     }
 
-    const userMessage: Message = { role: 'user', content: inputValue }
-    setMessages((prev) => [...prev, userMessage])
+    // 判断是否是第一条消息（新会话 or 旧会话但没有消息）
+    const isFirstMessage = isNewSession || (localMessages.length === 0)
+
+    // 添加用户消息
+    const userMsg: Message = {
+      role: 'user',
+      content: userMessage,
+      timestamp: Date.now()
+    }
+    setLocalMessages(prev => [...prev, userMsg])
     setInputValue('')
     setIsLoading(true)
 
+    // 如果是第一条消息，用轻量接口生成标题
+    if (isFirstMessage) {
+      api.post('/agent/generate-title', { message: userMessage })
+        .then(async (res) => {
+          const newTitle = res.data.title || '通用对话'
+          await api.put(`/conversations/${currentSessionId}`, { title: newTitle })
+          useChatStore.getState().loadSessions()
+        })
+        .catch(e => console.error('Failed to generate title:', e))
+    }
+
     try {
-      const response = await api.post('/documents/operate', {
-        file_id: activeDocId,
-        instruction: inputValue,
+      const response = await api.post('/agent/chat', {
+        message: userMessage,
+        file_ids: selectedDocIds,
+        template_id: selectedTemplateId,
+        conversation_history: localMessages.map(m => ({ role: m.role, content: m.content })),
+        action_confirmed: actionConfirmed,
+        action_id: actionId
       })
 
-      const result = response.data.result
-      const assistantMessage: Message = {
+      const { message, action } = response.data
+
+      // 添加AI回复
+      const aiMsg: Message = {
         role: 'assistant',
-        content: result?.result || result?.message || '操作完成',
+        content: message,
+        action: action,
+        timestamp: Date.now()
       }
-      setMessages((prev) => [...prev, assistantMessage])
+      setLocalMessages(prev => [...prev, aiMsg])
+
+      // 保存消息到数据库
+      await addMessage(currentSessionId, { role: 'user', content: userMessage })
+      await addMessage(currentSessionId, { role: 'assistant', content: message, action_data: action })
+
+      // 如果需要确认，保存待执行操作
+      if (action && (action.action_type === 'confirm_extract' || action.action_type === 'confirm_fill')) {
+        setPendingAction(action)
+      } else {
+        setPendingAction(null)
+      }
     } catch (error) {
-      toast.error('操作失败')
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: '抱歉，操作执行失败，请重试。' },
-      ])
+      toast.error('请求失败')
+      setLocalMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '抱歉，发生了错误，请重试。',
+        timestamp: Date.now()
+      }])
     } finally {
       setIsLoading(false)
     }
   }
 
-  const activeDoc = getActiveDoc()
+  // 确认执行操作
+  const handleConfirmAction = async () => {
+    if (!pendingAction) return
+    
+    // 更新最后一条AI消息的状态为执行中
+    setLocalMessages(prev => {
+      const newMessages = [...prev]
+      const lastAiIndex = newMessages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
+      if (lastAiIndex !== undefined) {
+        newMessages[lastAiIndex] = {
+          ...newMessages[lastAiIndex],
+          action: {
+            ...pendingAction,
+            action_type: 'executing',
+            progress: 0
+          }
+        }
+      }
+      return newMessages
+    })
+    
+    setPendingAction(null)
+    setIsLoading(true)
+
+    try {
+      const response = await api.post('/agent/chat', {
+        message: '',
+        file_ids: selectedDocIds,
+        template_id: selectedTemplateId,
+        conversation_history: [],
+        action_confirmed: true,
+        action_id: pendingAction.action_id
+      })
+
+      const { message, action } = response.data
+      
+      // 更新最后一条AI消息
+      setLocalMessages(prev => {
+        const newMessages = [...prev]
+        const lastAiIndex = newMessages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
+        if (lastAiIndex !== undefined) {
+          newMessages[lastAiIndex] = {
+            ...newMessages[lastAiIndex],
+            content: message,
+            action: action
+          }
+        }
+        return newMessages
+      })
+
+      // 保存消息到数据库
+      if (activeSessionId) {
+        await addMessage(activeSessionId, { role: 'assistant', content: message, action_data: action })
+      }
+    } catch (error) {
+      toast.error('执行失败')
+      setLocalMessages(prev => {
+        const newMessages = [...prev]
+        const lastAiIndex = newMessages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
+        if (lastAiIndex !== undefined) {
+          newMessages[lastAiIndex] = {
+            ...newMessages[lastAiIndex],
+            content: '执行失败，请重试。',
+            action: {
+              ...pendingAction,
+              action_type: 'failed',
+              title: '执行失败',
+              description: '请重试'
+            }
+          }
+        }
+        return newMessages
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // 取消操作
+  const handleCancelAction = () => {
+    setPendingAction(null)
+    setLocalMessages(prev => {
+      const newMessages = [...prev]
+      const lastAiIndex = newMessages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
+      if (lastAiIndex !== undefined) {
+        newMessages[lastAiIndex] = {
+          ...newMessages[lastAiIndex],
+          content: '已取消操作。如果您需要其他帮助，请告诉我。',
+          action: undefined
+        }
+      }
+      return newMessages
+    })
+  }
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  // 恢复历史对话
+  const handleRestoreSession = async (sessionId: string) => {
+    setShowHistory(false)
+    setPendingAction(null)
+    
+    // 先设置活跃会话
+    setActiveSession(sessionId)
+    
+    // 等待消息加载完成
+    const { sessions } = useChatStore.getState()
+    const session = sessions.find(s => s.id === sessionId)
+    
+    if (session) {
+      // 恢复该会话的文档和模板选择
+      if (session.fileIds && session.fileIds.length > 0) {
+        setSelectedDocIds([...session.fileIds])
+      } else {
+        setSelectedDocIds([])
+      }
+      
+      if (session.templateId) {
+        setSelectedTemplateId(session.templateId)
+      } else {
+        setSelectedTemplateId(null)
+      }
+      
+      // 更新本地消息显示
+      setLocalMessages(session.messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        action: m.action_data,
+        timestamp: m.timestamp
+      })))
+    }
+  }
+
+  // 获取选中数量提示
+  const getSelectionHint = () => {
+    const docCount = selectedDocIds.length
+    const templateCount = selectedTemplateId ? 1 : 0
+    const total = docCount + templateCount
+
+    if (total === 0) return '可随时开始对话，选择文档可进行文档操作'
+
+    const parts = []
+    if (docCount > 0) parts.push(`${docCount}个文档`)
+    if (templateCount > 0) parts.push(`1个模板`)
+
+    return `已选 ${parts.join(' + ')}`
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-200px)]">
-      <div className="lg:col-span-1 space-y-4">
-        {/* 源文档区域 */}
-        <div className="glass p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium text-slate-400 flex items-center gap-2">
-              <FileText className="w-4 h-4 text-blue-400" />
-              源文档
-            </h3>
-            <span className="text-xs text-slate-500">{sourceDocs.length} 个</span>
-          </div>
-          
-          <div
-            {...getSourceRootProps()}
-            className={`upload-zone mb-3 ${isSourceDragActive ? 'upload-zone-active' : ''}`}
-          >
-            <input {...getSourceInputProps()} />
-            <div className="flex items-center justify-center gap-2">
-              <Plus className="w-4 h-4 text-slate-400" />
-              <span className="text-slate-400 text-sm">添加源文档</span>
-            </div>
-          </div>
-
-          <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-thin">
-            {sourceDocs.map((doc) => (
-              <div
-                key={doc.id}
-                className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all
-                  ${selectedDocs.includes(doc.id)
-                    ? 'bg-blue-500/20 border border-blue-500/30'
-                    : 'bg-white/5 hover:bg-white/10 border border-transparent'
-                  }`}
-                onClick={() => toggleDocSelection(doc.id)}
+    <div className="glass flex flex-col h-[calc(100vh-200px)]">
+      {/* 顶部操作栏 */}
+      <div className="p-4 border-b border-white/10">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-4">
+            {/* 源文档下拉 */}
+            <div className="relative min-w-[240px]" ref={docDropdownRef}>
+              <button
+                onClick={() => {
+                  setShowDocDropdown(!showDocDropdown)
+                  setShowTemplateDropdown(false)
+                }}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl
+                          hover:bg-white/10 transition-colors"
               >
-                <input
-                  type="checkbox"
-                  checked={selectedDocs.includes(doc.id)}
-                  onChange={() => toggleDocSelection(doc.id)}
-                  className="w-4 h-4 rounded border-white/20 bg-white/10 text-blue-500"
-                />
                 <FileText className="w-4 h-4 text-blue-400" />
-                <span className="text-sm text-white truncate flex-1">{doc.original_filename}</span>
-              </div>
-            ))}
-            {sourceDocs.length === 0 && (
-              <p className="text-xs text-slate-500 text-center py-2">暂无源文档</p>
-            )}
-          </div>
-        </div>
-
-        {/* 模板区域 */}
-        <div className="glass p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium text-slate-400 flex items-center gap-2">
-              <Table className="w-4 h-4 text-green-400" />
-              模板文件
-            </h3>
-            <span className="text-xs text-slate-500">{templateDocs.length} 个</span>
-          </div>
-
-          <div
-            {...getTemplateRootProps()}
-            className={`upload-zone mb-3 ${isTemplateDragActive ? 'upload-zone-active' : ''}`}
-          >
-            <input {...getTemplateInputProps()} />
-            <div className="flex items-center justify-center gap-2">
-              <Plus className="w-4 h-4 text-slate-400" />
-              <span className="text-slate-400 text-sm">添加模板</span>
+                <span className="text-sm text-white truncate flex-1 text-left">
+                  {selectedDocIds.length > 0 
+                    ? `已选 ${selectedDocIds.length} 个源文档` 
+                    : '选择源文档（可多选）'}
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showDocDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              
+              {showDocDropdown && (
+                <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
+                  {sourceDocs.length > 0 ? (
+                    sourceDocs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        onClick={() => toggleDocSelection(doc.id)}
+                        className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}
+                      >
+                        <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0
+                          ${selectedDocIds.includes(doc.id) 
+                            ? 'bg-primary-500 border-primary-500' 
+                            : 'border-white/30'}`}
+                        >
+                          {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate">{doc.original_filename}</p>
+                          <p className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">
+                      暂无源文档
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
 
-          <div className="space-y-2 max-h-40 overflow-y-auto scrollbar-thin">
-            {templateDocs.map((doc) => (
-              <div
-                key={doc.id}
-                className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all
-                  ${selectedTemplate === doc.id
-                    ? 'bg-green-500/20 border border-green-500/30'
-                    : 'bg-white/5 hover:bg-white/10 border border-transparent'
-                  }`}
-                onClick={() => setSelectedTemplate(selectedTemplate === doc.id ? null : doc.id)}
+            {/* 模板下拉 */}
+            <div className="relative min-w-[200px]" ref={templateDropdownRef}>
+              <button
+                onClick={() => {
+                  setShowTemplateDropdown(!showTemplateDropdown)
+                  setShowDocDropdown(false)
+                }}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl
+                          hover:bg-white/10 transition-colors"
               >
                 <Table className="w-4 h-4 text-green-400" />
-                <span className="text-sm text-white truncate flex-1">{doc.original_filename}</span>
-                {selectedTemplate === doc.id && (
-                  <CheckCircle className="w-4 h-4 text-green-400" />
-                )}
-              </div>
-            ))}
-            {templateDocs.length === 0 && (
-              <p className="text-xs text-slate-500 text-center py-2">暂无模板</p>
-            )}
+                <span className="text-sm text-white truncate flex-1 text-left">
+                  {templateDocs.find(d => d.id === selectedTemplateId)?.original_filename || '选择模板（可选）'}
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              
+              {showTemplateDropdown && (
+                <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
+                  {templateDocs.length > 0 ? (
+                    templateDocs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        onClick={() => handleTemplateSelect(doc.id)}
+                        className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}
+                      >
+                        <Table className="w-4 h-4 text-green-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate">{doc.original_filename}</p>
+                          <p className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</p>
+                        </div>
+                        {selectedTemplateId === doc.id && (
+                          <Check className="w-4 h-4 text-green-400 shrink-0" />
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">
+                      暂无模板
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className={`p-2 rounded-lg transition-colors ${showHistory ? 'bg-primary-500/20 text-primary-400' : 'hover:bg-white/10 text-slate-400'}`}
+              title="历史记录"
+            >
+              <History className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleNewChat}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30"
+            >
+              <Plus className="w-3 h-3" />
+              新建对话
+            </button>
           </div>
         </div>
-
-        {/* 已选择提示 */}
-        <div className="glass p-3">
-          <p className="text-xs text-slate-400">
-            已选择: {selectedDocs.length} 个源文档
-            {selectedTemplate && ', 1 个模板'}
-          </p>
-        </div>
+        
+        <p className="text-xs text-slate-400">{getSelectionHint()}</p>
       </div>
 
-      <div className="lg:col-span-2 glass flex flex-col">
-        <div className="p-4 border-b border-white/10">
-          <h3 className="font-medium text-white">
-            {activeDoc ? `当前操作: ${activeDoc.original_filename}` : '请选择一个文档开始操作'}
-          </h3>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
-          {messages.length === 0 && (
-            <div className="text-center py-20">
-              <FileText className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-              <p className="text-slate-400">请输入自然语言指令来操作文档</p>
-              <p className="text-sm text-slate-500 mt-2">
-                例如："提取文档中的所有表格数据"、"将文档转换为Markdown格式"
-              </p>
+      {/* 历史记录面板 */}
+      {showHistory && (
+        <div className="p-4 border-b border-white/10 bg-white/5 max-h-48 overflow-y-auto scrollbar-thin">
+          <h4 className="text-sm font-medium text-slate-400 mb-3">对话历史</h4>
+          {sessions.length > 0 ? (
+            <div className="space-y-2">
+              {sessions.map((session) => (
+                <div
+                  key={session.id}
+                  className={`flex items-center justify-between p-2 rounded-lg cursor-pointer
+                    ${session.id === activeSessionId 
+                      ? 'bg-primary-500/20 border border-primary-500/30' 
+                      : 'bg-white/5 hover:bg-white/10'}`}
+                  onClick={() => handleRestoreSession(session.id)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-primary-400 truncate mb-1">
+                      {session.documentName || '通用对话'}
+                    </p>
+                    <p className="text-sm text-white truncate">
+                      {session.lastMessage?.slice(0, 30) || session.messages[0]?.content.slice(0, 30) || '空对话'}...
+                    </p>
+                    <p className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                      <Clock className="w-3 h-3" />
+                      {new Date(session.updatedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteSession(session.id)
+                    }}
+                    className="p-1 rounded hover:bg-red-500/20 text-slate-500 hover:text-red-400"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
             </div>
+          ) : (
+            <p className="text-sm text-slate-500 text-center">暂无对话历史</p>
           )}
-          {messages.map((message, index) => (
+        </div>
+      )}
+
+      {/* 消息区域 */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+        {localMessages.length === 0 && (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center">
+              <FileText className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+              <p className="text-slate-400">我是您的智能文档助手</p>
+              <p className="text-sm text-slate-500 mt-2">
+                您可以问我任何关于文档的问题，或者让我帮您提取信息、填写表格
+              </p>
+              <div className="mt-4 space-y-2 text-left max-w-md mx-auto">
+                <p className="text-xs text-slate-500">示例指令：</p>
+                <p className="text-xs text-slate-400">• "这些文档的主要内容是什么？"</p>
+                <p className="text-xs text-slate-400">• "帮我提取文档中的关键信息"</p>
+                <p className="text-xs text-slate-400">• "用文档数据填写模板"</p>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {localMessages.map((message, index) => (
+          <div key={index}>
             <div
-              key={index}
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
@@ -258,39 +595,53 @@ export default function DocumentOperation() {
                 {message.content}
               </div>
             </div>
-          ))}
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="bg-white/5 p-4 rounded-2xl">
-                <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
+            
+            {/* 操作卡片 */}
+            {message.role === 'assistant' && message.action && (
+              <div className="ml-0 max-w-[80%]">
+                <ActionCard
+                  action={message.action}
+                  onConfirm={handleConfirmAction}
+                  onCancel={handleCancelAction}
+                />
               </div>
-            </div>
-          )}
-        </div>
-
-        <div className="p-4 border-t border-white/10">
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="输入自然语言指令..."
-              className="input flex-1"
-              disabled={isLoading || !activeDoc}
-            />
-            <button
-              onClick={handleSend}
-              disabled={isLoading || !activeDoc || !inputValue.trim()}
-              className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Send className="w-5 h-5" />
-              )}
-            </button>
+            )}
           </div>
+        ))}
+        
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-white/5 p-4 rounded-2xl">
+              <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* 输入区域 */}
+      <div className="p-4 border-t border-white/10">
+        <div className="flex gap-3">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder={pendingAction ? '操作待确认，请点击上方卡片确认' : '输入您的问题或指令...'}
+            className="input flex-1"
+            disabled={isLoading}
+          />
+          <button
+            onClick={() => handleSend()}
+            disabled={isLoading || (!inputValue.trim() && !pendingAction)}
+            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Send className="w-5 h-5" />
+            )}
+          </button>
         </div>
       </div>
     </div>

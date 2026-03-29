@@ -10,6 +10,14 @@ export interface DocumentInfo {
   file_size?: number
   status: string
   created_at: string
+  extraction_status?: {
+    task_id: string
+    status: 'processing' | 'completed' | 'failed'
+    progress: string
+    current_step: string
+    error?: string
+    entities_count: number
+  } | null
 }
 
 interface DocumentStore {

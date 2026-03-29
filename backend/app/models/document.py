@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text
+from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.postgres import Base
 
@@ -12,7 +12,7 @@ class Document(Base):
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_type = Column(String(20), nullable=False)  # docx, xlsx, md, txt
-    doc_category = Column(String(20), default="source")  # source, template
+    doc_category = Column(String(20), default="source")  # source, template, output
     file_size = Column(BigInteger)
     file_path = Column(String(500))
     status = Column(String(20), default="pending")
@@ -50,13 +50,25 @@ class TableFillTask(Base):
     completed_at = Column(DateTime)
 
 
-class Entity(Base):
-    __tablename__ = "entities"
+class Conversation(Base):
+    """对话会话表"""
+    __tablename__ = "conversations"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id = Column(UUID(as_uuid=True))
-    entity_type = Column(String(50), nullable=False)
-    entity_name = Column(String(500), nullable=False)
-    entity_value = Column(Text)
-    context = Column(Text)
+    id = Column(String(50), primary_key=True)  # chat-xxx 格式
+    title = Column(String(255), default="新对话")
+    file_ids = Column(JSON, default=[])  # 选中的文档ID列表
+    template_id = Column(String(50), nullable=True)  # 选中的模板ID
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Message(Base):
+    """对话消息表"""
+    __tablename__ = "messages"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(50), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # user, assistant
+    content = Column(Text, nullable=False)
+    action_data = Column(JSON, nullable=True)  # 操作卡片数据
     created_at = Column(DateTime, default=datetime.utcnow)

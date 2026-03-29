@@ -1,8 +1,10 @@
 import json
 import httpx
+import logging
 from typing import List, Dict, Any, Optional
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -40,24 +42,31 @@ class LLMService:
     
     async def extract_entities(self, text: str, entity_types: List[str] = None) -> List[Dict[str, Any]]:
         # MiMo-V2-Flash 支持 256K 上下文，可以处理更长的文本
-        prompt = f"""请从以下文本中提取实体信息。返回JSON格式的实体列表。
+        prompt = f"""请从以下文本中提取所有实体信息，不要遗漏任何实体。
 
 文本内容：
 {text[:80000]}
 
-请提取以下类型的实体（如未指定则提取所有）：
-- 人名 (PERSON)
-- 地名 (LOCATION) 
-- 机构名 (ORGANIZATION)
-- 日期 (DATE)
-- 数值 (NUMBER)
-- 其他关键实体
+请提取以下类型的实体（尽可能提取所有实体，包括隐含的信息）：
+1. 人名 (PERSON) - 包括姓氏、全名、职务、简称等
+2. 地名 (LOCATION) - 包括国家、省、市、县、街道、地址等
+3. 机构名 (ORGANIZATION) - 包括公司、政府机构、学校、部门等
+4. 日期 (DATE) - 包括年、月、日、时间段、节假日等
+5. 数值 (NUMBER) - 包括金额、数量、百分比、排名、比例等
+6. 其他关键实体 - 包括事件、项目、政策、产品、技术等
+
+要求：
+- 尽可能提取所有实体，包括隐含的信息
+- 即使不确定也要提取，宁可多提不可漏提
+- 每个实体都要包含上下文信息（出现的句子）
+- 数值实体要保留原始格式，不要进行单位转换
+- 同一实体在不同位置出现可以重复提取
 
 返回格式：
 ```json
 [
     {{
-        "entity_type": "实体类型",
+        "entity_type": "实体类型（PERSON/LOCATION/ORGANIZATION/DATE/NUMBER/OTHER）",
         "entity_name": "实体名称",
         "entity_value": "实体值或上下文",
         "context": "出现的句子"
@@ -77,7 +86,11 @@ class LLMService:
             elif "```" in json_str:
                 json_str = json_str.split("```")[1].strip()
             return json.loads(json_str)
-        except:
+        except json.JSONDecodeError as e:
+            logger.error(f"实体提取JSON解析失败: response={response[:200]}, error={e}")
+            return []
+        except Exception as e:
+            logger.error(f"实体提取异常: error={e}")
             return []
     
     async def extract_table_data(
@@ -155,8 +168,12 @@ class LLMService:
             elif "```" in json_str:
                 json_str = json_str.split("```")[1].strip()
             return json.loads(json_str)
-        except:
-            return {"operation_type": "query", "result": response, "success": True, "message": "已处理"}
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON解析失败: response={response[:200]}, error={e}")
+            return {"operation_type": "query", "result": response, "success": False, "message": "响应解析失败"}
+        except Exception as e:
+            logger.error(f"响应处理异常: error={e}")
+            return {"operation_type": "query", "result": response, "success": False, "message": "响应处理异常"}
     
     async def analyze_relationships(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # MiMo-V2-Flash 支持 256K 上下文，可以处理更多实体
@@ -191,7 +208,11 @@ class LLMService:
             elif "```" in json_str:
                 json_str = json_str.split("```")[1].strip()
             return json.loads(json_str)
-        except:
+        except json.JSONDecodeError as e:
+            logger.error(f"关系分析JSON解析失败: response={response[:200]}, error={e}")
+            return []
+        except Exception as e:
+            logger.error(f"关系分析异常: error={e}")
             return []
 
 

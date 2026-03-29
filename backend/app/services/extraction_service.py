@@ -268,11 +268,15 @@ class ExtractionService:
             table_entities = self._extract_table_entities(tables)
             all_entities.extend(table_entities)
         
-        # 去重
+        # 去重 - 使用 (entity_type, entity_name, entity_value) 作为去重key
         unique_entities = []
         seen = set()
         for entity in all_entities:
-            key = (entity.get("entity_type"), entity.get("entity_name"))
+            key = (
+                entity.get("entity_type"),
+                entity.get("entity_name"),
+                entity.get("entity_value", "")
+            )
             if key not in seen:
                 seen.add(key)
                 unique_entities.append(entity)

@@ -26,14 +26,4 @@ class DocumentResponse(DocumentBase):
         from_attributes = True
 
 
-class DocumentOperateRequest(BaseModel):
-    file_id: UUID
-    instruction: str
-    output_format: Optional[str] = None
 
-
-class DocumentOperateResponse(BaseModel):
-    task_id: UUID
-    status: str
-    result: Optional[Dict[str, Any]] = None
-    message: Optional[str] = None

@@ -5,13 +5,14 @@ import { Search, RefreshCw, Loader2, Network as NetworkIcon, List, Send, FileTex
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore } from '../stores/documentStore'
+import Dropdown from '../components/ui/Dropdown'
 
 interface Node {
   id: string
   name: string
   type: string
   value?: string
-  document_id?: string
+  document_ids?: string[]
 }
 
 interface Edge {
@@ -163,7 +164,8 @@ export default function KnowledgeGraph() {
   // 过滤节点并去重
   const filteredNodes = (() => {
     const filtered = allNodes.filter(node => {
-      const matchDoc = selectedDocs.length === 0 || selectedDocs.includes(node.document_id || '')
+      const matchDoc = selectedDocs.length === 0 || 
+        (node.document_ids && node.document_ids.some(id => selectedDocs.includes(id)))
       const matchType = entityTypeFilter === 'all' || node.type === entityTypeFilter
       return matchDoc && matchType
     })
@@ -272,16 +274,15 @@ export default function KnowledgeGraph() {
               <Filter className="w-4 h-4" />
               实体类型
             </h3>
-            <select
+            <Dropdown
               value={entityTypeFilter}
-              onChange={(e) => setEntityTypeFilter(e.target.value)}
-              className="input w-full"
-            >
-              <option value="all">全部类型</option>
-              {entityTypes.map(type => (
-                <option key={type} value={type}>{type}</option>
-              ))}
-            </select>
+              onChange={setEntityTypeFilter}
+              options={[
+                { value: 'all', label: '全部类型' },
+                ...entityTypes.map(type => ({ value: type, label: type }))
+              ]}
+              placeholder="选择实体类型"
+            />
           </div>
 
           {/* 统计信息 */}
