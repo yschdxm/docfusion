@@ -85,12 +85,12 @@ cp .env.example .env
 `.env` 文件配置示例：
 
 ```env
-# MiMO API 配置（模力方舟）
+# MiMO API 配置
 MIMO_API_KEY=your_mimo_api_key_here
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2-flash
 
-# Gitee AI API 配置（用于嵌入和重排模型）
+# Gitee AI API 配置
 GITEE_AI_API_KEY=your_gitee_ai_key_here
 GITEE_AI_BASE_URL=https://ai.gitee.com/v1
 EMBEDDING_MODEL=bge-m3
@@ -98,14 +98,14 @@ RERANK_MODEL=bge-reranker-v2-m3
 
 # 应用配置
 DEBUG=true
-SECRET_KEY=docfusion-secret-key-2024
+SECRET_KEY=your_secret_key_here
 
 # 数据库配置
 POSTGRES_URL=postgresql://docfusion:docfusion123@localhost:5432/docfusion
 MONGODB_URL=mongodb://localhost:27017/docfusion
 NEO4J_URL=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=neo4j123
+NEO4J_PASSWORD=your_neo4j_password
 REDIS_URL=redis://localhost:6379/0
 
 # Celery 配置
@@ -115,7 +115,7 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/2
 
 **注意**：`.env` 文件包含敏感信息，不要提交到版本控制系统。
 
-### Docker 完整部署（生产环境）
+### Docker 完整部署（生产环境，尚未验证）
 
 生产环境下，使用 Docker secrets 管理敏感信息，确保安全性。
 
@@ -140,7 +140,7 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/2
    ```
 
 2. **编辑 `.env` 文件**，填入真实的 API key：
-   - `MIMO_API_KEY` - 模力方舟 API 密钥
+   - `MIMO_API_KEY` - MIMO API 密钥
    - `GITEE_AI_API_KEY` - Gitee AI API 密钥
 
 ### 方式一：开发环境启动（推荐）
@@ -174,7 +174,7 @@ npm install
 npm run dev
 ```
 
-### 方式二：完整 Docker 部署（生产环境）
+### 方式二：完整 Docker 部署（生产环境，尚未验证）
 
 使用 Docker secrets 管理敏感信息，确保安全性。
 
@@ -245,26 +245,3 @@ npm run lint
 启动后端服务后，可以通过以下地址访问 API 文档：
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
-
-## 贡献指南
-
-1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
-
-## 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情
-
-## 联系方式
-
-如有问题或建议，请通过以下方式联系：
-- 项目 Issues 页面
-- 电子邮件
-
-## 致谢
-
-- MiMO v2 Flash 模型提供方
-- 所有开源项目依赖
