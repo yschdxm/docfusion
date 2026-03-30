@@ -10,6 +10,7 @@ services:
     volumes:
       - uploads:/app/uploads
     environment:
+      # 数据库配置（使用默认值，可在 secrets 中覆盖）
       - POSTGRES_URL=postgresql://docfusion:docfusion123@postgres:5432/docfusion
       - MONGODB_URL=mongodb://mongo:27017/docfusion
       - NEO4J_URL=bolt://neo4j:7687
@@ -18,10 +19,18 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - MIMO_API_KEY=sk-cnp5q8ys4bj0xmked6o0913fyq6jzjt1cs5o5ucxik57a49q
+      # API 配置（使用 secrets 文件路径）
+      - MIMO_API_KEY_FILE=/run/secrets/mimo_api_key
+      - GITEE_AI_API_KEY_FILE=/run/secrets/gitee_ai_key
       - MIMO_BASE_URL=https://api.xiaomimimo.com/v1
       - MIMO_MODEL=mimo-v2-flash
+      - GITEE_AI_BASE_URL=https://ai.gitee.com/v1
+      - EMBEDDING_MODEL=bge-m3
+      - RERANK_MODEL=bge-reranker-v2-m3
       - DEBUG=true
+    secrets:
+      - mimo_api_key
+      - gitee_ai_key
     depends_on:
       - postgres
       - mongo
@@ -91,6 +100,12 @@ volumes:
   mongo_data:
   neo4j_data:
   redis_data:
+
+secrets:
+  mimo_api_key:
+    external: true
+  gitee_ai_key:
+    external: true
 
 networks:
   docfusion-net:
