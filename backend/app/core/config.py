@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     NEO4J_USER: Optional[str] = None
     NEO4J_PASSWORD: Optional[str] = None
     REDIS_URL: Optional[str] = None
+    QDRANT_URL: Optional[str] = None
 
     # MiMO API
     MIMO_API_KEY: Optional[str] = None
@@ -64,6 +65,7 @@ class Settings(BaseSettings):
             "NEO4J_USER": "Neo4j 用户名",
             "NEO4J_PASSWORD": "Neo4j 密码",
             "REDIS_URL": "Redis 连接",
+            "QDRANT_URL": "Qdrant 向量数据库连接",
             "MIMO_API_KEY": "MiMO 模型 API 密钥",
             "GITEE_AI_API_KEY": "Gitee AI API 密钥（用于嵌入和重排模型）",
             "CELERY_BROKER_URL": "Celery 消息队列",
