@@ -13,7 +13,7 @@ from app.models.document import Document, ExtractionTask
 from app.schemas.document import DocumentResponse
 from app.services.knowledge_graph_service import knowledge_graph_service
 from app.services.extraction_service import extraction_service
-from app.db.mongodb import get_collection
+from app.services.rag_service import rag_service
 from app.db.neo4j_db import run_cypher
 
 settings = get_settings()
@@ -112,8 +112,6 @@ async def _do_extraction(
         
         await update_progress("正在保存结果...", "90%")
         
-        await extraction_service.save_to_mongodb(doc_id, extraction_result)
-        
         try:
             await knowledge_graph_service.build_graph_from_entities(
                 str(doc_id),
@@ -121,6 +119,24 @@ async def _do_extraction(
             )
         except Exception as kg_error:
             print(f"Knowledge graph build error: {kg_error}")
+        
+        # 向量化文档
+        try:
+            parsed_data = extraction_result.get("parsed_data", {})
+            full_text = parsed_data.get("full_text", "")
+            if full_text:
+                print(f"[DEBUG] 正在向量化文档 {doc_id}，文本长度: {len(full_text)}")
+                await rag_service.add_document(
+                    doc_id=str(doc_id),
+                    content=full_text,
+                    metadata={
+                        "filename": original_filename,
+                        "file_type": file_type
+                    }
+                )
+                print(f"[DEBUG] 文档 {doc_id} 向量化完成")
+        except Exception as vector_error:
+            print(f"[ERROR] Vector store error for {doc_id}: {vector_error}")
         
         await db.commit()
         
@@ -372,12 +388,13 @@ async def delete_document(
         except Exception as e:
             print(f"Neo4j delete error: {e}")
         
+        # 删除Qdrant中的向量
         try:
-            collection = get_collection("extractions")
-            if collection:
-                await collection.delete_one({"document_id": doc_id_str})
+            from app.services.vector_store_service import vector_store_service
+            await vector_store_service.delete_document(doc_id_str)
+            print(f"已删除文档 {doc_id_str} 的向量")
         except Exception as e:
-            print(f"MongoDB delete error: {e}")
+            print(f"Vector store delete error: {e}")
         
         if doc.file_path and os.path.exists(doc.file_path):
             os.remove(doc.file_path)

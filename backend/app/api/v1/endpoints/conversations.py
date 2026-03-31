@@ -220,3 +220,30 @@ async def add_message(
     await db.commit()
     
     return {"message": "Message added", "id": msg.id}
+
+
+@router.put("/{conversation_id}/messages/{message_id}")
+async def update_message(
+    conversation_id: str,
+    message_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """更新消息"""
+    result = await db.execute(
+        select(Message).where(
+            Message.id == message_id,
+            Message.conversation_id == conversation_id
+        )
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    msg.content = data.content
+    if data.action_data is not None:
+        msg.action_data = data.action_data
+    
+    await db.commit()
+    
+    return {"message": "Message updated"}

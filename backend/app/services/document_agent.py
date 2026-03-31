@@ -58,21 +58,29 @@ class DocumentAgent:
             if not template_content:
                 return {"success": False, "message": "缺少模板文件。"}
             
-            source_files = [{"file_type": d["file_type"], "file_path": d.get("file_path", "")} for d in documents_content]
             template_file = {"file_type": template_content["file_type"], "file_path": template_content.get("file_path", "")}
             
-            if template_content["file_type"] == "xlsx":
-                fill_result = await table_filling_service.fill_table(
-                    source_files=source_files,
+            # 如果没有选择文档，使用RAG自动选择
+            if not documents_content:
+                fill_result = await table_filling_service.auto_fill_table(
                     template_file=template_file,
                     user_instruction=instruction
                 )
             else:
-                fill_result = await table_filling_service.fill_word_template(
-                    source_files=source_files,
-                    template_file=template_file,
-                    user_instruction=instruction
-                )
+                source_files = [{"file_type": d["file_type"], "file_path": d.get("file_path", "")} for d in documents_content]
+                
+                if template_content["file_type"] == "xlsx":
+                    fill_result = await table_filling_service.fill_table(
+                        source_files=source_files,
+                        template_file=template_file,
+                        user_instruction=instruction
+                    )
+                else:
+                    fill_result = await table_filling_service.fill_word_template(
+                        source_files=source_files,
+                        template_file=template_file,
+                        user_instruction=instruction
+                    )
             
             return {
                 "success": True,
@@ -84,8 +92,10 @@ class DocumentAgent:
                     "description": f"已成功填写模板 {template_content.get('filename', '')}",
                     "progress": 100,
                     "result": {
+                        "output_path": fill_result.get("output_path", ""),
+                        "output_filename": fill_result.get("output_filename", ""),
                         "filled_file_url": f"/api/v1/table-fill/download-file/{fill_result.get('output_filename', '')}",
-                        "output_filename": fill_result.get("output_filename", "")
+                        "entities_used": fill_result.get("entities_used", 0)
                     }
                 }
             }

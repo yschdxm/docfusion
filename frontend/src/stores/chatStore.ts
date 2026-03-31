@@ -39,7 +39,10 @@ interface ChatStore {
   getSession: (sessionId: string) => ChatSession | undefined
   
   // 添加消息
-  addMessage: (sessionId: string, message: Omit<Message, 'timestamp'>) => Promise<void>
+  addMessage: (sessionId: string, message: Omit<Message, 'timestamp'>) => Promise<number | null>
+  
+  // 更新消息
+  updateMessage: (sessionId: string, messageId: number, message: Omit<Message, 'timestamp'>) => Promise<void>
   
   // 设置活跃会话
   setActiveSession: (sessionId: string | null) => void
@@ -90,10 +93,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  loadSessionMessages: async (sessionId: string) => {
+  loadSessionMessages: async (sessionId: string, force: boolean = false) => {
     // 检查是否已经加载过消息
     const currentSession = get().sessions.find(s => s.id === sessionId)
-    if (currentSession && currentSession.messages.length > 0) {
+    if (!force && currentSession && currentSession.messages.length > 0) {
       // 消息已存在，跳过加载
       return
     }
@@ -102,12 +105,88 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const response = await api.get(`/conversations/${sessionId}`)
       const conv = response.data
 
-      const messages: Message[] = conv.messages.map((msg: any) => ({
+      let messages: Message[] = conv.messages.map((msg: any) => ({
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp || Date.now(),
         action_data: msg.action_data
       }))
+
+      // 检查是否有confirm_fill类型的消息，如果有，从任务API获取最新状态
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i]
+        if (msg.role === 'assistant' && msg.action_data?.action_type === 'confirm_fill') {
+          // 使用task_id查询任务状态
+          let taskId = msg.action_data?.task_id
+          
+          // 如果没有task_id，尝试从所有任务中查找最近的相关任务
+          if (!taskId) {
+            try {
+              const tasksResponse = await api.get('/table-fill/tasks?limit=10')
+              const tasks = tasksResponse.data
+              // 查找最近的processing或completed任务
+              const recentTask = tasks.find((t: any) => 
+                t.status === 'processing' || 
+                (t.status === 'completed' && t.result?.source === 'agent')
+              )
+              if (recentTask) {
+                taskId = recentTask.id
+              }
+            } catch (e) {
+              console.log('Failed to get tasks:', e)
+            }
+          }
+          
+          if (taskId) {
+            try {
+              const taskResponse = await api.get(`/table-fill/tasks/${taskId}`)
+              const task = taskResponse.data
+              
+              if (task.status === 'completed') {
+                const filledDocId = task.filled_doc_id || task.result?.filled_doc_id
+                messages[i] = {
+                  ...msg,
+                  content: '表格填写完成！您可以下载填写后的文件。',
+                  action_data: {
+                    action_type: 'completed',
+                    title: '表格填写完成',
+                    description: '已完成',
+                    progress: 100,
+                    result: {
+                      filled_file_id: filledDocId,
+                      filled_file_url: filledDocId ? `/api/v1/table-fill/download/${filledDocId}` : null
+                    }
+                  }
+                }
+              } else if (task.status === 'failed') {
+                messages[i] = {
+                  ...msg,
+                  content: `表格填写失败：${task.error || task.result?.error || '未知错误'}`,
+                  action_data: {
+                    action_type: 'failed',
+                    title: '表格填写失败',
+                    description: task.error || task.result?.error || '未知错误'
+                  }
+                }
+              } else if (task.status === 'processing') {
+                const progress = parseInt(task.result?.progress) || 0
+                const currentStep = task.result?.current_step || '处理中...'
+                messages[i] = {
+                  ...msg,
+                  action_data: {
+                    ...msg.action_data,
+                    action_type: 'executing',
+                    progress: progress,
+                    description: currentStep
+                  }
+                }
+              }
+            } catch (e) {
+              console.log('Task not found or error:', e)
+            }
+          }
+        }
+      }
 
       set(state => {
         // 查找并更新会话
@@ -199,15 +278,47 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       )
     }))
     
-    // 保存到数据库
+    // 保存到数据库并返回消息ID
     try {
-      await api.post(`/conversations/${sessionId}/messages`, {
+      const response = await api.post(`/conversations/${sessionId}/messages`, {
         role: message.role,
         content: message.content,
         action_data: message.action_data
       })
+      return response.data.id
     } catch (error) {
       console.error('Failed to save message:', error)
+      return null
+    }
+  },
+
+  updateMessage: async (sessionId, messageId, message) => {
+    // 更新本地状态
+    set(state => ({
+      sessions: state.sessions.map(s => 
+        s.id === sessionId 
+          ? { 
+              ...s, 
+              messages: s.messages.map(m => 
+                m.id === messageId 
+                  ? { ...m, content: message.content, action_data: message.action_data }
+                  : m
+              ), 
+              updatedAt: Date.now() 
+            }
+          : s
+      )
+    }))
+    
+    // 更新数据库
+    try {
+      await api.put(`/conversations/${sessionId}/messages/${messageId}`, {
+        role: message.role || 'assistant',
+        content: message.content,
+        action_data: message.action_data
+      })
+    } catch (error) {
+      console.error('Failed to update message:', error)
     }
   },
 

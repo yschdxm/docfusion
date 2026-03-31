@@ -289,10 +289,17 @@ async def get_task_status(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
+    # 从result中获取filled_doc_id
+    filled_doc_id = None
+    if task.result and isinstance(task.result, dict):
+        filled_doc_id = task.result.get("filled_doc_id")
+    
     return {
-        "task_id": task.id,
+        "task_id": str(task.id),
         "status": task.status,
         "result": task.result,
-        "created_at": task.created_at,
-        "completed_at": task.completed_at
+        "filled_doc_id": filled_doc_id,
+        "error": task.result.get("error") if task.result else None,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None
     }

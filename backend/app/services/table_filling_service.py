@@ -1,11 +1,14 @@
 from typing import List, Dict, Any, Optional
 from uuid import UUID, uuid4
 import os
+import logging
 from app.services.llm_service import llm_service
 from app.services.document_processor import DocxParser, XlsxParser
+from app.services.rag_service import rag_service
 from app.db.neo4j_db import run_cypher
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -223,6 +226,92 @@ class TableFillingService:
             "output_path": output_path,
             "output_filename": output_filename
         }
+    
+    async def auto_fill_table(
+        self,
+        template_file: Dict[str, str],
+        user_instruction: str = "",
+        max_docs: int = 5
+    ) -> Dict[str, Any]:
+        """
+        自动选择文档并填写表格
+        
+        使用RAG服务找到与模板最相关的文档，然后填写表格
+        """
+        logger.info(f"开始自动填写表格，模板: {template_file}")
+        
+        # 解析模板
+        template_parser = self.parsers.get(template_file.get("file_type"))
+        if not template_parser:
+            raise ValueError("Unsupported template file type")
+        
+        template_data = template_parser.parse(template_file.get("file_path"))
+        template_content = template_data.get("full_text", "")
+        
+        logger.info(f"模板内容长度: {len(template_content)}")
+        
+        # 使用RAG服务找到相关文档
+        logger.info("调用RAG服务查找相关文档...")
+        selected_doc_ids = await rag_service.auto_select_documents(
+            template_content=template_content,
+            template_structure=template_data,
+            max_docs=max_docs
+        )
+        
+        logger.info(f"RAG返回的文档ID: {selected_doc_ids}")
+        
+        if not selected_doc_ids:
+            raise ValueError("未找到相关文档，请手动选择源文档")
+        
+        # 获取文档内容
+        from app.db.postgres import engine
+        from app.models.document import Document
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        
+        AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+        source_files = []
+        
+        async with AsyncSessionLocal() as db:
+            for doc_id in selected_doc_ids:
+                try:
+                    # 验证UUID格式
+                    from uuid import UUID
+                    try:
+                        doc_uuid = UUID(doc_id)
+                    except ValueError:
+                        logger.warning(f"无效的文档ID格式: {doc_id}")
+                        continue
+                    
+                    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+                    doc = result.scalar_one_or_none()
+                    if doc and doc.file_path:
+                        source_files.append({
+                            "file_type": doc.file_type,
+                            "file_path": doc.file_path
+                        })
+                        logger.info(f"找到文档: {doc.original_filename}")
+                except Exception as e:
+                    logger.warning(f"获取文档 {doc_id} 失败: {e}")
+        
+        if not source_files:
+            raise ValueError("无法获取文档内容，请确保已上传源文档")
+        
+        logger.info(f"共找到 {len(source_files)} 个源文档")
+        
+        # 直接使用文档内容填写表格
+        if template_file.get("file_type") == "xlsx":
+            return await self.fill_table(
+                source_files=source_files,
+                template_file=template_file,
+                user_instruction=user_instruction or "根据模板结构填写数据"
+            )
+        else:
+            return await self.fill_word_template(
+                source_files=source_files,
+                template_file=template_file,
+                user_instruction=user_instruction or "根据模板结构填写数据"
+            )
 
 
 table_filling_service = TableFillingService()

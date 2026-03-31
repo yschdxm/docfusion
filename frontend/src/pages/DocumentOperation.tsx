@@ -23,6 +23,7 @@ export default function DocumentOperation() {
     deleteSession,
     updateSessionFiles,
     addMessage,
+    updateMessage,
     loadSessions,
     setMinimized
   } = useChatStore()
@@ -55,48 +56,69 @@ export default function DocumentOperation() {
   // 恢复会话时加载消息和选择状态
   useEffect(() => {
     if (activeSessionId) {
-      // 如果会话没有消息，从数据库加载
-      const session = sessions.find(s => s.id === activeSessionId)
-      if (session && session.messages.length === 0) {
-        // 从数据库加载消息
-        const { loadSessionMessages } = useChatStore.getState()
-        loadSessionMessages(activeSessionId).then(() => {
-          const updatedSession = useChatStore.getState().sessions.find(s => s.id === activeSessionId)
-          if (updatedSession) {
-            setLocalMessages(updatedSession.messages.map(m => ({
-              role: m.role,
-              content: m.content,
-              action: m.action_data,
-              timestamp: m.timestamp
-            })))
-            // 恢复文档和模板选择
-            if (updatedSession.fileIds && updatedSession.fileIds.length > 0) {
-              setSelectedDocIds([...updatedSession.fileIds])
-            }
-            if (updatedSession.templateId) {
-              setSelectedTemplateId(updatedSession.templateId)
-            }
+      // 始终强制重新加载消息，以便获取最新的任务状态
+      const { loadSessionMessages } = useChatStore.getState()
+      loadSessionMessages(activeSessionId, true).then(() => {
+        const updatedSession = useChatStore.getState().sessions.find(s => s.id === activeSessionId)
+        if (updatedSession) {
+          const loadedMessages = updatedSession.messages.map(m => ({
+            role: m.role,
+            content: m.content,
+            action: m.action_data,
+            timestamp: m.timestamp
+          }))
+          setLocalMessages(loadedMessages)
+          
+          // 恢复文档和模板选择
+          if (updatedSession.fileIds && updatedSession.fileIds.length > 0) {
+            setSelectedDocIds([...updatedSession.fileIds])
           }
-        })
-      } else if (session && session.messages.length > 0) {
-        setLocalMessages(session.messages.map(m => ({
+          if (updatedSession.templateId) {
+            setSelectedTemplateId(updatedSession.templateId)
+          }
+          
+          // 恢复pendingAction（如果是确认状态）
+          const lastAiMessage = loadedMessages.filter(m => m.role === 'assistant').pop()
+          if (lastAiMessage?.action && 
+              (lastAiMessage.action.action_type === 'confirm_fill' || 
+               lastAiMessage.action.action_type === 'confirm_extract')) {
+            setPendingAction(lastAiMessage.action)
+          } else {
+            setPendingAction(null)
+          }
+        }
+      })
+    } else {
+      setLocalMessages([])
+      setPendingAction(null)
+    }
+  }, [activeSessionId])
+
+  // 轮询检查任务状态
+  useEffect(() => {
+    const hasProcessingTask = localMessages.some(m => 
+      m.action?.action_type === 'executing' || 
+      m.action?.action_type === 'confirm_fill'
+    )
+    
+    if (!hasProcessingTask || !activeSessionId) return
+    
+    const pollInterval = setInterval(async () => {
+      const { loadSessionMessages } = useChatStore.getState()
+      await loadSessionMessages(activeSessionId, true)
+      const updatedSession = useChatStore.getState().sessions.find(s => s.id === activeSessionId)
+      if (updatedSession) {
+        setLocalMessages(updatedSession.messages.map(m => ({
           role: m.role,
           content: m.content,
           action: m.action_data,
           timestamp: m.timestamp
         })))
-        // 恢复文档和模板选择
-        if (session.fileIds && session.fileIds.length > 0) {
-          setSelectedDocIds([...session.fileIds])
-        }
-        if (session.templateId) {
-          setSelectedTemplateId(session.templateId)
-        }
       }
-    } else {
-      setLocalMessages([])
-    }
-  }, [activeSessionId])
+    }, 2000) // 每2秒轮询一次
+    
+    return () => clearInterval(pollInterval)
+  }, [localMessages, activeSessionId])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -216,13 +238,13 @@ export default function DocumentOperation() {
       }
       setLocalMessages(prev => [...prev, aiMsg])
 
-      // 保存消息到数据库
+      // 保存消息到数据库，并记录消息ID
       await addMessage(currentSessionId, { role: 'user', content: userMessage })
-      await addMessage(currentSessionId, { role: 'assistant', content: message, action_data: action })
+      const aiMsgId = await addMessage(currentSessionId, { role: 'assistant', content: message, action_data: action })
 
-      // 如果需要确认，保存待执行操作
+      // 如果需要确认，保存待执行操作和消息ID
       if (action && (action.action_type === 'confirm_extract' || action.action_type === 'confirm_fill')) {
-        setPendingAction(action)
+        setPendingAction({ ...action, _messageId: aiMsgId })
       } else {
         setPendingAction(null)
       }
@@ -241,6 +263,9 @@ export default function DocumentOperation() {
   // 确认执行操作
   const handleConfirmAction = async () => {
     if (!pendingAction) return
+    
+    // 保存当前的pendingAction，因为后面会被清空
+    const currentPendingAction = { ...pendingAction }
     
     // 更新最后一条AI消息的状态为执行中
     setLocalMessages(prev => {
@@ -269,7 +294,7 @@ export default function DocumentOperation() {
         template_id: selectedTemplateId,
         conversation_history: [],
         action_confirmed: true,
-        action_id: pendingAction.action_id
+        action_id: currentPendingAction.action_id
       })
 
       const { message, action } = response.data
@@ -288,9 +313,13 @@ export default function DocumentOperation() {
         return newMessages
       })
 
-      // 保存消息到数据库
-      if (activeSessionId) {
-        await addMessage(activeSessionId, { role: 'assistant', content: message, action_data: action })
+      // 更新数据库中的确认消息（不添加新消息）
+      if (activeSessionId && currentPendingAction._messageId) {
+        await updateMessage(activeSessionId, currentPendingAction._messageId, { 
+          role: 'assistant', 
+          content: message, 
+          action_data: action 
+        })
       }
     } catch (error) {
       toast.error('执行失败')
@@ -302,7 +331,7 @@ export default function DocumentOperation() {
             ...newMessages[lastAiIndex],
             content: '执行失败，请重试。',
             action: {
-              ...pendingAction,
+              ...currentPendingAction,
               action_type: 'failed',
               title: '执行失败',
               description: '请重试'
