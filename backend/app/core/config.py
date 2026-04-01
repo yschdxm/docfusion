@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "bge-m3"
     RERANK_MODEL: str = "bge-reranker-v2-m3"
 
+    # SSL Configuration
+    SSL_VERIFY: bool = True  # 总开关，默认开启SSL验证
+    SSL_VERIFY_MIMO: bool = True  # MiMO模型SSL验证
+    SSL_VERIFY_GITEE_AI: bool = True  # Gitee AI（嵌入和重排模型）SSL验证
+
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800

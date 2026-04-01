@@ -103,7 +103,9 @@ class RAGService:
                 # 生成UUID格式的chunk_id
                 import uuid
                 chunk_id = str(uuid.uuid4())
+                print(f"[RAG] 调用嵌入服务: chunk_index={chunk['chunk_index']}, content_len={len(chunk['content'])}")
                 embedding = await embedding_service.embed_single(chunk["content"])
+                print(f"[RAG] 嵌入返回: vector_dim={len(embedding) if embedding else 0}")
                 
                 if not embedding:
                     logger.warning(f"块 {chunk_id} 向量化失败")
@@ -153,8 +155,11 @@ class RAGService:
         """
         try:
             # 1. 向量检索（搜索更多块）
+            print(f"[RAG] 搜索相关文档: query_len={len(query)}, top_k={top_k}, rerank_top_n={rerank_top_n}")
             query_embedding = await embedding_service.embed_single(query)
+            print(f"[RAG] 查询向量化完成: vector_dim={len(query_embedding) if query_embedding else 0}")
             vector_results = await vector_store_service.search(query_embedding, top_k * 3)
+            print(f"[RAG] 向量检索返回: results_count={len(vector_results) if vector_results else 0}")
             
             if not vector_results:
                 return []
@@ -191,7 +196,9 @@ class RAGService:
             
             # 4. 重排
             documents = [d["content"] for d in sorted_docs]
+            print(f"[RAG] 调用重排服务: docs_count={len(documents)}")
             rerank_results = await rerank_service.rerank(query, documents, min(rerank_top_n, len(documents)))
+            print(f"[RAG] 重排返回: results_count={len(rerank_results) if rerank_results else 0}")
             
             if not rerank_results or not isinstance(rerank_results, list):
                 return sorted_docs[:rerank_top_n]
@@ -297,6 +304,8 @@ class RAGService:
         Returns:
             文档ID列表
         """
+        print(f"[RAG] 开始自动选择文档: template_len={len(template_content)}, max_docs={max_docs}")
+        
         # 1. 向量检索 + 重排
         relevant_docs = await self.find_documents_for_template(
             template_content,
@@ -304,6 +313,7 @@ class RAGService:
             top_k=20,
             rerank_top_n=max_docs
         )
+        print(f"[RAG] find_documents_for_template返回: {len(relevant_docs)} 个文档")
         
         # 使用original_doc_id而不是doc_id
         selected_doc_ids = []
@@ -317,21 +327,28 @@ class RAGService:
                     UUID(original_doc_id)
                     selected_doc_ids.append(original_doc_id)
                 except ValueError:
-                    logger.warning(f"跳过无效的文档ID: {original_doc_id}")
+                    print(f"[RAG] 跳过无效的文档ID: {original_doc_id}")
                     continue
+        
+        print(f"[RAG] 向量检索选出文档: {selected_doc_ids}")
+        
+        print(f"[RAG] 向量检索选出文档: {selected_doc_ids}")
         
         # 2. 通过图谱找到关联文档
         if len(selected_doc_ids) < max_docs:
+            print(f"[RAG] 向量检索文档不足，尝试通过图谱查找关联文档...")
             related_docs = await self.find_related_documents_via_graph(
                 selected_doc_ids,
                 limit=max_docs - len(selected_doc_ids)
             )
+            print(f"[RAG] 图谱返回: {len(related_docs)} 个关联文档")
             for doc in related_docs:
                 if doc["doc_id"] not in selected_doc_ids:
                     selected_doc_ids.append(doc["doc_id"])
         
         # 3. 如果还是没有结果，回退到获取所有源文档并重新向量化
         if not selected_doc_ids and fallback_to_all:
+            print(f"[RAG] 没有找到相关文档，回退到获取所有源文档...")
             from app.db.postgres import get_db, engine
             from app.models.document import Document
             from sqlalchemy import select

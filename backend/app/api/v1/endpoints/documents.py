@@ -121,6 +121,7 @@ async def _do_extraction(
             print(f"Knowledge graph build error: {kg_error}")
         
         # 向量化文档
+        vector_error_msg = None
         try:
             parsed_data = extraction_result.get("parsed_data", {})
             full_text = parsed_data.get("full_text", "")
@@ -136,16 +137,28 @@ async def _do_extraction(
                 )
                 print(f"[DEBUG] 文档 {doc_id} 向量化完成")
         except Exception as vector_error:
+            vector_error_msg = str(vector_error)
             print(f"[ERROR] Vector store error for {doc_id}: {vector_error}")
         
         await db.commit()
         
-        task.status = "completed"
-        task.result = {
-            "entities_count": len(extraction_result.get("entities", [])),
-            "progress": "100%",
-            "current_step": "提取完成"
-        }
+        # 如果向量化失败，标记任务失败
+        if vector_error_msg:
+            task.status = "failed"
+            task.error_message = f"向量化失败: {vector_error_msg}"
+            task.result = {
+                "entities_count": len(extraction_result.get("entities", [])),
+                "progress": "100%",
+                "current_step": f"提取失败: 向量化失败",
+                "error": vector_error_msg
+            }
+        else:
+            task.status = "completed"
+            task.result = {
+                "entities_count": len(extraction_result.get("entities", [])),
+                "progress": "100%",
+                "current_step": "提取完成"
+            }
         task.completed_at = datetime.utcnow()
         await db.commit()
         

@@ -1,7 +1,9 @@
 import httpx
 from typing import List, Union
+import logging
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -12,6 +14,9 @@ class EmbeddingService:
         self.api_key = settings.GITEE_AI_API_KEY
         self.base_url = settings.GITEE_AI_BASE_URL
         self.model = settings.EMBEDDING_MODEL
+        # SSL验证：总开关 AND Gitee AI开关
+        self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_GITEE_AI
+        logger.info(f"EmbeddingService初始化: model={self.model}, base_url={self.base_url}, ssl_verify={self.ssl_verify}")
     
     async def embed(self, texts: Union[str, List[str]]) -> List[List[float]]:
         """
@@ -26,7 +31,9 @@ class EmbeddingService:
         if isinstance(texts, str):
             texts = [texts]
         
-        async with httpx.AsyncClient() as client:
+        logger.info(f"调用嵌入API: model={self.model}, texts_count={len(texts)}")
+        
+        async with httpx.AsyncClient(verify=self.ssl_verify) as client:
             response = await client.post(
                 f"{self.base_url}/embeddings",
                 headers={
@@ -38,13 +45,14 @@ class EmbeddingService:
                     "input": texts,
                     "encoding_format": "float"
                 },
-                timeout=60.0
+                timeout=120.0
             )
             response.raise_for_status()
             result = response.json()
             
             # 按index排序并提取向量
             embeddings = [item["embedding"] for item in sorted(result["data"], key=lambda x: x["index"])]
+            logger.info(f"嵌入API返回: embeddings_count={len(embeddings)}, vector_dim={len(embeddings[0]) if embeddings else 0}")
             return embeddings
     
     async def embed_single(self, text: str) -> List[float]:

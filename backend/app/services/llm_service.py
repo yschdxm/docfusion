@@ -13,10 +13,13 @@ class LLMService:
         self.api_key = settings.MIMO_API_KEY
         self.base_url = settings.MIMO_BASE_URL
         self.model = settings.MIMO_MODEL
+        # SSL验证：总开关 AND MiMO开关
+        self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_MIMO
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        logger.info(f"LLMService初始化: model={self.model}, base_url={self.base_url}, ssl_verify={self.ssl_verify}")
     
     async def chat_completion(
         self,
@@ -25,7 +28,7 @@ class LLMService:
         max_tokens: int = 65536  # mimo-v2-flash 最大输出 64K tokens
     ) -> str:
         # 根据模型能力设置超时：256K上下文，10M TPM，允许更长处理时间
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self.headers,
