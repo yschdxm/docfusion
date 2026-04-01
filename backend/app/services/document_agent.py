@@ -57,9 +57,9 @@ class DocumentAgent:
         try:
             if not template_content:
                 return {"success": False, "message": "缺少模板文件。"}
-            
+
             template_file = {"file_type": template_content["file_type"], "file_path": template_content.get("file_path", "")}
-            
+
             # 如果没有选择文档，使用RAG自动选择
             if not documents_content:
                 fill_result = await table_filling_service.auto_fill_table(
@@ -68,14 +68,20 @@ class DocumentAgent:
                 )
             else:
                 source_files = [{"file_type": d["file_type"], "file_path": d.get("file_path", "")} for d in documents_content]
-                
-                if template_content["file_type"] == "xlsx":
+
+                # 根据源文档类型判断，而不是模板类型
+                # 检查是否有Excel源文档
+                has_excel_source = any(s.get("file_type") == "xlsx" for s in source_files)
+
+                if has_excel_source:
+                    # 有Excel源文档，调用fill_table
                     fill_result = await table_filling_service.fill_table(
                         source_files=source_files,
                         template_file=template_file,
                         user_instruction=instruction
                     )
                 else:
+                    # 只有非Excel源文档，调用fill_word_template
                     fill_result = await table_filling_service.fill_word_template(
                         source_files=source_files,
                         template_file=template_file,

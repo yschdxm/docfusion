@@ -5,17 +5,14 @@ from app.services.rerank_service import rerank_service
 from app.services.vector_store_service import vector_store_service
 from app.services.llm_service import llm_service
 from app.db.neo4j_db import run_cypher
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 class RAGService:
     """RAG服务 - 检索增强生成"""
-    
-    # 分块参数
-    CHUNK_SIZE = 500  # 每块500字
-    CHUNK_OVERLAP = 50  # 重叠50字
-    MIN_CHUNK_SIZE = 100  # 最小块大小
     
     async def init(self):
         """初始化向量存储"""
@@ -24,17 +21,17 @@ class RAGService:
     def chunk_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[Dict[str, Any]]:
         """
         将文本分成多个块
-        
+
         Args:
             text: 输入文本
-            chunk_size: 块大小（默认500字）
-            overlap: 重叠大小（默认50字）
-            
+            chunk_size: 块大小（默认1000字）
+            overlap: 重叠大小（默认100字）
+
         Returns:
             分块结果列表，每项包含chunk_index和content
         """
-        chunk_size = chunk_size or self.CHUNK_SIZE
-        overlap = overlap or self.CHUNK_OVERLAP
+        chunk_size = chunk_size or settings.RAG_CHUNK_SIZE
+        overlap = overlap or settings.RAG_CHUNK_OVERLAP
         
         if len(text) <= chunk_size:
             return [{"chunk_index": 0, "content": text}]
@@ -57,7 +54,7 @@ class RAGService:
             chunk = text[start:end]
             
             # 只保留足够大的块
-            if len(chunk) >= self.MIN_CHUNK_SIZE or end >= len(text):
+            if len(chunk) >= settings.RAG_MIN_CHUNK_SIZE or end >= len(text):
                 chunks.append({
                     "chunk_index": chunk_index,
                     "content": chunk
@@ -97,26 +94,27 @@ class RAGService:
                 logger.warning(f"文档 {doc_id} 分块结果为空")
                 return
             
+            # 收集所有块文本
+            chunk_texts = [chunk["content"] for chunk in chunks]
+
+            # 批量嵌入（内部处理限流和重试）
+            embeddings = await embedding_service.embed_batch(chunk_texts)
+
             # 为每个块生成向量并存储
             documents_to_add = []
-            for chunk in chunks:
-                # 生成UUID格式的chunk_id
+            for chunk, embedding in zip(chunks, embeddings):
+                if not embedding:
+                    logger.warning(f"块向量化失败: chunk_index={chunk['chunk_index']}")
+                    continue
+
                 import uuid
                 chunk_id = str(uuid.uuid4())
-                print(f"[RAG] 调用嵌入服务: chunk_index={chunk['chunk_index']}, content_len={len(chunk['content'])}")
-                embedding = await embedding_service.embed_single(chunk["content"])
-                print(f"[RAG] 嵌入返回: vector_dim={len(embedding) if embedding else 0}")
-                
-                if not embedding:
-                    logger.warning(f"块 {chunk_id} 向量化失败")
-                    continue
-                
                 chunk_metadata = {
                     **(metadata or {}),
                     "original_doc_id": doc_id,
                     "chunk_index": chunk["chunk_index"]
                 }
-                
+
                 documents_to_add.append({
                     "doc_id": chunk_id,
                     "content": chunk["content"],
@@ -247,43 +245,6 @@ class RAGService:
         
         return await self.search_relevant_documents(query, top_k, rerank_top_n)
     
-    async def find_related_documents_via_graph(
-        self,
-        document_ids: List[str],
-        limit: int = 5
-    ) -> List[Dict[str, Any]]:
-        """
-        通过知识图谱找到关联文档
-        
-        Args:
-            document_ids: 文档ID列表
-            limit: 返回数量
-            
-        Returns:
-            关联文档列表
-        """
-        if not document_ids:
-            return []
-        
-        result = await run_cypher(
-            """
-            MATCH (d1:Document)-[:HAS_ENTITY]->(e:Entity)<-[:HAS_ENTITY]-(d2:Document)
-            WHERE d1.id IN $doc_ids AND NOT d2.id IN $doc_ids
-            RETURN d2.id AS doc_id, COUNT(e) AS shared_entities, COLLECT(DISTINCT e.name)[..5] AS shared_entity_names
-            ORDER BY shared_entities DESC
-            LIMIT $limit
-            """,
-            {"doc_ids": document_ids, "limit": limit}
-        )
-        
-        return [
-            {
-                "doc_id": r["doc_id"],
-                "shared_entities": r["shared_entities"],
-                "shared_entity_names": r["shared_entity_names"]
-            }
-            for r in result
-        ]
     
     async def auto_select_documents(
         self,
@@ -331,22 +292,8 @@ class RAGService:
                     continue
         
         print(f"[RAG] 向量检索选出文档: {selected_doc_ids}")
-        
-        print(f"[RAG] 向量检索选出文档: {selected_doc_ids}")
-        
-        # 2. 通过图谱找到关联文档
-        if len(selected_doc_ids) < max_docs:
-            print(f"[RAG] 向量检索文档不足，尝试通过图谱查找关联文档...")
-            related_docs = await self.find_related_documents_via_graph(
-                selected_doc_ids,
-                limit=max_docs - len(selected_doc_ids)
-            )
-            print(f"[RAG] 图谱返回: {len(related_docs)} 个关联文档")
-            for doc in related_docs:
-                if doc["doc_id"] not in selected_doc_ids:
-                    selected_doc_ids.append(doc["doc_id"])
-        
-        # 3. 如果还是没有结果，回退到获取所有源文档并重新向量化
+
+        # 2. 如果还是没有结果，回退到获取所有源文档并重新向量化
         if not selected_doc_ids and fallback_to_all:
             print(f"[RAG] 没有找到相关文档，回退到获取所有源文档...")
             from app.db.postgres import get_db, engine

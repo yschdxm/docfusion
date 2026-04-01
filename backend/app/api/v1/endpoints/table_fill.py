@@ -82,8 +82,12 @@ async def fill_table(
         }
         
         await update_progress("正在分析模板结构...", "50%")
-        
-        if template_doc.file_type == "xlsx":
+
+        # 根据模板文档类型判断
+        # 检查模板是否是Excel文档
+        is_excel_template = template_doc.file_type == "xlsx"
+
+        if is_excel_template:
             await update_progress("正在填写Excel表格...", "60%")
             fill_result = await table_filling_service.fill_table(
                 source_files=source_files,

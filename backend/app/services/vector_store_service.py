@@ -77,32 +77,50 @@ class VectorStoreService:
     
     async def add_documents(
         self,
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        batch_size: int = 100
     ):
         """
-        批量添加文档向量
-        
+        批量添加文档向量（支持分批插入避免超时）
+
         Args:
             documents: 文档列表，每个包含doc_id, content, embedding, metadata
+            batch_size: 每批插入的文档数量
         """
+        import asyncio
         await self.connect()
-        
-        points = [
-            PointStruct(
-                id=str(doc["doc_id"]),
-                vector=doc["embedding"],
-                payload={
-                    "content": doc["content"],
-                    **(doc.get("metadata", {}))
-                }
-            )
-            for doc in documents
-        ]
-        
-        await self.client.upsert(
-            collection_name=self.COLLECTION_NAME,
-            points=points
-        )
+
+        total_docs = len(documents)
+        logger.info(f"开始批量插入文档向量，共 {total_docs} 个文档，每批 {batch_size} 个")
+
+        for i in range(0, total_docs, batch_size):
+            batch = documents[i:i + batch_size]
+
+            points = [
+                PointStruct(
+                    id=str(doc["doc_id"]),
+                    vector=doc["embedding"],
+                    payload={
+                        "content": doc["content"],
+                        **(doc.get("metadata", {}))
+                    }
+                )
+                for doc in batch
+            ]
+
+            try:
+                await self.client.upsert(
+                    collection_name=self.COLLECTION_NAME,
+                    points=points
+                )
+                logger.info(f"已插入第 {i + len(batch)}/{total_docs} 个文档")
+            except Exception as e:
+                logger.error(f"插入批次失败 (第 {i}-{i + len(batch)} 个): {e}")
+                raise
+
+            # 批次间添加短暂延迟（最后一组不添加）
+            if i + batch_size < total_docs:
+                await asyncio.sleep(0.1)
     
     async def search(
         self,

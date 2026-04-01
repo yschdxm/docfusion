@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "bge-m3"
     RERANK_MODEL: str = "bge-reranker-v2-m3"
 
+    # RAG Configuration
+    RAG_CHUNK_SIZE: int = 1000
+    RAG_CHUNK_OVERLAP: int = 100
+    RAG_MIN_CHUNK_SIZE: int = 100
+
+    # Embedding API Rate Limiting
+    EMBEDDING_CALL_DELAY_MS: int = 100
+    EMBEDDING_RETRY_MAX: int = 10
+    EMBEDDING_RETRY_INITIAL_DELAY: float = 1.0
+    EMBEDDING_RETRY_MAX_DELAY: float = 30.0
+    EMBEDDING_BATCH_SIZE: int = 16
+
     # SSL Configuration
     SSL_VERIFY: bool = True  # 总开关，默认开启SSL验证
     SSL_VERIFY_MIMO: bool = True  # MiMO模型SSL验证
