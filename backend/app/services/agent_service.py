@@ -1,8 +1,11 @@
+import logging
+import json
 from typing import Dict, Any, List, Optional
 from uuid import UUID, uuid4
 from app.services.llm_service import llm_service
 from app.services.document_processor import DocxParser, XlsxParser, MdParser, TxtParser
-import json
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -79,7 +82,7 @@ class AgentService:
                 json_str = json_str.split("```")[1].strip()
             return json.loads(json_str)
         except Exception as e:
-            print(f"Intent analysis error: {e}")
+            logger.error("Intent analysis error: %s", e)
             return {
                 "intent": "chat",
                 "confidence": 0.5,

@@ -1,3 +1,4 @@
+import logging
 from typing import List, Dict, Any, Optional, Callable
 from uuid import UUID
 import asyncio
@@ -5,6 +6,8 @@ import json
 from app.services.llm_service import llm_service
 from app.services.document_processor import DocxParser, XlsxParser, MdParser, TxtParser
 from app.db.mongodb import get_collection
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionService:
@@ -129,7 +132,7 @@ class ExtractionService:
                     ai_entities = json.loads(json_str)
                     all_entities.extend(ai_entities)
                 except Exception as e:
-                    print(f"AI entity parsing error: {e}")
+                    logger.warning("AI entity parsing error: %s", e)
                 
                 # 批量提取所有行的结构化数据（不需要调用AI）
                 if progress_callback:
@@ -245,7 +248,7 @@ class ExtractionService:
                         entities = await llm_service.extract_entities(chunk, entity_types)
                         all_entities.extend(entities)
                     except Exception as e:
-                        print(f"Chunk extraction error: {e}")
+                        logger.error("Chunk extraction error: %s", e)
                         continue
             else:
                 if progress_callback:

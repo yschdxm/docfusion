@@ -143,8 +143,12 @@ async def agent_chat(
             template_info = {"filename": template_content["filename"], "file_type": template_content["file_type"]}
     
     documents_info = [{"filename": d["filename"], "file_type": d["file_type"]} for d in documents_content]
-    
+
+    logger.debug("[AGENT] action_confirmed=%s, action_id=%s, intent_result=None yet",
+                  request.action_confirmed, request.action_id)
+
     if request.action_confirmed and request.action_id:
+        logger.debug("[AGENT] 走 action_confirmed 分支, action_id=%s", request.action_id)
         # 查找现有的pending任务
         task = None
         
@@ -308,6 +312,8 @@ async def agent_chat(
     intent = intent_result.get("intent", "chat")
     need_confirm = intent_result.get("need_confirm", False)
     confirm_message = intent_result.get("confirm_message", "")
+
+    logger.debug("[AGENT] 意图分析结果: intent=%s, need_confirm=%s", intent, need_confirm)
     
     if intent == "chat":
         reply = await agent_service.chat_response(

@@ -33,6 +33,20 @@ services:
       - SSL_VERIFY_MIMO=true
       - SSL_VERIFY_GITEE_AI=true
       - DEBUG=true
+      # 日志级别配置（可选，不设置则使用默认值）
+      # - LOG_LEVEL=INFO
+      # - LOG_LEVEL_DB=WARNING
+      # - LOG_LEVEL_SERVICE=INFO
+      # - LOG_LEVEL_API=INFO
+      # - LOG_LEVEL_LLM=INFO
+      # - LOG_LEVEL_KG=INFO
+      # - LOG_LEVEL_RAG=INFO
+      # - LOG_LEVEL_UVICORN=WARNING
+      # - LOG_LEVEL_SQLALCHEMY=WARNING
+      # - LOG_LEVEL_NEO4J_DRIVER=WARNING
+      # - LOG_LEVEL_MOTOR=WARNING
+      # - LOG_LEVEL_REDIS=WARNING
+      # - LOG_LEVEL_CELERY=WARNING
     secrets:
       - mimo_api_key
       - gitee_ai_key

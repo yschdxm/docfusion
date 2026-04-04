@@ -19,6 +19,21 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
 
+    # 日志级别配置
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_LEVEL_DB: str = os.getenv("LOG_LEVEL_DB", "WARNING")
+    LOG_LEVEL_SERVICE: str = os.getenv("LOG_LEVEL_SERVICE", "INFO")
+    LOG_LEVEL_API: str = os.getenv("LOG_LEVEL_API", "INFO")
+    LOG_LEVEL_LLM: str = os.getenv("LOG_LEVEL_LLM", "INFO")
+    LOG_LEVEL_KG: str = os.getenv("LOG_LEVEL_KG", "INFO")
+    LOG_LEVEL_RAG: str = os.getenv("LOG_LEVEL_RAG", "INFO")
+    LOG_LEVEL_UVICORN: str = os.getenv("LOG_LEVEL_UVICORN", "WARNING")
+    LOG_LEVEL_SQLALCHEMY: str = os.getenv("LOG_LEVEL_SQLALCHEMY", "WARNING")
+    LOG_LEVEL_NEO4J_DRIVER: str = os.getenv("LOG_LEVEL_NEO4J_DRIVER", "WARNING")
+    LOG_LEVEL_MOTOR: str = os.getenv("LOG_LEVEL_MOTOR", "WARNING")
+    LOG_LEVEL_REDIS: str = os.getenv("LOG_LEVEL_REDIS", "WARNING")
+    LOG_LEVEL_CELERY: str = os.getenv("LOG_LEVEL_CELERY", "WARNING")
+
     # SECRET_KEY 是必需的
     SECRET_KEY: Optional[str] = None
 

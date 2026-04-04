@@ -1,16 +1,18 @@
+import logging
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
 from typing import List
-from uuid import UUID, uuid4
+from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update as sql_update
-from app.db.postgres import get_db, engine
+from app.db.postgres import get_db, async_session
 from app.models.document import Document, TableFillTask
 from app.schemas.table_fill import TableFillRequest, TableFillResponse
 from app.services.table_filling_service import table_filling_service
 from datetime import datetime
-import os
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -38,7 +40,7 @@ async def fill_table(
     # 进度回调函数
     async def update_progress(message: str, progress: str = None):
         try:
-            async with AsyncSession(engine) as progress_db:
+            async with async_session() as progress_db:
                 current_result = task.result or {}
                 current_result.update({
                     "current_step": message,
@@ -51,7 +53,7 @@ async def fill_table(
                 await progress_db.execute(stmt)
                 await progress_db.commit()
         except Exception as e:
-            print(f"Progress update error: {e}")
+            logger.error("Progress update error: %s", e)
     
     try:
         await update_progress("正在加载源文档...", "10%")
@@ -82,20 +84,24 @@ async def fill_table(
         }
         
         await update_progress("正在分析模板结构...", "50%")
-        
+
+        doc_ids = [str(fid) for fid in request.source_file_ids]
+
         if template_doc.file_type == "xlsx":
             await update_progress("正在填写Excel表格...", "60%")
             fill_result = await table_filling_service.fill_table(
                 source_files=source_files,
                 template_file=template_file,
-                user_instruction=request.user_instruction
+                user_instruction=request.user_instruction,
+                doc_ids=doc_ids,
             )
         else:
             await update_progress("正在填写Word文档...", "60%")
             fill_result = await table_filling_service.fill_word_template(
                 source_files=source_files,
                 template_file=template_file,
-                user_instruction=request.user_instruction
+                user_instruction=request.user_instruction,
+                doc_ids=doc_ids,
             )
         
         await update_progress("正在保存结果...", "90%")
@@ -175,12 +181,15 @@ async def list_output_files(
 
 @router.get("/download-file/{filename}")
 async def download_filled_file(filename: str):
-    file_path = os.path.join("./uploads/output", filename)
-    if not os.path.exists(file_path):
+    safe_dir = Path("./uploads/output").resolve()
+    file_path = (safe_dir / filename).resolve()
+    if not str(file_path).startswith(str(safe_dir)):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     return FileResponse(
-        file_path,
+        str(file_path),
         filename=filename,
         media_type="application/octet-stream"
     )

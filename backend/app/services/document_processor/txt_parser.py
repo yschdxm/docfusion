@@ -1,4 +1,5 @@
 from typing import Dict, Any
+from .chunker import chunk_by_paragraphs
 
 
 class TxtParser:
@@ -15,7 +16,8 @@ class TxtParser:
             "lines": lines,
             "paragraphs": paragraphs,
             "line_count": len(lines),
-            "char_count": len(content)
+            "char_count": len(content),
+            "chunks": chunk_by_paragraphs(content),
         }
     
     @staticmethod
