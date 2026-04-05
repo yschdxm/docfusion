@@ -57,25 +57,48 @@ class KnowledgeGraphService:
                 "name": entity.get("name", ""),
                 "doc_id": document_id,
             }
-            for key, val in attrs.items():
-                safe_key = "".join(c if c.isalnum() else "_" for c in key)
-                if safe_key and val:
-                    ent[safe_key] = str(val)[:500]
+            # 添加日志：显示原始attributes
+            if attrs:
+                logger.debug("[KG-BUILD] 实体 %s (type=%s) 有 %d 个attributes: %s",
+                           entity.get("name", "N/A"), raw_type, len(attrs), list(attrs.keys()))
+                for key, val in attrs.items():
+                    safe_key = "".join(c if c.isalnum() else "_" for c in key)
+                    if safe_key and val:
+                        ent[safe_key] = str(val)[:500]
+                        logger.debug("[KG-BUILD]   - %s -> %s: %s", key, safe_key, str(val)[:50])
+            else:
+                logger.debug("[KG-BUILD] 实体 %s (type=%s) 没有attributes",
+                           entity.get("name", "N/A"), raw_type)
             type_groups[label].append(ent)
+
+        # 汇总日志
+        total_entities = sum(len(entities) for entities in type_groups.values())
+        logger.info("[KG-BUILD] 准备写入 %d 个实体到Neo4j，共 %d 种类型",
+                   total_entities, len(type_groups))
+        for label, entities_list in type_groups.items():
+            # 统计有属性的实体数量
+            with_attrs = sum(1 for e in entities_list if len(e) > 2)  # name + doc_id + 至少1个属性
+            logger.info("[KG-BUILD] 类型 %s: %d 个实体，%d 个有额外属性",
+                       label, len(entities_list), with_attrs)
 
         for label, entities_list in type_groups.items():
             for batch_start in range(0, len(entities_list), batch_size):
                 batch = entities_list[batch_start:batch_start + batch_size]
                 try:
-                    await run_cypher(
-                        f"""
-                        UNWIND $entities AS ent
-                        MERGE (n:{label} {{name: ent.name}})
-                        ON CREATE SET n.document_ids = [ent.doc_id]
-                        ON MATCH SET n.document_ids = CASE WHEN ent.doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + ent.doc_id END
-                        """,
-                        {"entities": batch}
-                    )
+                    # 为每个实体单独处理，确保所有属性都被写入
+                    for ent in batch:
+                        # 构建属性字典（排除name和doc_id）
+                        props = {k: v for k, v in ent.items() if k not in ['name', 'doc_id']}
+
+                        await run_cypher(
+                            f"""
+                            MERGE (n:{label} {{name: $name}})
+                            ON CREATE SET n = $props, n.name = $name, n.document_ids = [$doc_id]
+                            ON MATCH SET n += $props, n.document_ids = CASE WHEN $doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + $doc_id END
+                            """,
+                            {"name": ent['name'], "doc_id": ent['doc_id'], "props": props}
+                        )
+                    logger.debug("[KG-BUILD] 成功写入 %d 个 %s 类型实体", len(batch), label)
                 except Exception as ex:
                     logger.warning(f"批量写入实体失败 (label={label}): {ex}")
 

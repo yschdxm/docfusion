@@ -161,8 +161,12 @@ async def preprocess_document(
                 )
             try:
                 result = await llm_service.extract_entities_and_relations(batch_text)
-                all_entities.extend(result.get("entities", []))
-                all_relations.extend(result.get("relations", []))
+                batch_entities = result.get("entities", [])
+                batch_relations = result.get("relations", [])
+                all_entities.extend(batch_entities)
+                all_relations.extend(batch_relations)
+                logger.info("[PREPROCESS] Batch %d: 提取 %d 实体, %d 关系",
+                           batch_idx, len(batch_entities), len(batch_relations))
             except Exception as e:
                 logger.error(f"NER 提取失败: batch={batch_idx}, error={e}")
 
@@ -170,11 +174,18 @@ async def preprocess_document(
     if progress_callback:
         await progress_callback("正在构建知识图谱...", f"{base_progress + 85}%")
 
+    # 统计有attributes的实体
+    entities_with_attrs = sum(1 for e in all_entities if e.get("attributes"))
+    logger.info("[PREPROCESS] 总共提取 %d 个实体，其中 %d 个有attributes (%.1f%%)",
+               len(all_entities), entities_with_attrs,
+               100*entities_with_attrs/len(all_entities) if all_entities else 0)
+
     if all_entities or all_relations:
         try:
             await knowledge_graph_service.build_graph_from_entities(
                 doc_id, all_entities, all_relations
             )
+            logger.info("[PREPROCESS] 知识图谱构建完成")
         except Exception as e:
             logger.error(f"知识图谱构建失败: {e}")
 

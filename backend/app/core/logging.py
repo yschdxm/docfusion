@@ -1,6 +1,8 @@
 import logging
 import logging.config
+import os
 import sys
+from datetime import datetime
 
 from app.core.config import get_settings
 
@@ -54,6 +56,14 @@ def setup_logging():
     log_format = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
 
+    # 创建日志目录
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 生成带时间戳的日志文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"app_{timestamp}.log")
+
     logging.config.dictConfig({
         "version": 1,
         "disable_existing_loggers": False,
@@ -61,6 +71,10 @@ def setup_logging():
         "formatters": {
             "color": {
                 "()": ColorFormatter,
+                "format": log_format,
+                "datefmt": date_format,
+            },
+            "standard": {
                 "format": log_format,
                 "datefmt": date_format,
             },
@@ -72,62 +86,68 @@ def setup_logging():
                 "formatter": "color",
                 "stream": "ext://sys.stderr",
             },
+            "file": {
+                "class": "logging.FileHandler",
+                "formatter": "standard",
+                "filename": log_file,
+                "encoding": "utf-8",
+            },
         },
 
         "loggers": {
             # ── 应用日志 ──
             "app": {
                 "level": s.LOG_LEVEL,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app.db": {
                 "level": s.LOG_LEVEL_DB,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app.services": {
                 "level": s.LOG_LEVEL_SERVICE,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             # 高频服务模块单独控制
             "app.services.llm_service": {
                 "level": s.LOG_LEVEL_LLM,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app.services.knowledge_graph_service": {
                 "level": s.LOG_LEVEL_KG,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app.services.rag_service": {
                 "level": s.LOG_LEVEL_RAG,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app.api": {
                 "level": s.LOG_LEVEL_API,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
 
             # ── 第三方库日志 ──
-            "uvicorn":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console"], "propagate": False},
-            "uvicorn.error":   {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console"], "propagate": False},
-            "uvicorn.access":  {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console"], "propagate": False},
-            "fastapi":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console"], "propagate": False},
-            "sqlalchemy":      {"level": s.LOG_LEVEL_SQLALCHEMY, "handlers": ["console"], "propagate": False},
-            "neo4j":           {"level": s.LOG_LEVEL_NEO4J_DRIVER, "handlers": ["console"], "propagate": False},
-            "pymongo":         {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console"], "propagate": False},
-            "motor":           {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console"], "propagate": False},
-            "redis":           {"level": s.LOG_LEVEL_REDIS,   "handlers": ["console"], "propagate": False},
-            "celery":          {"level": s.LOG_LEVEL_CELERY,  "handlers": ["console"], "propagate": False},
+            "uvicorn":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
+            "uvicorn.error":   {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
+            "uvicorn.access":  {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
+            "fastapi":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
+            "sqlalchemy":      {"level": s.LOG_LEVEL_SQLALCHEMY, "handlers": ["console", "file"], "propagate": False},
+            "neo4j":           {"level": s.LOG_LEVEL_NEO4J_DRIVER, "handlers": ["console", "file"], "propagate": False},
+            "pymongo":         {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console", "file"], "propagate": False},
+            "motor":           {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console", "file"], "propagate": False},
+            "redis":           {"level": s.LOG_LEVEL_REDIS,   "handlers": ["console", "file"], "propagate": False},
+            "celery":          {"level": s.LOG_LEVEL_CELERY,  "handlers": ["console", "file"], "propagate": False},
         },
 
         "root": {
             "level": s.LOG_LEVEL,
-            "handlers": ["console"],
+            "handlers": ["console", "file"],
         },
     })

@@ -111,8 +111,24 @@ class LLMService:
         try:
             result = self._extract_json(response)
             if isinstance(result, dict):
-                return result
-            return {"entities": result if isinstance(result, list) else [], "relations": []}
+                entities = result.get("entities", [])
+                relations = result.get("relations", [])
+                # 添加详细日志
+                logger.info("[NER-EXTRACT] 提取到 %d 个实体, %d 个关系", len(entities), len(relations))
+                for i, e in enumerate(entities[:5]):  # 只显示前5个
+                    attrs = e.get("attributes", {})
+                    logger.info("[NER-EXTRACT] 实体 %d: name=%s, type=%s, attributes=%s",
+                               i+1, e.get("name", "N/A"), e.get("type", "N/A"), attrs if attrs else "无")
+                if len(entities) > 5:
+                    logger.info("[NER-EXTRACT] ... 还有 %d 个实体", len(entities) - 5)
+                return {"entities": entities, "relations": relations}
+            elif isinstance(result, list):
+                # 有些情况下返回的是实体列表
+                logger.info("[NER-EXTRACT] LLM返回列表格式, %d 个条目", len(result))
+                return {"entities": result, "relations": []}
+            else:
+                logger.warning("[NER-EXTRACT] 未知返回格式: %s", type(result))
+                return {"entities": [], "relations": []}
         except json.JSONDecodeError as e:
             logger.error(f"NER JSON解析失败: response={response[:200]}, error={e}")
             return {"entities": [], "relations": []}
