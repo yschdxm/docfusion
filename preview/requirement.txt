@@ -1,0 +1,55 @@
+Project: File Preview System
+Version: 1.0.0
+
+1. Runtime Environment
+- OS: Windows 10/11 (recommended), Linux/macOS compatible
+- Java: 17+
+- Maven: 3.9+
+- Node.js: 18+ (recommended 20+)
+- npm: 9+
+- Docker: 24+ (for OnlyOffice)
+
+2. Backend (Spring Boot)
+- GroupId: com.example
+- ArtifactId: springboot-file-preview
+- Spring Boot: 3.2.5
+- Java Version: 17
+
+Backend dependencies:
+- org.springframework.boot:spring-boot-starter-web
+- org.apache.poi:poi:5.2.5
+- org.apache.poi:poi-ooxml:5.2.5
+- org.apache.poi:poi-scratchpad:5.2.5
+- org.projectlombok:lombok (optional)
+- org.springframework.boot:spring-boot-starter-test (test)
+
+3. Frontend (Vue 3 + Vite)
+- Name: vue-file-preview
+- Version: 1.0.0
+
+Frontend dependencies:
+- vue: ^3.4.27
+- axios: ^1.7.2
+
+Frontend devDependencies:
+- vite: ^5.2.11
+- @vitejs/plugin-vue: ^5.0.5
+
+4. Optional Service
+- OnlyOffice Document Server (Docker image: onlyoffice/documentserver)
+- Default URL: http://localhost:8088
+
+5. Run Commands
+Backend:
+- cd springboot-file-preview
+- mvn spring-boot:run
+
+Frontend:
+- cd vue-file-preview
+- npm install
+- npm run dev
+
+6. Access URLs
+- Frontend: http://localhost:5173
+- Backend: http://localhost:8080
+- OnlyOffice (optional): http://localhost:8088

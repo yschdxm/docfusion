@@ -1,0 +1,68 @@
+{
+    "services":  {
+                     "CoAuthoring":  {
+                                         "sql":  {
+                                                     "type":  "postgres",
+                                                     "dbHost":  "localhost",
+                                                     "dbPort":  "5432",
+                                                     "dbName":  "onlyoffice",
+                                                     "dbUser":  "onlyoffice",
+                                                     "dbPass":  "onlyoffice"
+                                                 },
+                                         "token":  {
+                                                       "enable":  {
+                                                                      "request":  {
+                                                                                      "inbox":  false,
+                                                                                      "outbox":  false
+                                                                                  },
+                                                                      "browser":  false
+                                                                  },
+                                                       "inbox":  {
+                                                                     "header":  "Authorization",
+                                                                     "inBody":  false
+                                                                 },
+                                                       "outbox":  {
+                                                                      "header":  "Authorization",
+                                                                      "inBody":  false
+                                                                  }
+                                                   },
+                                         "secret":  {
+                                                        "browser":  {
+                                                                        "string":  "ZMvMoXOxP9wb5U1ToLZKisXK79iPgCzN"
+                                                                    },
+                                                        "inbox":  {
+                                                                      "string":  "ZMvMoXOxP9wb5U1ToLZKisXK79iPgCzN"
+                                                                  },
+                                                        "outbox":  {
+                                                                       "string":  "ZMvMoXOxP9wb5U1ToLZKisXK79iPgCzN"
+                                                                   },
+                                                        "session":  {
+                                                                        "string":  "ZMvMoXOxP9wb5U1ToLZKisXK79iPgCzN"
+                                                                    }
+                                                    },
+                                         "request-filtering-agent":  {
+                                                                         "allowPrivateIPAddress":  true,
+                                                                         "allowMetaIPAddress":  true
+                                                                     }
+                                     }
+                 },
+    "rabbitmq":  {
+                     "url":  "amqp://guest:guest@localhost"
+                 },
+    "wopi":  {
+                 "enable":  false,
+                 "privateKey":  "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCPlW7/yvxV1+Ry\nHMvVcjD9ypbsmfKc5dtrvl3FG2RxjHhtcvZ+9lu9Mv1f8o7sEfdvMLKLrthA8Q3d\nORjSFewT7+hASc4dPx/X6M35d8L7HavD9N7U3IhKkLy7G424hu0G26Zs5ENp04nF\n4MNgocEaMbL5tC4V27pGXv9PhYQtBBD3FhIfejsOiB2No9+wx9V0n6SJ/niu/wtG\n0iyZzX8TU9YQ7dIi2YLppPtECuygjbAJBBvbKEDxEkk7k2AeR9OKyN7aEp6oGW9h\n1p1HjO8AZIIQ9gaY5iWQAz3YZN2UVNjIqFG1eS+fdKGkmdJHGdjI0sDg3dg0GU9c\nEAQF4OAlAgMBAAECggEABI9w9pPaXtmcClnKyY02bCEemQYss/oC9ZGWxddgYdDd\n1FAV7yNg94nijUUVb/8EFlZ8HT6g5LMjRxb0qFuE4383p68QalJibweYXyeEHFit\nZ2xkFWupsoCVVfYCks1KQvEAAK5hS7+pvQyt9+g7S1svvYmQ+yW+7VRAFKT/dTSD\nKSTx3ITJnbExkShZRyQfaHM7QuqhPYr5oCkBOqpEiJDIOoQAUV+cnB9YUwAxmAbR\nwVTUsaaElTwukQcGUmaJmniqdUDti+EaqZc+KREUQ82wyQWGzlaLQgcI6545TtnZ\ndy35GflStQxrovzhk3v7bZTOnkk7ADZV88kX/ze2cwKBgQDKXXEyzkFdG06W3XzH\n7auf8JO8bi+e48+PFEKmEeyx4hVXbzCEkd1wUUsU1CUA48bmZkbqAa3uOqIykOO8\nlVtUS7XHObt+VGUsqtWsSgg0ovFOU51B942UTM4i0BHE9qs2hh0X61zVDfm+Sjkd\nA3KFMgkoO0arDRz1GaOXuM1qGwKBgQC1o6eTzpce86231xa+ShocuYd73FwFniUx\n5V6W/YRKOvudR95IyQOzMF7DxfzYtWhrxvLQgbMdbXknD1c6ktd3MIdi57AChqoM\nJUY23vzogAPjCIQFB/+DHC8lpvYwCTJL22z/YGliNZeVREyXdMe+pHjEugZyCGG8\nc13/qgeCvwKBgQCTeSVVcRoRUCUlrKOSz5GTLS980o/BqyNHkexAOi/UMn57CXzC\nH8rQX23n7/JHg7cfkMl9H1wxkGlDkHNmqzGzbLk8RsZsefSBaL3uoMT6FwTjn+uq\nd02mFZLjq95HO7vqMDJjjBJK8bRfCJg2nJyIlL43o3sMjLHdrKGboAGSoQKBgQCx\nkV+Ne3T46Td2dWridAa69hSg3XeIdmXeNWEXMpdVCfxYcZ24geqADlVWBgN8xzth\nwYg2ldTIe/DoYnLf7BV/i42O/vhuP7+VSAswMSYFFMC3/ecyE/OR9MeSg3pA03y7\n87LGpTXgsIuTfMVzetKaaKc3irQqXk9Nr2rBOTNGeQKBgQC3E5EA9J6CPDLoWKHI\nh7P8hQZENl0JsfmfB+uIMoVlDe9pcx4B1q3aZfNpxEFr8feHI5Hi+yvsCYvSi8NE\nu43Q1H4OhmlGiL2dmxFtJqm6i2uzhwc4NZmnwensn2Yd0ABc/MGZOw44QuzeQms0\nusqzUp6VYm6PI/9gOpzWp5bSDQ==\n-----END PRIVATE KEY-----\n",
+                 "privateKeyOld":  "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCPlW7/yvxV1+Ry\nHMvVcjD9ypbsmfKc5dtrvl3FG2RxjHhtcvZ+9lu9Mv1f8o7sEfdvMLKLrthA8Q3d\nORjSFewT7+hASc4dPx/X6M35d8L7HavD9N7U3IhKkLy7G424hu0G26Zs5ENp04nF\n4MNgocEaMbL5tC4V27pGXv9PhYQtBBD3FhIfejsOiB2No9+wx9V0n6SJ/niu/wtG\n0iyZzX8TU9YQ7dIi2YLppPtECuygjbAJBBvbKEDxEkk7k2AeR9OKyN7aEp6oGW9h\n1p1HjO8AZIIQ9gaY5iWQAz3YZN2UVNjIqFG1eS+fdKGkmdJHGdjI0sDg3dg0GU9c\nEAQF4OAlAgMBAAECggEABI9w9pPaXtmcClnKyY02bCEemQYss/oC9ZGWxddgYdDd\n1FAV7yNg94nijUUVb/8EFlZ8HT6g5LMjRxb0qFuE4383p68QalJibweYXyeEHFit\nZ2xkFWupsoCVVfYCks1KQvEAAK5hS7+pvQyt9+g7S1svvYmQ+yW+7VRAFKT/dTSD\nKSTx3ITJnbExkShZRyQfaHM7QuqhPYr5oCkBOqpEiJDIOoQAUV+cnB9YUwAxmAbR\nwVTUsaaElTwukQcGUmaJmniqdUDti+EaqZc+KREUQ82wyQWGzlaLQgcI6545TtnZ\ndy35GflStQxrovzhk3v7bZTOnkk7ADZV88kX/ze2cwKBgQDKXXEyzkFdG06W3XzH\n7auf8JO8bi+e48+PFEKmEeyx4hVXbzCEkd1wUUsU1CUA48bmZkbqAa3uOqIykOO8\nlVtUS7XHObt+VGUsqtWsSgg0ovFOU51B942UTM4i0BHE9qs2hh0X61zVDfm+Sjkd\nA3KFMgkoO0arDRz1GaOXuM1qGwKBgQC1o6eTzpce86231xa+ShocuYd73FwFniUx\n5V6W/YRKOvudR95IyQOzMF7DxfzYtWhrxvLQgbMdbXknD1c6ktd3MIdi57AChqoM\nJUY23vzogAPjCIQFB/+DHC8lpvYwCTJL22z/YGliNZeVREyXdMe+pHjEugZyCGG8\nc13/qgeCvwKBgQCTeSVVcRoRUCUlrKOSz5GTLS980o/BqyNHkexAOi/UMn57CXzC\nH8rQX23n7/JHg7cfkMl9H1wxkGlDkHNmqzGzbLk8RsZsefSBaL3uoMT6FwTjn+uq\nd02mFZLjq95HO7vqMDJjjBJK8bRfCJg2nJyIlL43o3sMjLHdrKGboAGSoQKBgQCx\nkV+Ne3T46Td2dWridAa69hSg3XeIdmXeNWEXMpdVCfxYcZ24geqADlVWBgN8xzth\nwYg2ldTIe/DoYnLf7BV/i42O/vhuP7+VSAswMSYFFMC3/ecyE/OR9MeSg3pA03y7\n87LGpTXgsIuTfMVzetKaaKc3irQqXk9Nr2rBOTNGeQKBgQC3E5EA9J6CPDLoWKHI\nh7P8hQZENl0JsfmfB+uIMoVlDe9pcx4B1q3aZfNpxEFr8feHI5Hi+yvsCYvSi8NE\nu43Q1H4OhmlGiL2dmxFtJqm6i2uzhwc4NZmnwensn2Yd0ABc/MGZOw44QuzeQms0\nusqzUp6VYm6PI/9gOpzWp5bSDQ==\n-----END PRIVATE KEY-----\n",
+                 "publicKey":  "BgIAAACkAABSU0ExAAgAAAEAAQAl4OAFBBBcTxk02N3gwNLI2BlH0pmkoXSfL3m1UajI2FSU3WTYPQOQJeaYBvYQgmQA74xHndZhbxmonhLa3siK00ceYJM7SRLxQCjbGwQJsI2g7ApE+6Tpgtki0u0Q1lMTf82ZLNJGC/+ueP6JpJ901cew36ONHYgOO3ofEhb3EAQthIVP/15GutsVLrT5sjEawaFgw+DFidNpQ+RsptsG7Ya4jRu7vJBKiNzU3vTDqx37wnf5zejXHz8dzklA6O8T7BXSGDndDfFA2K6LsjBv9xHsjvJf/TK9W/Z+9nJteIxxZBvFXb5r2+Wc8pnslsr9MHLVyxxy5NdV/Mr/bpWP",
+                 "publicKeyOld":  "BgIAAACkAABSU0ExAAgAAAEAAQAl4OAFBBBcTxk02N3gwNLI2BlH0pmkoXSfL3m1UajI2FSU3WTYPQOQJeaYBvYQgmQA74xHndZhbxmonhLa3siK00ceYJM7SRLxQCjbGwQJsI2g7ApE+6Tpgtki0u0Q1lMTf82ZLNJGC/+ueP6JpJ901cew36ONHYgOO3ofEhb3EAQthIVP/15GutsVLrT5sjEawaFgw+DFidNpQ+RsptsG7Ya4jRu7vJBKiNzU3vTDqx37wnf5zejXHz8dzklA6O8T7BXSGDndDfFA2K6LsjBv9xHsjvJf/TK9W/Z+9nJteIxxZBvFXb5r2+Wc8pnslsr9MHLVyxxy5NdV/Mr/bpWP",
+                 "modulus":  "j5Vu/8r8VdfkchzL1XIw/cqW7JnynOXba75dxRtkcYx4bXL2fvZbvTL9X/KO7BH3bzCyi67YQPEN3TkY0hXsE+/oQEnOHT8f1+jN+XfC+x2rw/Te1NyISpC8uxuNuIbtBtumbORDadOJxeDDYKHBGjGy+bQuFdu6Rl7/T4WELQQQ9xYSH3o7DogdjaPfsMfVdJ+kif54rv8LRtIsmc1/E1PWEO3SItmC6aT7RArsoI2wCQQb2yhA8RJJO5NgHkfTisje2hKeqBlvYdadR4zvAGSCEPYGmOYlkAM92GTdlFTYyKhRtXkvn3ShpJnSRxnYyNLA4N3YNBlPXBAEBeDgJQ==",
+                 "modulusOld":  "j5Vu/8r8VdfkchzL1XIw/cqW7JnynOXba75dxRtkcYx4bXL2fvZbvTL9X/KO7BH3bzCyi67YQPEN3TkY0hXsE+/oQEnOHT8f1+jN+XfC+x2rw/Te1NyISpC8uxuNuIbtBtumbORDadOJxeDDYKHBGjGy+bQuFdu6Rl7/T4WELQQQ9xYSH3o7DogdjaPfsMfVdJ+kif54rv8LRtIsmc1/E1PWEO3SItmC6aT7RArsoI2wCQQb2yhA8RJJO5NgHkfTisje2hKeqBlvYdadR4zvAGSCEPYGmOYlkAM92GTdlFTYyKhRtXkvn3ShpJnSRxnYyNLA4N3YNBlPXBAEBeDgJQ==",
+                 "exponent":  65537,
+                 "exponentOld":  65537
+             },
+    "storage":  {
+                    "fs":  {
+                               "secretString":  "11Gnuz7KLkJ7LsFKUfNs"
+                           }
+                }
+}

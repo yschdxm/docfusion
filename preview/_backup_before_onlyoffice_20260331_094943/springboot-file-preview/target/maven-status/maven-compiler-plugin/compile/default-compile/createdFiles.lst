@@ -1,0 +1,11 @@
+com\example\filepreview\model\FileSaveRequest.class
+com\example\filepreview\service\FileService$PreviewReadResult.class
+com\example\filepreview\model\Result.class
+com\example\filepreview\service\FileService.class
+com\example\filepreview\service\FileService$1.class
+com\example\filepreview\controller\FileController.class
+com\example\filepreview\FilePreviewApplication.class
+com\example\filepreview\model\FileInfo.class
+com\example\filepreview\config\WebConfig.class
+com\example\filepreview\model\FilePreviewResponse.class
+com\example\filepreview\config\WebConfig$1.class
