@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from functools import lru_cache
 
 
@@ -30,7 +30,6 @@ class Settings(BaseSettings):
     LOG_LEVEL_UVICORN: str = os.getenv("LOG_LEVEL_UVICORN", "WARNING")
     LOG_LEVEL_SQLALCHEMY: str = os.getenv("LOG_LEVEL_SQLALCHEMY", "WARNING")
     LOG_LEVEL_NEO4J_DRIVER: str = os.getenv("LOG_LEVEL_NEO4J_DRIVER", "WARNING")
-    LOG_LEVEL_MOTOR: str = os.getenv("LOG_LEVEL_MOTOR", "WARNING")
     LOG_LEVEL_REDIS: str = os.getenv("LOG_LEVEL_REDIS", "WARNING")
     LOG_LEVEL_CELERY: str = os.getenv("LOG_LEVEL_CELERY", "WARNING")
 
@@ -39,7 +38,6 @@ class Settings(BaseSettings):
 
     # Database
     POSTGRES_URL: Optional[str] = None
-    MONGODB_URL: Optional[str] = None
     NEO4J_URL: Optional[str] = None
     NEO4J_USER: Optional[str] = None
     NEO4J_PASSWORD: Optional[str] = None
@@ -50,6 +48,10 @@ class Settings(BaseSettings):
     MIMO_API_KEY: Optional[str] = None
     MIMO_BASE_URL: str = "https://api.xiaomimimo.com/v1"
     MIMO_MODEL: str = "mimo-v2-flash"
+
+    # LLM 流控配置
+    LLM_RPM: int = 100  # 每分钟最大请求数
+    LLM_TPM: int = 10_000_000  # 每分钟最大 token 数 (10M)
 
     # Gitee AI API
     GITEE_AI_API_KEY: Optional[str] = None
@@ -73,6 +75,8 @@ class Settings(BaseSettings):
     class Config:
         # .env 文件在项目根目录，相对于 backend 目录
         env_file = "../.env"
+        # 忽略未定义的字段（兼容旧的环境变量）
+        extra = "ignore"
 
     @model_validator(mode="after")
     def validate_required_fields(self):
@@ -80,7 +84,6 @@ class Settings(BaseSettings):
         required_fields = {
             "SECRET_KEY": "用于会话加密和令牌签名",
             "POSTGRES_URL": "PostgreSQL 数据库连接",
-            "MONGODB_URL": "MongoDB 数据库连接",
             "NEO4J_URL": "Neo4j 图数据库连接",
             "NEO4J_USER": "Neo4j 用户名",
             "NEO4J_PASSWORD": "Neo4j 密码",

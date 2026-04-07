@@ -215,6 +215,7 @@ async def list_documents(
 
         if doc.doc_category == "source":
             doc_id_str = str(doc.id)
+            # 获取提取任务状态
             task_result = await db.execute(
                 select(ExtractionTask)
                 .where(text("input_files::text LIKE :doc_id"))
@@ -223,20 +224,34 @@ async def list_documents(
                 .limit(1)
             )
             task = task_result.scalar_one_or_none()
-            if task:
+
+            # 获取提取结果统计
+            from app.models.document import DocumentExtraction
+            extraction_result = await db.execute(
+                select(DocumentExtraction).where(DocumentExtraction.document_id == doc.id)
+            )
+            extraction = extraction_result.scalar_one_or_none()
+
+            if task or extraction:
                 progress = "0%"
                 current_step = ""
-                if task.result and isinstance(task.result, dict):
-                    progress = task.result.get("progress", "0%")
-                    current_step = task.result.get("current_step", "")
+                entities_count = 0
+
+                if task:
+                    if task.result and isinstance(task.result, dict):
+                        progress = task.result.get("progress", "0%")
+                        current_step = task.result.get("current_step", "")
+
+                if extraction:
+                    entities_count = extraction.entities_count
 
                 doc_dict["extraction_status"] = {
-                    "task_id": str(task.id),
-                    "status": task.status,
+                    "task_id": str(task.id) if task else None,
+                    "status": task.status if task else "completed",
                     "progress": progress,
                     "current_step": current_step,
-                    "error": task.error_message,
-                    "entities_count": task.result.get("entities_count", 0) if task.result else 0
+                    "error": task.error_message if task else None,
+                    "entities_count": entities_count
                 }
 
         doc_list.append(doc_dict)
@@ -359,30 +374,64 @@ async def delete_document(
 
         # 4. 删除 xlsx 对应的 PostgreSQL 表
         try:
-            from app.services.preprocessing_service import get_xlsx_schema_store
-            schema_store = get_xlsx_schema_store()
-            if doc_id_str in schema_store:
-                for schema in schema_store[doc_id_str]:
+            # 从 PostgreSQL 获取 xlsx schema 信息
+            from app.models.document import DocumentExtraction
+
+            result = await db.execute(
+                select(DocumentExtraction).where(DocumentExtraction.document_id == document_id)
+            )
+            extraction = result.scalar_one_or_none()
+
+            table_names_to_drop = []
+
+            # 从 PostgreSQL 获取表名
+            if extraction and extraction.xlsx_schema:
+                for schema in extraction.xlsx_schema:
                     table_name = schema.get("table_name", "")
                     if table_name:
-                        try:
-                            from sqlalchemy import text as sa_text
-                            async with engine.connect() as conn:
-                                await conn.execute(sa_text(f'DROP TABLE IF EXISTS "{table_name}"'))
-                                await conn.commit()
-                        except Exception:
-                            pass
-                del schema_store[doc_id_str]
-        except Exception:
-            pass
+                        table_names_to_drop.append(table_name)
 
-        # 5. 删除 MongoDB 中的提取结果
-        try:
-            from app.db.mongodb import get_collection
-            collection = get_collection("extractions")
-            await collection.delete_many({"document_id": doc_id_str})
+            # 如果 PostgreSQL 中没有，再尝试从内存中获取（兼容旧数据）
+            if not table_names_to_drop:
+                from app.services.preprocessing_service import get_xlsx_schema_store
+                schema_store = get_xlsx_schema_store()
+                if doc_id_str in schema_store:
+                    for schema in schema_store[doc_id_str]:
+                        table_name = schema.get("table_name", "")
+                        if table_name:
+                            table_names_to_drop.append(table_name)
+
+            # 删除所有相关的表
+            for table_name in table_names_to_drop:
+                try:
+                    from sqlalchemy import text as sa_text
+                    async with engine.connect() as conn:
+                        await conn.execute(sa_text(f'DROP TABLE IF EXISTS "{table_name}"'))
+                        await conn.commit()
+                        logger.info(f"Deleted PG table: {table_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to drop table {table_name}: {e}")
+
+            # 清理内存中的 schema store
+            try:
+                from app.services.preprocessing_service import get_xlsx_schema_store
+                schema_store = get_xlsx_schema_store()
+                if doc_id_str in schema_store:
+                    del schema_store[doc_id_str]
+            except Exception:
+                pass
         except Exception as e:
-            logger.warning("Failed to delete MongoDB data for document %s: %s", document_id, e)
+            logger.warning(f"Failed to delete xlsx PG tables for document {doc_id_str}: {e}")
+
+        # 5. 删除 PostgreSQL 中的提取结果
+        try:
+            from app.models.document import DocumentExtraction
+            await db.execute(
+                text("DELETE FROM document_extractions WHERE document_id = :doc_id"),
+                {"doc_id": document_id}
+            )
+        except Exception as e:
+            logger.warning("Failed to delete extraction data for document %s: %s", document_id, e)
 
         if doc.file_path and os.path.exists(doc.file_path):
             os.remove(doc.file_path)

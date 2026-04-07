@@ -46,3 +46,4 @@ doc
 temp
 logs
 .ruff_cache
+*.bak

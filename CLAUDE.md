@@ -88,6 +88,19 @@ code3/
 - 基于图谱的问答
 - 跨文档数据关联发现
 
+### 5. LLM 流控模块
+
+功能：限制 LLM API 调用频率和 token 使用量，避免超额费用
+
+核心能力：
+- RPM (Requests Per Minute) 限制：每分钟最大请求数
+- TPM (Tokens Per Minute) 限制：每分钟最大 token 数
+- 自动等待机制：当达到限制时自动等待
+
+关键文件：
+- backend/app/core/rate_limiter.py - 流控管理器
+- backend/app/services/llm_service.py - 集成流控的 LLM 服务
+
 ## 环境变量配置
 
 POSTGRES_URL=postgresql://docfusion:docfusion123@postgres:5432/docfusion

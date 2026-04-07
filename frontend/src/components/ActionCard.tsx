@@ -1,10 +1,10 @@
-import { Loader2, CheckCircle, XCircle, Download, AlertCircle } from 'lucide-react'
+import { Loader2, CheckCircle, XCircle, Download } from 'lucide-react'
 
 export interface ActionData {
-  action_id: string
+  action_id?: string
   action_type: string  // confirm_extract, confirm_fill, executing, completed, failed
-  title: string
-  description: string
+  title?: string
+  description?: string
   progress?: number
   result?: {
     entities_count?: number
@@ -12,6 +12,10 @@ export interface ActionData {
     output_filename?: string
     [key: string]: any
   }
+  // 新Agent系统字段
+  filled_file_url?: string
+  filled_file_id?: string
+  _messageId?: string
 }
 
 interface ActionCardProps {

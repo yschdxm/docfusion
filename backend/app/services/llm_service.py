@@ -2,8 +2,9 @@ import json
 import httpx
 import logging
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.core.config import get_settings
+from app.core.rate_limiter import rate_limiter
 from app.services.prompts import (
     NER_PROMPT,
     QUERY_GENERATION_PROMPT,
@@ -11,6 +12,7 @@ from app.services.prompts import (
     SQL_GENERATION_PROMPT,
     ROW_FILL_PROMPT,
     BATCH_EXTRACT_PROMPT,
+    FILL_SATISFACTION_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,22 +77,223 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 65536
-    ) -> str:
-        async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
-                }
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+        max_tokens: int = 65536,
+        enable_thinking: bool = True,
+        stream: bool = False,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto"
+    ) -> Union[str, Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
+        """调用LLM聊天接口
+
+        Args:
+            messages: 对话消息列表
+            temperature: 采样温度
+            max_tokens: 最大token数
+            enable_thinking: 是否启用思考模式 (MiMO原生)
+            stream: 是否使用流式输出
+            tools: 工具定义列表 (OpenAI格式)
+            tool_choice: 工具选择策略
+
+        Returns:
+            如果stream=True: 返回AsyncGenerator
+            如果stream=False且返回dict: 包含content, reasoning_content, tool_calls
+            如果stream=False且返回str: 仅content (兼容旧代码)
+        """
+        import time
+
+        start_time = time.time()
+        logger.info(f"[llm_service.chat_completion] 开始调用 | model={self.model}, temperature={temperature}, max_tokens={max_tokens}, stream={stream}, enable_thinking={enable_thinking}")
+        if tools:
+            logger.info(f"[llm_service.chat_completion] 可用工具: {[t.get('function', {}).get('name', 'unknown') for t in tools]}")
+        logger.debug(f"[llm_service.chat_completion] 消息数: {len(messages)}")
+
+        # 构建请求体
+        request_body = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+            "thinking": {"type": "enabled" if enable_thinking else "disabled"},
+            "stream": stream,
+        }
+
+        # 如果是流式输出，启用 usage 信息
+        if stream:
+            request_body["stream_options"] = {"include_usage": True}
+
+        # 添加工具定义
+        if tools:
+            request_body["tools"] = tools
+            request_body["tool_choice"] = tool_choice
+
+        try:
+            # 流控检查：预估 token 数量 (基于消息长度)
+            estimated_tokens = sum(len(msg.get("content") or "") for msg in messages) // 4  # 粗略估算
+            await rate_limiter.wait_for_permission(estimated_tokens)
+
+            # 流式输出
+            if stream:
+                return self._chat_completion_stream(request_body, start_time, estimated_tokens)
+
+            # 非流式输出
+            async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
+                logger.debug(f"[llm_service.chat_completion] 发送HTTP POST请求到 {self.base_url}/chat/completions")
+
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json=request_body
+                )
+
+                elapsed = time.time() - start_time
+                logger.info(f"[llm_service.chat_completion] HTTP响应收到 | 状态码: {response.status_code} | 耗时: {elapsed:.2f}s")
+
+                response.raise_for_status()
+                result = response.json()
+
+                # 检查响应结构
+                if "choices" not in result:
+                    logger.error(f"[llm_service.chat_completion] 响应缺少choices字段: {result.keys()}")
+                    raise ValueError("LLM响应格式错误: 缺少choices字段")
+
+                if not result["choices"]:
+                    logger.error("[llm_service.chat_completion] choices为空列表")
+                    raise ValueError("LLM响应格式错误: choices为空")
+
+                message = result["choices"][0]["message"]
+                content = message.get("content", "")
+                reasoning_content = message.get("reasoning_content", "")
+                tool_calls = message.get("tool_calls") or []
+                total_time = time.time() - start_time
+
+                # 记录实际 token 使用量
+                usage = result.get("usage", {})
+                actual_tokens = usage.get("total_tokens", estimated_tokens)
+                await rate_limiter.record_request(actual_tokens)
+
+                logger.info(f"[llm_service.chat_completion] 成功 | 内容长度: {len(content)}, 思考长度: {len(reasoning_content)}, 工具调用数: {len(tool_calls)} | 总耗时: {total_time:.2f}s | Token使用: {actual_tokens}")
+
+                # 详细诊断日志：当 content 为空时记录完整响应结构
+                if not content:
+                    logger.warning(f"[llm_service.chat_completion] content 为空! 完整消息字段: {list(message.keys())}")
+                    logger.warning(f"[llm_service.chat_completion] reasoning_content 长度: {len(reasoning_content)}")
+                    if reasoning_content:
+                        logger.warning(f"[llm_service.chat_completion] reasoning_content 前200字符: {reasoning_content[:200]}")
+                        # 检查 reasoning_content 是否包含 JSON
+                        if "{" in reasoning_content or "[" in reasoning_content:
+                            logger.warning("[llm_service.chat_completion] reasoning_content 包含 JSON 结构")
+                            # 记录 reasoning_content 的最后1000字符，看看是否有 JSON
+                            logger.warning(f"[llm_service.chat_completion] reasoning_content 最后1000字符: {reasoning_content[-1000:]}")
+                    # 记录完整的 message 结构（前1000字符）
+                    import json
+                    try:
+                        msg_str = json.dumps(message, ensure_ascii=False, indent=2)
+                        logger.warning(f"[llm_service.chat_completion] 完整消息结构: {msg_str[:1000]}...")
+                    except Exception as e:
+                        logger.warning(f"[llm_service.chat_completion] 无法序列化消息: {e}")
+
+                if tool_calls:
+                    logger.info(f"[llm_service.chat_completion] 工具调用: {[tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]}")
+
+                # 如果提供了工具但没有tool_calls，返回完整dict
+                if tools:
+                    return {
+                        "content": content,
+                        "reasoning_content": reasoning_content,
+                        "tool_calls": tool_calls,
+                    }
+
+                # 兼容旧代码：返回str
+                return content
+
+        except httpx.TimeoutException as e:
+            total_time = time.time() - start_time
+            logger.error(f"[llm_service.chat_completion] 请求超时 | 耗时: {total_time:.2f}s | error: {e}")
+            raise
+        except httpx.HTTPStatusError as e:
+            total_time = time.time() - start_time
+            logger.error(f"[llm_service.chat_completion] HTTP错误 | 状态码: {e.response.status_code} | 耗时: {total_time:.2f}s | error: {e}")
+            logger.error(f"[llm_service.chat_completion] 错误响应: {e.response.text[:500]}")
+            raise
+        except Exception as e:
+            total_time = time.time() - start_time
+            logger.exception(f"[llm_service.chat_completion] 异常 | 耗时: {total_time:.2f}s | error: {e}")
+            raise
+
+    async def _chat_completion_stream(
+        self,
+        request_body: Dict[str, Any],
+        start_time: float,
+        estimated_tokens: int = 0
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式调用LLM
+
+        Yields:
+            包含 content, reasoning_content, tool_calls, finish_reason 的字典
+        """
+        import time
+        logger.debug("[llm_service._chat_completion_stream] 开始流式调用")
+
+        try:
+            async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json=request_body,
+                ) as response:
+                    response.raise_for_status()
+
+                    actual_tokens = estimated_tokens
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+
+                            try:
+                                chunk = json.loads(data)
+
+                                # 检查是否有 usage 信息 (通常在最后一个 chunk)
+                                if "usage" in chunk and chunk["usage"] is not None:
+                                    usage = chunk["usage"]
+                                    actual_tokens = usage.get("total_tokens", estimated_tokens)
+                                    logger.debug(f"[llm_service._chat_completion_stream] 收到 usage 信息: {actual_tokens} tokens")
+                                    continue
+
+                                if "choices" not in chunk or not chunk["choices"]:
+                                    continue
+
+                                delta = chunk["choices"][0].get("delta", {})
+                                finish_reason = chunk["choices"][0].get("finish_reason")
+
+                                yield {
+                                    "content": delta.get("content", ""),
+                                    "reasoning_content": delta.get("reasoning_content", ""),
+                                    "tool_calls": delta.get("tool_calls", []),
+                                    "finish_reason": finish_reason,
+                                }
+
+                                # 如果是 stop 或 content_filter，可以结束流
+                                # 但如果是 length，可能还有内容在后续 chunk 中（虽然不太可能）
+                                # 这里保持原有逻辑，但增加日志
+                                if finish_reason:
+                                    logger.debug(f"[llm_service._chat_completion_stream] 收到finish_reason={finish_reason}，结束流")
+                                    break
+
+                            except json.JSONDecodeError:
+                                logger.warning(f"[llm_service._chat_completion_stream] JSON解析失败: {data[:200]}")
+                                continue
+
+                    # 记录流式调用的 token 使用量
+                    await rate_limiter.record_request(actual_tokens)
+
+                    elapsed = time.time() - start_time
+                    logger.info(f"[llm_service._chat_completion_stream] 流式调用完成 | 耗时: {elapsed:.2f}s | Token使用: {actual_tokens}")
+
+        except Exception as e:
+            logger.exception(f"[llm_service._chat_completion_stream] 流式调用异常: {e}")
+            raise
 
     # ──────────────────────────── 实体关系提取 ────────────────────────────
 
@@ -242,6 +445,7 @@ class LLMService:
         table_headers: str,
         contexts: List[str],
         table_context: str = "",
+        document_title: str = "",
     ) -> List[Dict[str, str]]:
         """从源文档中批量提取所有符合表头结构的记录。
 
@@ -253,6 +457,7 @@ class LLMService:
             table_headers=table_headers,
             context_text=context_text,
             table_context=table_context or "无",
+            document_title=document_title if document_title else "未指定",
         )
 
         messages = [{"role": "user", "content": prompt}]
@@ -298,6 +503,129 @@ class LLMService:
             return self._extract_json(response)
         except Exception:
             return {}
+
+    # ──────────────────────────── 分阶段填表相关 ────────────────────────────
+
+    async def check_fill_satisfaction(
+        self,
+        table_headers: List[str],
+        filled_rows: List[List[Any]],
+        total_rows: int,
+        source_type: str,
+        raw_data_count: int,
+        document_title: str = "",
+    ) -> Dict[str, Any]:
+        """让LLM判断当前填写结果是否满足要求。
+
+        Returns:
+            {"is_satisfied": bool, "reason": str, "missing_fields": [...], "suggestions": str, "decision": str}
+        """
+        # 计算统计信息
+        data_rows = len(filled_rows) - 1 if len(filled_rows) > 0 else 0  # 排除表头
+        filled_count = 0
+        for row in filled_rows[1:]:  # 跳过表头
+            if any(str(cell).strip() for cell in row if cell is not None):
+                filled_count += 1
+
+        # 准备示例行（最多5行）
+        sample_rows = []
+        for i, row in enumerate(filled_rows[:6]):  # 表头+前5行数据
+            if i == 0:
+                sample_rows.append(f"[表头] {row}")
+            else:
+                sample_rows.append(f"[行{i}] {row}")
+        sample_text = "\n".join(sample_rows)
+
+        headers_str = "，".join([h for h in table_headers if h])
+
+        prompt = FILL_SATISFACTION_PROMPT.format(
+            table_headers=headers_str,
+            total_rows=total_rows,
+            data_rows=data_rows,
+            filled_rows=filled_count,
+            sample_rows=sample_text,
+            source_type=source_type,
+            raw_data_count=raw_data_count,
+            document_title=document_title if document_title else "未指定",
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=2000)
+
+        try:
+            result = self._extract_json(response)
+            return {
+                "is_satisfied": result.get("is_satisfied", False),
+                "reason": result.get("reason", ""),
+                "missing_fields": result.get("missing_fields", []),
+                "suggestions": result.get("suggestions", ""),
+                "decision": result.get("decision", "continue"),
+            }
+        except Exception as e:
+            logger.warning("[CHECK-SATISFACTION] JSON解析失败: %s, response: %s", e, response[:200] if response else "None")
+            return {
+                "is_satisfied": False,
+                "reason": "LLM判断结果解析失败",
+                "missing_fields": [],
+                "suggestions": "请重试或检查数据源",
+                "decision": "continue",
+            }
+
+    async def extract_records_from_graph(
+        self,
+        table_headers: str,
+        graph_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, str]]:
+        """从图谱查询结果中提取结构化记录。
+
+        Returns:
+            [{"字段名1": "值1", "字段名2": "值2", ...}, ...]
+        """
+        if not graph_results:
+            return []
+
+        # 构建图谱结果文本
+        result_texts = []
+        for i, r in enumerate(graph_results[:20]):  # 最多20条
+            content = r.get("content", "")
+            if content:
+                result_texts.append(f"{i+1}. {content}")
+
+        if not result_texts:
+            return []
+
+        prompt = f"""从知识图谱查询结果中提取符合表格结构的结构化数据记录。
+
+表格表头：{table_headers}
+
+图谱查询结果：
+{chr(10).join(result_texts)}
+
+请从上述图谱结果中提取数据记录，每个记录的字段名必须与表头对应。
+注意：
+1. 只返回能从图谱结果中明确提取的数据
+2. 如果某字段在图谱中找不到对应信息，该字段留空
+3. 确保提取的数据格式正确
+
+输出格式（JSON）：
+{{"records": [
+  {{"表头1": "值1", "表头2": "值2", ...}},
+  {{"表头1": "值3", "表头2": "值4", ...}}
+]}}
+
+只返回JSON，不要其他说明。"""
+
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=8000)
+
+        try:
+            result = self._extract_json(response)
+            records = result.get("records", [])
+            logger.debug("[EXTRACT-FROM-GRAPH] 提取到 %d 条记录", len(records))
+            return records
+        except Exception as e:
+            logger.warning("[EXTRACT-FROM-GRAPH] JSON解析失败: %s, response: %s", e, response[:200] if response else "None")
+            return []
 
     # ──────────────────────────── 文档操作 ────────────────────────────
 

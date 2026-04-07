@@ -28,10 +28,10 @@ export default function TableFillModule() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [tasks, setTasks] = useState<FillTask[]>([])
   const [activeTab, setActiveTab] = useState<'fill' | 'queue'>('queue')
-  const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+  const [, setIsLoadingTasks] = useState(false)
   const [extractedDocIds, setExtractedDocIds] = useState<Set<string>>(new Set())
   
-  const pollingRef = useRef<NodeJS.Timeout | null>(null)
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isMountedRef = useRef(true)
 
   const sourceDocs = documents.filter(d => d.doc_category === 'source')

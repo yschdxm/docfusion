@@ -10,6 +10,69 @@ logger = logging.getLogger(__name__)
 
 class SQLQueryService:
 
+    async def _get_table_info(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
+        """根据doc_ids获取对应的PostgreSQL表信息。
+
+        Returns:
+            [{"table_name": str, "columns": [{"name": str, "type": str}], "sample_data": [...]}]
+        """
+        if not doc_ids:
+            logger.warning("[_get_table_info] doc_ids为空")
+            return []
+
+        try:
+            from app.db.postgres import engine
+            from sqlalchemy import text
+
+            # 找到 doc_id 对应的表名（表名以 doc_id 前8位开头）
+            table_patterns = [f"{did[:8]}%" for did in doc_ids if len(did) >= 8]
+            logger.info(f"[_get_table_info] doc_ids={doc_ids}, 生成的表名模式={table_patterns}")
+            if not table_patterns:
+                logger.warning("[_get_table_info] 无法生成表名模式，doc_id可能太短")
+                return []
+
+            tables_info = []
+            async with engine.connect() as conn:
+                for pattern in table_patterns:
+                    # 查询匹配的表
+                    result = await conn.execute(
+                        text("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE :p"),
+                        {"p": pattern}
+                    )
+                    table_names = [r[0] for r in result.fetchall()]
+                    logger.info(f"[_get_table_info] 模式'{pattern}'匹配到的表: {table_names}")
+
+                    for table_name in table_names:
+                        # 查询列信息
+                        col_result = await conn.execute(
+                            text("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=:t ORDER BY ordinal_position"),
+                            {"t": table_name}
+                        )
+                        columns = [{"name": c[0], "type": c[1]} for c in col_result.fetchall()]
+
+                        # 获取采样数据（3行）
+                        sample_data = []
+                        try:
+                            col_names = [f'"{c["name"]}"' for c in columns]
+                            sample_result = await conn.execute(
+                                text(f"SELECT {', '.join(col_names)} FROM \"{table_name}\" LIMIT 3")
+                            )
+                            for row in sample_result.fetchall():
+                                sample_data.append(dict(zip([c["name"] for c in columns], row)))
+                        except Exception as e:
+                            logger.warning(f"获取采样数据失败: {table_name}, {e}")
+
+                        tables_info.append({
+                            "table_name": table_name,
+                            "columns": columns,
+                            "sample_data": sample_data
+                        })
+
+            return tables_info
+        except Exception as e:
+            logger.warning("获取表信息失败: %s", e)
+            return []
+
     async def get_schema_for_doc(self, doc_id: str, schema_store: Dict[str, Any] = None) -> str:
         """获取文档对应的表结构信息（用于 LLM 生成 SQL）。
 
@@ -42,125 +105,6 @@ class SQLQueryService:
 
         return "\n".join(lines)
 
-    async def generate_and_execute(
-        self,
-        question: str,
-        schema_info: str,
-        max_retries: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """根据自然语言问题生成 SQL 并执行，失败或结果不满意时反馈给 LLM 重试。
-
-        Returns:
-            [{"column": value, ...}, ...] 查询结果
-        """
-        if not schema_info:
-            return []
-
-        # 先查询表的实际列名，作为 schema_info 的补充
-        actual_columns = await self._get_actual_columns(schema_info)
-        col_hint = ""
-        if actual_columns:
-            col_hint = "\n数据库实际列名和采样数据（必须用这些列名，用双引号包裹）：\n" + "\n".join(actual_columns)
-
-        messages = [
-            {"role": "system", "content": f"你是 SQL 专家。可用表和列信息：\n{schema_info}{col_hint}\n\n要求：\n1. 所有列名和表名必须用双引号包裹\n2. schema_info 中「模板表头」是用户期望的列名，可能与数据库列名有差异（如点号→下划线），请以数据库实际列名为准"},
-        ]
-
-        for attempt in range(max_retries):
-            if attempt == 0:
-                prompt = f"{question}\n\n请生成 SQL 查询。只返回 JSON: {{\"sql\": \"SELECT ...\", \"explanation\": \"...\"}}"
-            else:
-                prompt = '查询结果不满意或执行出错，请修改 SQL 查询。\n\n只返回 JSON: {"sql": "SELECT ...", "explanation": "..."}'
-
-            messages.append({"role": "user", "content": prompt})
-
-            try:
-                response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=2000)
-                sql_result = llm_service._extract_json(response)
-                sql = sql_result.get("sql", "")
-            except Exception as e:
-                logger.warning("[SQL] LLM 生成 SQL 失败: %s", e)
-                messages.append({"role": "assistant", "content": response or ""})
-                messages.append({"role": "user", "content": "JSON 解析失败，请重新生成 SQL。只返回 JSON: {\"sql\": \"SELECT ...\", \"explanation\": \"...\"}"})
-                continue
-
-            if not sql:
-                continue
-
-            # 安全检查
-            sql_stripped = sql.strip().upper()
-            if not sql_stripped.startswith("SELECT"):
-                logger.warning("[SQL] 拒绝非 SELECT SQL: %s", sql[:100])
-                continue
-
-            forbidden_found = False
-            for forbidden in ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE"]:
-                if forbidden in sql_stripped:
-                    logger.warning("[SQL] 拒绝包含危险关键字的 SQL: %s", sql[:100])
-                    forbidden_found = True
-                    break
-            if forbidden_found:
-                continue
-
-            if "LIMIT" not in sql_stripped:
-                sql = sql.rstrip(";") + " LIMIT 100"
-
-            try:
-                async with engine.connect() as conn:
-                    result = await conn.execute(text(sql))
-                    columns = list(result.keys())
-                    rows = result.fetchall()
-                    row_dicts = [dict(zip(columns, row)) for row in rows]
-
-                    logger.info("[SQL] 执行成功: %d 条记录, 列: %s (第%d次尝试)", len(rows), columns, attempt + 1)
-
-                    if row_dicts:
-                        # 代码级检查：哪些列全是 None
-                        all_null_cols = []
-                        for col in columns:
-                            if all(r.get(col) is None for r in row_dicts):
-                                all_null_cols.append(col)
-
-                        if all_null_cols:
-                            # 有全空列，告诉 AI 这些列可能映射错误
-                            null_info = f"以下列的值全是空的：{all_null_cols}，可能是模板表头和数据库列名不匹配。请检查是否需要调整 SELECT 中的列名。"
-                            preview = "\n".join([str(r) for r in row_dicts[:2]])
-                            messages.append({"role": "assistant", "content": response})
-                            messages.append({"role": "user", "content": f"查询返回 {len(row_dicts)} 条记录，但 {null_info}\n前2条预览：\n{preview}\n\n如果确认数据正确，回复 {{\"satisfied\": true}}。如果需要调整，回复 {{\"satisfied\": false, \"reason\": \"原因\", \"sql\": \"新的SQL\"}}"})
-                            try:
-                                judge_resp = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=2000)
-                                judge = llm_service._extract_json(judge_resp)
-                                if judge.get("satisfied"):
-                                    logger.info("[SQL] AI 判定结果满意，返回 %d 条记录", len(row_dicts))
-                                    return row_dicts
-                                else:
-                                    new_sql = judge.get("sql", "")
-                                    if new_sql:
-                                        logger.info("[SQL] AI 不满意，重新查询")
-                                        messages.append({"role": "user", "content": f"请使用以下 SQL 查询：\n{new_sql}\n\n只返回 JSON: {{\"sql\": \"SELECT ...\", \"explanation\": \"...\"}}"})
-                                        continue
-                            except Exception:
-                                pass
-                            return row_dicts
-                        else:
-                            # 所有列都有数据，直接返回
-                            logger.info("[SQL] 所有列都有数据，直接返回 %d 条记录", len(row_dicts))
-                            return row_dicts
-                    else:
-                        # 0 条记录，让 AI 调整
-                        messages.append({"role": "assistant", "content": response})
-                        messages.append({"role": "user", "content": "查询返回 0 条记录。可能是时间格式不匹配（数据库中格式为 '2025-11-25 09:00:00.0'）或其他条件不对，请调整 SQL 重新查询。只返回 JSON: {\"sql\": \"SELECT ...\", \"explanation\": \"...\"}"})
-                        continue
-
-            except Exception as e:
-                error_msg = str(e)
-                logger.warning("[SQL] 执行失败 (第%d次): sql=%s, error=%s", attempt + 1, sql[:200], error_msg[:200])
-                messages.append({"role": "assistant", "content": response})
-                messages.append({"role": "user", "content": f"SQL 执行出错：{error_msg[:500]}\n请修正 SQL 后重新生成。只返回 JSON: {{\"sql\": \"SELECT ...\", \"explanation\": \"...\"}}"})
-
-        logger.error("[SQL] %d 次重试全部失败", max_retries)
-        return []
-
     async def _get_actual_columns(self, schema_info: str) -> List[str]:
         """从 schema_info 中提取表名，查询 PostgreSQL 实际列名和采样数据。"""
         import re
@@ -192,6 +136,113 @@ class SQLQueryService:
                 return col_names
         except Exception:
             return []
+
+    async def generate_and_execute_once(
+        self,
+        question: str,
+        schema_info: str = "",
+        doc_ids: List[str] = None,
+        previous_error: str = "",
+    ) -> Dict[str, Any]:
+        """单次生成 SQL 并执行，不重试。用于外层控制重试逻辑。
+
+        Args:
+            question: 查询问题
+            schema_info: 可选的schema信息（向后兼容）
+            doc_ids: 文档ID列表，用于获取准确的表结构
+            previous_error: 前次错误信息
+
+        Returns:
+            {"sql": str, "records": List[Dict], "error": str|None}
+        """
+        # 优先使用doc_ids获取准确的表信息
+        tables_info = []
+        if doc_ids:
+            tables_info = await self._get_table_info(doc_ids)
+
+        # 构建详细的schema信息
+        if tables_info:
+            schema_lines = []
+            for table in tables_info:
+                table_name = table["table_name"]
+                columns = table["columns"]
+                sample_data = table.get("sample_data", [])
+
+                col_descs = [f'"{c["name"]}" ({c["type"]})' for c in columns]
+                schema_lines.append(f"表名: {table_name}")
+                schema_lines.append(f"列: {', '.join(col_descs)}")
+
+                if sample_data:
+                    schema_lines.append("采样数据（前3行）:")
+                    for i, row in enumerate(sample_data, 1):
+                        row_str = ", ".join([f'{k}={repr(v)[:50]}' for k, v in row.items()])
+                        schema_lines.append(f"  行{i}: {row_str}")
+                schema_lines.append("")
+
+            full_schema = "\n".join(schema_lines)
+        elif schema_info:
+            full_schema = schema_info
+        else:
+            return {"sql": "", "records": [], "error": "没有schema信息"}
+
+        messages = [
+            {"role": "system", "content": f"""你是 SQL 专家。请根据提供的表结构生成正确的SQL查询。
+
+可用表信息：
+{full_schema}
+
+要求：
+1. 所有列名和表名必须用双引号包裹（如 "table_name"."column_name"）
+2. 表名是 {doc_ids[0][:8] if doc_ids else 'doc_id前8位'}_sheetname 格式
+3. 根据采样数据理解实际的数据格式
+4. 查询条件要准确匹配数据内容
+5. 返回所有相关列，不要遗漏"""},
+        ]
+
+        if previous_error:
+            prompt = f"前次查询失败或结果不满意：{previous_error}\n\n{question}\n\n请生成 SQL 查询。只返回 JSON: {{\"sql\": \"SELECT ...\", \"explanation\": \"...\"}}"
+        else:
+            prompt = f"{question}\n\n请生成 SQL 查询。只返回 JSON: {{\"sql\": \"SELECT ...\", \"explanation\": \"...\"}}"
+
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=2000)
+            sql_result = llm_service._extract_json(response)
+            sql = sql_result.get("sql", "")
+        except Exception as e:
+            logger.warning("[SQL-ONCE] LLM 生成 SQL 失败: %s", e)
+            return {"sql": "", "records": [], "error": f"LLM生成失败: {e}"}
+
+        if not sql:
+            return {"sql": "", "records": [], "error": "未生成SQL"}
+
+        # 安全检查
+        sql_stripped = sql.strip().upper()
+        if not sql_stripped.startswith("SELECT"):
+            return {"sql": sql, "records": [], "error": "非SELECT查询被拒绝"}
+
+        for forbidden in ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE"]:
+            if forbidden in sql_stripped:
+                return {"sql": sql, "records": [], "error": f"包含危险关键字: {forbidden}"}
+
+        if "LIMIT" not in sql_stripped:
+            sql = sql.rstrip(";") + " LIMIT 200"
+
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(text(sql))
+                columns = list(result.keys())
+                rows = result.fetchall()
+                row_dicts = [dict(zip(columns, row)) for row in rows]
+
+                logger.info("[SQL-ONCE] 执行成功: %d 条记录, 列: %s", len(rows), columns)
+                return {"sql": sql, "records": row_dicts, "error": None, "columns": columns}
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning("[SQL-ONCE] 执行失败: sql=%s, error=%s", sql[:200], error_msg[:200])
+            return {"sql": sql, "records": [], "error": error_msg}
 
     async def query_for_field(
         self,
@@ -240,7 +291,8 @@ class SQLQueryService:
         if row_context:
             question += f"，相关上下文：{row_context}"
 
-        rows = await self.generate_and_execute(question, schema_text)
+        result = await self.generate_and_execute_once(question, schema_text)
+        rows = result.get("records", [])
 
         results = []
         for row in rows[:20]:
@@ -253,6 +305,84 @@ class SQLQueryService:
             })
 
         return results
+
+
+    async def generate_and_execute(
+        self,
+        question: str,
+        schema_info: str = "",
+        doc_ids: List[str] = None,
+        max_retries: int = 3,
+    ) -> Dict[str, Any]:
+        """生成并执行SQL，带重试机制。
+
+        当查询失败或结果很少时，自动放宽查询条件重试。
+
+        Args:
+            question: 查询问题
+            schema_info: 可选的schema信息
+            doc_ids: 文档ID列表
+            max_retries: 最大重试次数
+
+        Returns:
+            {"sql": str, "records": List[Dict], "error": str|None}
+        """
+        last_error = ""
+        all_records = []
+        last_sql = ""
+
+        for attempt in range(max_retries):
+            # 构建带重试提示的问题
+            retry_question = question
+            if attempt > 0:
+                # 添加重试指导
+                if attempt == 1:
+                    retry_question = f"{question}\n\n（前次查询未返回足够数据，请尝试：1) 使用更宽泛的匹配条件如LIKE 2) 检查列名是否正确 3) 扩大查询范围）"
+                elif attempt == 2:
+                    retry_question = f"{question}\n\n（前两次查询均未返回足够数据，请尝试：1) 使用ILIKE进行大小写不敏感匹配 2) 使用OR连接多个可能条件 3) 减少WHERE限制）"
+
+            result = await self.generate_and_execute_once(
+                question=retry_question,
+                schema_info=schema_info,
+                doc_ids=doc_ids,
+                previous_error=last_error if attempt > 0 else ""
+            )
+
+            last_sql = result.get("sql", "")
+
+            if result.get("error") is None:
+                records = result.get("records", [])
+                all_records.extend(records)
+
+                # 如果获取到足够数据，提前返回
+                if len(all_records) >= 10:
+                    logger.info("[SQL-RETRY] 第%d次尝试成功，获取%d条记录", attempt + 1, len(all_records))
+                    break
+                else:
+                    logger.info("[SQL-RETRY] 第%d次尝试获取%d条记录，数据不足，继续重试", attempt + 1, len(records))
+                    last_error = f"仅返回{len(records)}条记录，数据不够充分"
+            else:
+                last_error = result.get("error", "")
+                logger.warning("[SQL-RETRY] 第%d次尝试失败: %s", attempt + 1, last_error[:100])
+
+        # 去重（基于所有字段）
+        seen = set()
+        unique_records = []
+        for record in all_records:
+            # 使用所有字段值作为去重键
+            key = tuple(sorted([(k, str(v)) for k, v in record.items()]))
+            if key not in seen:
+                seen.add(key)
+                unique_records.append(record)
+
+        logger.info("[SQL-RETRY] 最终返回: %d条唯一记录（原始%d条）", len(unique_records), len(all_records))
+
+        return {
+            "sql": last_sql,
+            "records": unique_records,
+            "error": None if unique_records else last_error,
+            "columns": list(unique_records[0].keys()) if unique_records else []
+        }
 
 
 sql_query_service = SQLQueryService()

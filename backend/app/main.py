@@ -2,8 +2,6 @@ import logging
 import os
 
 from app.core.logging import setup_logging
-setup_logging()
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,8 +10,9 @@ from contextlib import asynccontextmanager
 from app.core.config import get_settings
 from app.api.v1.api import api_router
 from app.db.postgres import init_db
-from app.db.mongodb import init_mongodb, close_mongodb
 from app.db.neo4j_db import init_neo4j, close_neo4j
+
+setup_logging()
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -26,13 +25,11 @@ async def lifespan(app: FastAPI):
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "output"), exist_ok=True)
 
     await init_db()
-    await init_mongodb()
     await init_neo4j()
 
     yield
 
     logger.info("Application shutting down")
-    await close_mongodb()
     await close_neo4j()
 
 

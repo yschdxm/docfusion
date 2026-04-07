@@ -5,7 +5,6 @@ from app.services.document_processor import DocxParser, XlsxParser, MdParser, Tx
 from app.services.rag_service import rag_service
 from app.services.knowledge_graph_service import knowledge_graph_service
 from app.services.llm_service import llm_service
-from app.db.mongodb import get_collection
 
 logger = logging.getLogger(__name__)
 
@@ -189,24 +188,44 @@ async def preprocess_document(
         except Exception as e:
             logger.error(f"知识图谱构建失败: {e}")
 
-    # ── Step 6: 保存到 MongoDB ──
+    # ── Step 6: 保存到 PostgreSQL ──
     try:
-        collection = get_collection("extractions")
-        await collection.update_one(
-            {"document_id": doc_id},
-            {
-                "$set": {
-                    "document_id": doc_id,
-                    "entities_count": len(all_entities),
-                    "relations_count": len(all_relations),
-                    "chunks_count": len(chunks),
-                    "xlsx_schema": schema_info,
-                }
-            },
-            upsert=True,
-        )
+        from app.models.document import DocumentExtraction
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        from app.db.postgres import engine
+
+        # 创建异步会话
+        AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+        async with AsyncSessionLocal() as session:
+            # 检查是否已存在记录
+            result = await session.execute(
+                select(DocumentExtraction).where(DocumentExtraction.document_id == doc_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # 更新现有记录
+                existing.entities_count = len(all_entities)
+                existing.relations_count = len(all_relations)
+                existing.chunks_count = len(chunks)
+                existing.xlsx_schema = schema_info
+                existing.updated_at = None  # 让 onupdate 自动处理
+            else:
+                # 创建新记录
+                extraction = DocumentExtraction(
+                    document_id=doc_id,
+                    entities_count=len(all_entities),
+                    relations_count=len(all_relations),
+                    chunks_count=len(chunks),
+                    xlsx_schema=schema_info,
+                )
+                session.add(extraction)
+
+            await session.commit()
     except Exception as e:
-        logger.warning(f"MongoDB 保存失败: {e}")
+        logger.warning(f"PostgreSQL 保存提取结果失败: {e}")
 
     if progress_callback:
         await progress_callback(

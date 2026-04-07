@@ -224,13 +224,17 @@ class KnowledgeGraphService:
                     "sample_values": "、".join(list(unique_values)[:5]),
                 }
 
-            # AI 分析表头：确定主实体列、属性列、关系
-            try:
-                stats_text = "\n".join([
-                    f"- {h}: 唯一值{col_stats[h]['unique_count']}个, 样本: {col_stats[h]['sample_values']}"
-                    for h in valid_headers if h in col_stats
-                ])
-                prompt = f"""分析以下表格的表头和数据统计，确定数据结构。
+            # AI 分析表头：确定主实体列、属性列、关系（带重试机制）
+            analysis = {}
+            max_retries = 3
+
+            for retry_count in range(max_retries):
+                try:
+                    stats_text = "\n".join([
+                        f"- {h}: 唯一值{col_stats[h]['unique_count']}个, 样本: {col_stats[h]['sample_values']}"
+                        for h in valid_headers if h in col_stats
+                    ])
+                    prompt = f"""分析以下表格的表头和数据统计，确定数据结构。
 
 Sheet名：{sheet_name}
 表头及统计：
@@ -299,22 +303,53 @@ Sheet名：{sheet_name}
 
 只返回 JSON。"""
 
-                response = await llm_service.chat_completion(
-                    [{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=2000
-                )
-                json_str = response.strip()
-                if "```json" in json_str:
-                    json_str = json_str.split("```json")[1].split("```")[0].strip()
-                elif "```" in json_str:
-                    json_str = json_str.split("```")[1].strip()
+                    logger.info(f"AI 第 {retry_count + 1} 次请求 - Sheet: {sheet_name}, 表头数: {len(valid_headers)}")
+                    response = await llm_service.chat_completion(
+                        [{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=65536
+                    )
 
-                import json
-                analysis = json.loads(json_str)
-            except Exception as e:
-                logger.warning(f"AI 分析表头失败: {e}")
-                analysis = {}
+                    logger.info(f"AI 第 {retry_count + 1} 次响应 - 类型: {type(response)}, 长度: {len(response) if response else 0}")
+                    if not response:
+                        logger.warning(f"AI 第 {retry_count + 1} 次返回空响应 (response is None or empty)")
+                        if retry_count < max_retries - 1:
+                            continue
+                        analysis = {}
+                        break
+
+                    json_str = response.strip()
+                    logger.debug(f"AI 第 {retry_count + 1} 次响应: {json_str[:200]}...")
+
+                    if "```json" in json_str:
+                        json_str = json_str.split("```json")[1].split("```")[0].strip()
+                    elif "```" in json_str:
+                        json_str = json_str.split("```")[1].strip()
+
+                    import json
+                    if not json_str:
+                        logger.warning(f"AI 第 {retry_count + 1} 次响应提取后为空")
+                        if retry_count < max_retries - 1:
+                            continue
+                        analysis = {}
+                        break
+
+                    analysis = json.loads(json_str)
+                    logger.info(f"AI 第 {retry_count + 1} 次分析成功")
+                    break
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"AI 第 {retry_count + 1} 次返回无效JSON: {e}")
+                    if retry_count < max_retries - 1:
+                        logger.info(f"重试第 {retry_count + 2} 次...")
+                        continue
+                    analysis = {}
+                except Exception as e:
+                    logger.warning(f"AI 第 {retry_count + 1} 次分析失败: {e}")
+                    if retry_count < max_retries - 1:
+                        logger.info(f"重试第 {retry_count + 2} 次...")
+                        continue
+                    analysis = {}
 
             primary_entity = analysis.get("primary_entity", {})
             column_roles = analysis.get("column_roles", {})

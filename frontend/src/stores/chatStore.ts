@@ -2,10 +2,12 @@ import { create } from 'zustand'
 import api from '../services/api'
 
 export interface Message {
+  id?: number
   role: 'user' | 'assistant'
   content: string
   timestamp: number
   action_data?: any
+  steps?: any[]
 }
 
 export interface ChatSession {
@@ -25,12 +27,14 @@ interface ChatStore {
   activeSessionId: string | null
   isMinimized: boolean
   isLoading: boolean
-  
+  isStreaming: boolean  // 是否正在流式输出
+  abortController: AbortController | null  // 用于取消流式请求
+
   // 从数据库加载所有会话
   loadSessions: () => Promise<void>
   
   // 加载单个会话的消息
-  loadSessionMessages: (sessionId: string) => Promise<void>
+  loadSessionMessages: (sessionId: string, force?: boolean) => Promise<void>
   
   // 创建新会话
   createSession: (documentId: string | null, documentName: string, fileIds?: string[], templateId?: string | null) => Promise<string>
@@ -55,6 +59,10 @@ interface ChatStore {
   
   // 最小化状态
   setMinimized: (minimized: boolean) => void
+
+  // 流式控制
+  setStreaming: (isStreaming: boolean, abortController?: AbortController | null) => void
+  stopStreaming: () => void
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -62,6 +70,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   activeSessionId: null,
   isMinimized: true,
   isLoading: false,
+  isStreaming: false,
+  abortController: null,
 
   loadSessions: async () => {
     set({ isLoading: true })
@@ -109,7 +119,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp || Date.now(),
-        action_data: msg.action_data
+        action_data: msg.action_data,
+        steps: msg.steps
       }))
 
       // 检查是否有confirm_fill类型的消息，如果有，从任务API获取最新状态
@@ -154,7 +165,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                     progress: 100,
                     result: {
                       filled_file_id: filledDocId,
-                      filled_file_url: filledDocId ? `/api/v1/table-fill/download/${filledDocId}` : null
+                      filled_file_url: filledDocId ? `/api/v1/documents/${filledDocId}/download` : null
                     }
                   }
                 }
@@ -283,7 +294,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const response = await api.post(`/conversations/${sessionId}/messages`, {
         role: message.role,
         content: message.content,
-        action_data: message.action_data
+        action_data: message.action_data,
+        steps: (message as any).steps
       })
       return response.data.id
     } catch (error) {
@@ -295,27 +307,28 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   updateMessage: async (sessionId, messageId, message) => {
     // 更新本地状态
     set(state => ({
-      sessions: state.sessions.map(s => 
-        s.id === sessionId 
-          ? { 
-              ...s, 
-              messages: s.messages.map(m => 
-                m.id === messageId 
-                  ? { ...m, content: message.content, action_data: message.action_data }
+      sessions: state.sessions.map(s =>
+        s.id === sessionId
+          ? {
+              ...s,
+              messages: s.messages.map(m =>
+                m.id === messageId
+                  ? { ...m, content: message.content, action_data: message.action_data, steps: (message as any).steps || m.steps }
                   : m
-              ), 
-              updatedAt: Date.now() 
+              ),
+              updatedAt: Date.now()
             }
           : s
       )
     }))
-    
+
     // 更新数据库
     try {
       await api.put(`/conversations/${sessionId}/messages/${messageId}`, {
         role: message.role || 'assistant',
         content: message.content,
-        action_data: message.action_data
+        action_data: message.action_data,
+        steps: (message as any).steps
       })
     } catch (error) {
       console.error('Failed to update message:', error)
@@ -366,5 +379,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setMinimized: (minimized) => {
     set({ isMinimized: minimized })
+  },
+
+  setStreaming: (isStreaming, abortController = null) => {
+    set({ isStreaming, abortController })
+  },
+
+  stopStreaming: () => {
+    const { abortController } = get()
+    if (abortController) {
+      abortController.abort()
+      set({ isStreaming: false, abortController: null })
+    }
   }
 }))

@@ -37,7 +37,7 @@ def setup_logging():
 
     支持的环境变量：
         LOG_LEVEL           - 全局默认级别 (默认 INFO)
-        LOG_LEVEL_DB        - 数据库层 (postgres, mongodb, neo4j) (默认 WARNING)
+        LOG_LEVEL_DB        - 数据库层 (postgres, neo4j) (默认 WARNING)
         LOG_LEVEL_SERVICE   - services/ 层级 (默认 INFO)
         LOG_LEVEL_API       - api/v1/endpoints/ 层级 (默认 INFO)
         LOG_LEVEL_LLM       - llm_service 单独控制 (默认 INFO)
@@ -46,7 +46,6 @@ def setup_logging():
         LOG_LEVEL_UVICORN   - uvicorn (默认 WARNING)
         LOG_LEVEL_SQLALCHEMY - sqlalchemy (默认 WARNING)
         LOG_LEVEL_NEO4J_DRIVER - neo4j 驱动 (默认 WARNING)
-        LOG_LEVEL_MOTOR     - motor/pymongo (默认 WARNING)
         LOG_LEVEL_REDIS     - redis (默认 WARNING)
         LOG_LEVEL_CELERY    - celery (默认 WARNING)
     """
@@ -140,8 +139,6 @@ def setup_logging():
             "fastapi":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
             "sqlalchemy":      {"level": s.LOG_LEVEL_SQLALCHEMY, "handlers": ["console", "file"], "propagate": False},
             "neo4j":           {"level": s.LOG_LEVEL_NEO4J_DRIVER, "handlers": ["console", "file"], "propagate": False},
-            "pymongo":         {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console", "file"], "propagate": False},
-            "motor":           {"level": s.LOG_LEVEL_MOTOR,   "handlers": ["console", "file"], "propagate": False},
             "redis":           {"level": s.LOG_LEVEL_REDIS,   "handlers": ["console", "file"], "propagate": False},
             "celery":          {"level": s.LOG_LEVEL_CELERY,  "handlers": ["console", "file"], "propagate": False},
         },
