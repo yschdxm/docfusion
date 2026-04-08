@@ -76,7 +76,7 @@ services:
       - docfusion-net
 
   postgres:
-    image: docker.1ms.run/postgres:16-alpine
+    image: docker.1ms.run/postgres:17-alpine
     environment:
       - POSTGRES_USER=docfusion
       - POSTGRES_PASSWORD=docfusion123
