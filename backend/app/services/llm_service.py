@@ -2,9 +2,19 @@ import json
 import httpx
 import logging
 import re
+import time
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.core.config import get_settings
 from app.core.rate_limiter import rate_limiter
+from app.core.llm_errors import (
+    LLMError,
+    LLMErrorCode,
+    LLMFinishReason,
+    handle_http_error,
+    handle_finish_reason,
+    handle_response_validation_error,
+    llm_error_logger,
+)
 from app.services.prompts import (
     NER_PROMPT,
     QUERY_GENERATION_PROMPT,
@@ -20,6 +30,18 @@ settings = get_settings()
 
 
 class LLMService:
+    """LLM 服务类 - 集成 MiMO API 错误处理"""
+
+    # 可重试的错误代码
+    RETRYABLE_ERRORS = {
+        LLMErrorCode.RATE_LIMIT_ERROR,
+        LLMErrorCode.SERVER_ERROR,
+        LLMErrorCode.SERVICE_UNAVAILABLE,
+        LLMErrorCode.GATEWAY_TIMEOUT,
+        LLMErrorCode.TIMEOUT_ERROR,
+        LLMErrorCode.CONNECTION_ERROR,
+    }
+
     def __init__(self):
         self.api_key = settings.MIMO_API_KEY
         self.base_url = settings.MIMO_BASE_URL
@@ -29,7 +51,14 @@ class LLMService:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        logger.info(f"LLMService初始化: model={self.model}, base_url={self.base_url}, ssl_verify={self.ssl_verify}")
+        self.max_retries = 3
+        self.retry_delay = 1.0  # 初始重试延迟（秒）
+        self.error_logger = llm_error_logger
+
+        logger.info(
+            "LLMService初始化: model=%s, base_url=%s, ssl_verify=%s, max_retries=%d",
+            self.model, self.base_url, self.ssl_verify, self.max_retries
+        )
 
     @staticmethod
     def _extract_json(text: str) -> Any:
@@ -83,7 +112,7 @@ class LLMService:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto"
     ) -> Union[str, Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
-        """调用LLM聊天接口
+        """调用LLM聊天接口（带错误处理和重试机制）
 
         Args:
             messages: 对话消息列表
@@ -98,14 +127,22 @@ class LLMService:
             如果stream=True: 返回AsyncGenerator
             如果stream=False且返回dict: 包含content, reasoning_content, tool_calls
             如果stream=False且返回str: 仅content (兼容旧代码)
-        """
-        import time
 
+        Raises:
+            LLMError: 当API调用失败或响应异常时
+        """
         start_time = time.time()
-        logger.info(f"[llm_service.chat_completion] 开始调用 | model={self.model}, temperature={temperature}, max_tokens={max_tokens}, stream={stream}, enable_thinking={enable_thinking}")
-        if tools:
-            logger.info(f"[llm_service.chat_completion] 可用工具: {[t.get('function', {}).get('name', 'unknown') for t in tools]}")
-        logger.debug(f"[llm_service.chat_completion] 消息数: {len(messages)}")
+
+        # 记录请求开始
+        self.error_logger.log_request_start(
+            model=self.model,
+            messages_count=len(messages),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=stream,
+            enable_thinking=enable_thinking,
+            has_tools=bool(tools),
+        )
 
         # 构建请求体
         request_body = {
@@ -126,19 +163,103 @@ class LLMService:
             request_body["tools"] = tools
             request_body["tool_choice"] = tool_choice
 
-        try:
-            # 流控检查：预估 token 数量 (基于消息长度)
-            estimated_tokens = sum(len(msg.get("content") or "") for msg in messages) // 4  # 粗略估算
-            await rate_limiter.wait_for_permission(estimated_tokens)
+        # 请求信息（用于错误日志）
+        request_info = {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+            "enable_thinking": enable_thinking,
+            "message_count": len(messages),
+        }
 
-            # 流式输出
-            if stream:
-                return self._chat_completion_stream(request_body, start_time, estimated_tokens)
+        last_error: Optional[LLMError] = None
 
-            # 非流式输出
-            async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
-                logger.debug(f"[llm_service.chat_completion] 发送HTTP POST请求到 {self.base_url}/chat/completions")
+        # 重试循环
+        for attempt in range(self.max_retries):
+            try:
+                # 流控检查：预估 token 数量
+                estimated_tokens = sum(len(msg.get("content") or "") for msg in messages) // 4
+                await rate_limiter.wait_for_permission(estimated_tokens)
 
+                # 流式输出
+                if stream:
+                    return self._chat_completion_stream(
+                        request_body=request_body,
+                        start_time=start_time,
+                        estimated_tokens=estimated_tokens
+                    )
+
+                # 非流式输出
+                return await self._chat_completion_non_stream(
+                    request_body=request_body,
+                    start_time=start_time,
+                    estimated_tokens=estimated_tokens,
+                    tools=tools,
+                    request_info=request_info,
+                )
+
+            except LLMError as e:
+                last_error = e
+                duration_ms = (time.time() - start_time) * 1000
+
+                # 判断是否可重试
+                if e.details.retryable and attempt < self.max_retries - 1:
+                    wait_time = self.retry_delay * (2 ** attempt)  # 指数退避
+
+                    self.error_logger.log_retry_attempt(
+                        model=self.model,
+                        attempt=attempt + 1,
+                        max_retries=self.max_retries,
+                        error_code=e.details.error_code.value,
+                        wait_seconds=wait_time,
+                    )
+
+                    await self._sleep(wait_time)
+                    continue
+                else:
+                    # 不可重试或已达到最大重试次数
+                    self.error_logger.log_request_error(
+                        error=e,
+                        model=self.model,
+                        duration_ms=duration_ms,
+                        extra_info={"attempt": attempt + 1, "max_retries": self.max_retries},
+                    )
+                    raise
+
+            except Exception as e:
+                # 未预期的异常
+                duration_ms = (time.time() - start_time) * 1000
+                error = self._convert_to_llm_error(e, request_info)
+                self.error_logger.log_request_error(
+                    error=error,
+                    model=self.model,
+                    duration_ms=duration_ms,
+                    extra_info={"attempt": attempt + 1, "unexpected": True},
+                )
+                raise error
+
+        # 所有重试都失败了
+        if last_error:
+            raise last_error
+
+        # 不应该到达这里
+        raise self._create_unknown_error("所有重试都失败了", request_info)
+
+    async def _chat_completion_non_stream(
+        self,
+        request_body: Dict[str, Any],
+        start_time: float,
+        estimated_tokens: int,
+        tools: Optional[List[Dict[str, Any]]],
+        request_info: Dict[str, Any],
+    ) -> Union[str, Dict[str, Any]]:
+        """非流式调用 LLM"""
+
+        async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
+            logger.debug("[llm_service] 发送HTTP POST请求到 %s/chat/completions", self.base_url)
+
+            try:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers=self.headers,
@@ -146,79 +267,128 @@ class LLMService:
                 )
 
                 elapsed = time.time() - start_time
-                logger.info(f"[llm_service.chat_completion] HTTP响应收到 | 状态码: {response.status_code} | 耗时: {elapsed:.2f}s")
+                logger.debug("[llm_service] HTTP响应收到 | 状态码: %d | 耗时: %.2fs", response.status_code, elapsed)
 
-                response.raise_for_status()
+                # 检查 HTTP 错误
+                if response.status_code >= 400:
+                    error = handle_http_error(
+                        status_code=response.status_code,
+                        response_text=response.text,
+                        request_info=request_info,
+                    )
+                    raise error
+
                 result = response.json()
 
-                # 检查响应结构
-                if "choices" not in result:
-                    logger.error(f"[llm_service.chat_completion] 响应缺少choices字段: {result.keys()}")
-                    raise ValueError("LLM响应格式错误: 缺少choices字段")
-
-                if not result["choices"]:
-                    logger.error("[llm_service.chat_completion] choices为空列表")
-                    raise ValueError("LLM响应格式错误: choices为空")
-
-                message = result["choices"][0]["message"]
-                content = message.get("content", "")
-                reasoning_content = message.get("reasoning_content", "")
-                tool_calls = message.get("tool_calls") or []
-                total_time = time.time() - start_time
-
-                # 记录实际 token 使用量
-                usage = result.get("usage", {})
-                actual_tokens = usage.get("total_tokens", estimated_tokens)
-                await rate_limiter.record_request(actual_tokens)
-
-                logger.info(f"[llm_service.chat_completion] 成功 | 内容长度: {len(content)}, 思考长度: {len(reasoning_content)}, 工具调用数: {len(tool_calls)} | 总耗时: {total_time:.2f}s | Token使用: {actual_tokens}")
-
-                # 详细诊断日志：当 content 为空时记录完整响应结构
-                if not content:
-                    logger.warning(f"[llm_service.chat_completion] content 为空! 完整消息字段: {list(message.keys())}")
-                    logger.warning(f"[llm_service.chat_completion] reasoning_content 长度: {len(reasoning_content)}")
-                    if reasoning_content:
-                        logger.warning(f"[llm_service.chat_completion] reasoning_content 前200字符: {reasoning_content[:200]}")
-                        # 检查 reasoning_content 是否包含 JSON
-                        if "{" in reasoning_content or "[" in reasoning_content:
-                            logger.warning("[llm_service.chat_completion] reasoning_content 包含 JSON 结构")
-                            # 记录 reasoning_content 的最后1000字符，看看是否有 JSON
-                            logger.warning(f"[llm_service.chat_completion] reasoning_content 最后1000字符: {reasoning_content[-1000:]}")
-                    # 记录完整的 message 结构（前1000字符）
-                    import json
+            except httpx.TimeoutException as e:
+                error = self._create_timeout_error(str(e), request_info)
+                raise error
+            except httpx.HTTPStatusError as e:
+                # 处理 429 速率限制错误
+                if e.response.status_code == 429:
+                    retry_after = None
                     try:
-                        msg_str = json.dumps(message, ensure_ascii=False, indent=2)
-                        logger.warning(f"[llm_service.chat_completion] 完整消息结构: {msg_str[:1000]}...")
-                    except Exception as e:
-                        logger.warning(f"[llm_service.chat_completion] 无法序列化消息: {e}")
+                        # 尝试从响应头获取 retry-after
+                        retry_after_str = e.response.headers.get("retry-after")
+                        if retry_after_str:
+                            retry_after = float(retry_after_str)
+                    except (ValueError, TypeError):
+                        pass
 
-                if tool_calls:
-                    logger.info(f"[llm_service.chat_completion] 工具调用: {[tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]}")
+                    # 使用流控模块处理 429
+                    wait_time = await rate_limiter.handle_api_rate_limit(
+                        retry_after=retry_after,
+                        error_message=e.response.text[:500]
+                    )
 
-                # 如果提供了工具但没有tool_calls，返回完整dict
-                if tools:
-                    return {
-                        "content": content,
-                        "reasoning_content": reasoning_content,
-                        "tool_calls": tool_calls,
-                    }
+                    # 创建速率限制错误，标记为可重试
+                    error = await rate_limiter.create_rate_limit_error(
+                        retry_after=wait_time,
+                        error_message=e.response.text[:500],
+                        request_info=request_info
+                    )
+                    raise error
 
-                # 兼容旧代码：返回str
-                return content
+                error = handle_http_error(
+                    status_code=e.response.status_code,
+                    response_text=e.response.text,
+                    request_info=request_info,
+                )
+                raise error
+            except Exception as e:
+                if isinstance(e, LLMError):
+                    raise
+                error = self._create_connection_error(str(e), request_info)
+                raise error
 
-        except httpx.TimeoutException as e:
-            total_time = time.time() - start_time
-            logger.error(f"[llm_service.chat_completion] 请求超时 | 耗时: {total_time:.2f}s | error: {e}")
-            raise
-        except httpx.HTTPStatusError as e:
-            total_time = time.time() - start_time
-            logger.error(f"[llm_service.chat_completion] HTTP错误 | 状态码: {e.response.status_code} | 耗时: {total_time:.2f}s | error: {e}")
-            logger.error(f"[llm_service.chat_completion] 错误响应: {e.response.text[:500]}")
-            raise
-        except Exception as e:
-            total_time = time.time() - start_time
-            logger.exception(f"[llm_service.chat_completion] 异常 | 耗时: {total_time:.2f}s | error: {e}")
-            raise
+        # 验证响应结构
+        self._validate_response_structure(result, request_info)
+
+        # 检查 finish_reason
+        finish_reason = result["choices"][0].get("finish_reason")
+        if finish_reason and finish_reason not in [LLMFinishReason.STOP.value, LLMFinishReason.TOOL_CALLS.value]:
+            error = handle_finish_reason(finish_reason, result, request_info)
+            if error:
+                # 记录警告但不抛出异常（某些情况如 length 可以继续处理）
+                if error.details.error_code == LLMErrorCode.MAX_LENGTH_REACHED:
+                    logger.warning("[llm_service] 达到最大长度限制，结果可能不完整: %s", error.details.message)
+                elif error.details.error_code == LLMErrorCode.REPETITION_DETECTED:
+                    logger.warning("[llm_service] 检测到重复内容，生成被截断: %s", error.details.message)
+                else:
+                    raise error
+
+        message = result["choices"][0]["message"]
+        content = message.get("content", "")
+        reasoning_content = message.get("reasoning_content", "")
+        tool_calls = message.get("tool_calls") or []
+        total_time = time.time() - start_time
+
+        # 记录实际 token 使用量
+        usage = result.get("usage", {})
+        actual_tokens = usage.get("total_tokens", estimated_tokens)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens")
+        reasoning_tokens = usage.get("completion_tokens_details", {}).get("reasoning_tokens")
+
+        await rate_limiter.record_request(actual_tokens)
+
+        # 记录成功日志
+        self.error_logger.log_request_success(
+            model=self.model,
+            duration_ms=total_time * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=actual_tokens,
+            finish_reason=finish_reason,
+            has_reasoning=bool(reasoning_content),
+            has_tool_calls=bool(tool_calls),
+        )
+
+        # 记录详细 token 使用
+        self.error_logger.log_token_usage(
+            model=self.model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=actual_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+
+        # 诊断：当 content 为空时记录警告
+        if not content and not tool_calls:
+            self._log_empty_content_warning(message, reasoning_content)
+
+        # 如果提供了工具，返回完整 dict
+        if tools:
+            return {
+                "content": content,
+                "reasoning_content": reasoning_content,
+                "tool_calls": tool_calls,
+            }
+
+        # 兼容旧代码：返回 str
+        return content
 
     async def _chat_completion_stream(
         self,
@@ -226,13 +396,15 @@ class LLMService:
         start_time: float,
         estimated_tokens: int = 0
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """流式调用LLM
+        """流式调用LLM（带错误处理）
 
         Yields:
             包含 content, reasoning_content, tool_calls, finish_reason 的字典
         """
-        import time
-        logger.debug("[llm_service._chat_completion_stream] 开始流式调用")
+        chunk_index = 0
+        actual_tokens = estimated_tokens
+        last_finish_reason = None
+        request_info = {"model": self.model, "stream": True}
 
         try:
             async with httpx.AsyncClient(timeout=600.0, verify=self.ssl_verify) as client:
@@ -242,9 +414,20 @@ class LLMService:
                     headers=self.headers,
                     json=request_body,
                 ) as response:
+                    # 检查 HTTP 错误
+                    if response.status_code >= 400:
+                        response_text = ""
+                        async for chunk in response.aiter_text():
+                            response_text += chunk
+                        error = handle_http_error(
+                            status_code=response.status_code,
+                            response_text=response_text,
+                            request_info=request_info,
+                        )
+                        raise error
+
                     response.raise_for_status()
 
-                    actual_tokens = estimated_tokens
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -254,11 +437,10 @@ class LLMService:
                             try:
                                 chunk = json.loads(data)
 
-                                # 检查是否有 usage 信息 (通常在最后一个 chunk)
+                                # 检查是否有 usage 信息
                                 if "usage" in chunk and chunk["usage"] is not None:
                                     usage = chunk["usage"]
                                     actual_tokens = usage.get("total_tokens", estimated_tokens)
-                                    logger.debug(f"[llm_service._chat_completion_stream] 收到 usage 信息: {actual_tokens} tokens")
                                     continue
 
                                 if "choices" not in chunk or not chunk["choices"]:
@@ -267,6 +449,21 @@ class LLMService:
                                 delta = chunk["choices"][0].get("delta", {})
                                 finish_reason = chunk["choices"][0].get("finish_reason")
 
+                                if finish_reason:
+                                    last_finish_reason = finish_reason
+
+                                # 记录流式 chunk（调试级别）
+                                self.error_logger.log_stream_chunk(
+                                    model=self.model,
+                                    chunk_index=chunk_index,
+                                    has_content=bool(delta.get("content")),
+                                    has_reasoning=bool(delta.get("reasoning_content")),
+                                    has_tool_calls=bool(delta.get("tool_calls")),
+                                    finish_reason=finish_reason,
+                                )
+
+                                chunk_index += 1
+
                                 yield {
                                     "content": delta.get("content", ""),
                                     "reasoning_content": delta.get("reasoning_content", ""),
@@ -274,26 +471,172 @@ class LLMService:
                                     "finish_reason": finish_reason,
                                 }
 
-                                # 如果是 stop 或 content_filter，可以结束流
-                                # 但如果是 length，可能还有内容在后续 chunk 中（虽然不太可能）
-                                # 这里保持原有逻辑，但增加日志
-                                if finish_reason:
-                                    logger.debug(f"[llm_service._chat_completion_stream] 收到finish_reason={finish_reason}，结束流")
-                                    break
+                                # 检查 finish_reason
+                                if finish_reason and finish_reason not in [
+                                    LLMFinishReason.STOP.value, LLMFinishReason.TOOL_CALLS.value
+                                ]:
+                                    error = handle_finish_reason(finish_reason, chunk, request_info)
+                                    if error and error.details.error_code in [
+                                        LLMErrorCode.CONTENT_FILTERED,
+                                    ]:
+                                        # 严重的错误需要抛出
+                                        raise error
 
                             except json.JSONDecodeError:
-                                logger.warning(f"[llm_service._chat_completion_stream] JSON解析失败: {data[:200]}")
+                                logger.warning("[llm_service] JSON解析失败: %s", data[:200])
                                 continue
 
-                    # 记录流式调用的 token 使用量
-                    await rate_limiter.record_request(actual_tokens)
+            # 流式调用完成
+            elapsed = time.time() - start_time
+            self.error_logger.log_stream_complete(
+                model=self.model,
+                duration_ms=elapsed * 1000,
+                total_chunks=chunk_index,
+                total_tokens=actual_tokens,
+                finish_reason=last_finish_reason,
+            )
 
-                    elapsed = time.time() - start_time
-                    logger.info(f"[llm_service._chat_completion_stream] 流式调用完成 | 耗时: {elapsed:.2f}s | Token使用: {actual_tokens}")
+            # 记录 token 使用量
+            await rate_limiter.record_request(actual_tokens)
 
-        except Exception as e:
-            logger.exception(f"[llm_service._chat_completion_stream] 流式调用异常: {e}")
+            # 流结束后检查 finish_reason - 如果是异常情况需要抛出错误
+            if last_finish_reason and last_finish_reason not in [
+                LLMFinishReason.STOP.value, LLMFinishReason.TOOL_CALLS.value
+            ]:
+                error = handle_finish_reason(last_finish_reason, None, request_info)
+                if error:
+                    # content_filter 和 repetition_truncation 应该抛出错误
+                    # length 情况：如果内容为空也应该抛出错误
+                    if error.details.error_code == LLMErrorCode.CONTENT_FILTERED:
+                        logger.error("[llm_service] 内容被过滤，流式调用失败: %s", error.details.message)
+                        raise error
+                    elif error.details.error_code == LLMErrorCode.REPETITION_DETECTED:
+                        logger.error("[llm_service] 检测到重复内容，流式调用被截断: %s", error.details.message)
+                        raise error
+                    elif error.details.error_code == LLMErrorCode.MAX_LENGTH_REACHED:
+                        # length 错误：如果内容为空则抛出错误，否则记录警告
+                        logger.warning("[llm_service] 达到最大长度限制: %s", error.details.message)
+                        # 注意：流式调用不能在这里抛出错误，因为已经 yield 了部分内容
+                        # 但我们会记录这个状态，让调用方知道内容可能不完整
+
+        except LLMError:
             raise
+        except httpx.TimeoutException as e:
+            raise self._create_timeout_error(str(e), request_info)
+        except Exception as e:
+            if isinstance(e, LLMError):
+                raise
+            raise self._create_connection_error(str(e), request_info)
+
+    def _validate_response_structure(
+        self,
+        result: Dict[str, Any],
+        request_info: Dict[str, Any]
+    ) -> None:
+        """验证响应结构"""
+
+        if "choices" not in result:
+            error = handle_response_validation_error(
+                validation_error="LLM响应格式错误: 缺少choices字段",
+                raw_response=json.dumps(result, ensure_ascii=False),
+                request_info=request_info,
+            )
+            raise error
+
+        if not result["choices"]:
+            error = handle_response_validation_error(
+                validation_error="LLM响应格式错误: choices为空列表",
+                raw_response=json.dumps(result, ensure_ascii=False),
+                request_info=request_info,
+            )
+            raise error
+
+        if "message" not in result["choices"][0]:
+            error = handle_response_validation_error(
+                validation_error="LLM响应格式错误: choices[0]缺少message字段",
+                raw_response=json.dumps(result, ensure_ascii=False),
+                request_info=request_info,
+            )
+            raise error
+
+    def _log_empty_content_warning(
+        self,
+        message: Dict[str, Any],
+        reasoning_content: str
+    ) -> None:
+        """记录 content 为空的警告"""
+
+        logger.warning("[llm_service] content 为空! 完整消息字段: %s", list(message.keys()))
+        logger.warning("[llm_service] reasoning_content 长度: %d", len(reasoning_content))
+
+        if reasoning_content:
+            logger.warning("[llm_service] reasoning_content 前200字符: %s", reasoning_content[:200])
+            if "{" in reasoning_content or "[" in reasoning_content:
+                logger.warning("[llm_service] reasoning_content 包含 JSON 结构")
+                logger.warning("[llm_service] reasoning_content 最后1000字符: %s", reasoning_content[-1000:])
+
+        try:
+            msg_str = json.dumps(message, ensure_ascii=False, indent=2)
+            logger.warning("[llm_service] 完整消息结构: %s...", msg_str[:1000])
+        except Exception as e:
+            logger.warning("[llm_service] 无法序列化消息: %s", e)
+
+    def _convert_to_llm_error(self, exc: Exception, request_info: Dict[str, Any]) -> LLMError:
+        """将异常转换为 LLMError"""
+
+        if isinstance(exc, LLMError):
+            return exc
+
+        if isinstance(exc, httpx.TimeoutException):
+            return self._create_timeout_error(str(exc), request_info)
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            return handle_http_error(
+                status_code=exc.response.status_code,
+                response_text=exc.response.text,
+                request_info=request_info,
+            )
+
+        if isinstance(exc, json.JSONDecodeError):
+            return handle_response_validation_error(
+                validation_error=f"JSON解析错误: {exc}",
+                request_info=request_info,
+            )
+
+        return self._create_unknown_error(str(exc), request_info)
+
+    def _create_timeout_error(self, message: str, request_info: Dict[str, Any]) -> LLMError:
+        """创建超时错误"""
+        from app.core.llm_errors import create_llm_error
+        return create_llm_error(
+            error_code=LLMErrorCode.TIMEOUT_ERROR,
+            message=f"请求超时: {message}",
+            request_info=request_info,
+        )
+
+    def _create_connection_error(self, message: str, request_info: Dict[str, Any]) -> LLMError:
+        """创建连接错误"""
+        from app.core.llm_errors import create_llm_error
+        return create_llm_error(
+            error_code=LLMErrorCode.CONNECTION_ERROR,
+            message=f"连接错误: {message}",
+            request_info=request_info,
+        )
+
+    def _create_unknown_error(self, message: str, request_info: Dict[str, Any]) -> LLMError:
+        """创建未知错误"""
+        from app.core.llm_errors import create_llm_error
+        return create_llm_error(
+            error_code=LLMErrorCode.UNKNOWN_ERROR,
+            message=f"未知错误: {message}",
+            request_info=request_info,
+        )
+
+    @staticmethod
+    async def _sleep(seconds: float) -> None:
+        """异步等待"""
+        import asyncio
+        await asyncio.sleep(seconds)
 
     # ──────────────────────────── 实体关系提取 ────────────────────────────
 
@@ -301,43 +644,41 @@ class LLMService:
         self,
         text: str,
     ) -> Dict[str, Any]:
-        """使用 100+ 实体类型 NER 提示词提取实体和关系。
-
-        Returns:
-            {"entities": [...], "relations": [...]}
-        """
+        """使用 100+ 实体类型 NER 提示词提取实体和关系。"""
         prompt = NER_PROMPT.format(text=text[:80000])
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
+
+        try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
+        except LLMError as e:
+            logger.error("[NER-EXTRACT] LLM调用失败: %s", e)
+            return {"entities": [], "relations": [], "error": str(e)}
 
         try:
             result = self._extract_json(response)
             if isinstance(result, dict):
                 entities = result.get("entities", [])
                 relations = result.get("relations", [])
-                # 添加详细日志
                 logger.info("[NER-EXTRACT] 提取到 %d 个实体, %d 个关系", len(entities), len(relations))
-                for i, e in enumerate(entities[:5]):  # 只显示前5个
-                    attrs = e.get("attributes", {})
-                    logger.info("[NER-EXTRACT] 实体 %d: name=%s, type=%s, attributes=%s",
-                               i+1, e.get("name", "N/A"), e.get("type", "N/A"), attrs if attrs else "无")
-                if len(entities) > 5:
-                    logger.info("[NER-EXTRACT] ... 还有 %d 个实体", len(entities) - 5)
                 return {"entities": entities, "relations": relations}
             elif isinstance(result, list):
-                # 有些情况下返回的是实体列表
                 logger.info("[NER-EXTRACT] LLM返回列表格式, %d 个条目", len(result))
                 return {"entities": result, "relations": []}
             else:
                 logger.warning("[NER-EXTRACT] 未知返回格式: %s", type(result))
                 return {"entities": [], "relations": []}
         except json.JSONDecodeError as e:
-            logger.error(f"NER JSON解析失败: response={response[:200]}, error={e}")
-            return {"entities": [], "relations": []}
+            logger.error("[NER-EXTRACT] JSON解析失败: %s", e)
+            return {"entities": [], "relations": [], "error": f"JSON解析失败: {e}"}
         except Exception as e:
-            logger.error(f"NER异常: error={e}")
-            return {"entities": [], "relations": []}
+            logger.error("[NER-EXTRACT] 异常: %s", e)
+            return {"entities": [], "relations": [], "error": str(e)}
 
     # ──────────────────────────── 表格填写相关 ────────────────────────────
 
@@ -347,11 +688,7 @@ class LLMService:
         row_context: str = "",
         table_headers: str = "",
     ) -> List[str]:
-        """从字段名+行上下文生成搜索查询。
-
-        Returns:
-            ["query1", "query2", "query3"]
-        """
+        """从字段名+行上下文生成搜索查询。"""
         prompt = QUERY_GENERATION_PROMPT.format(
             field_name=field_name,
             row_context=row_context,
@@ -359,12 +696,21 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             result = self._extract_json(response)
             return result.get("queries", [field_name])
-        except Exception:
+        except LLMError as e:
+            logger.warning("[SEARCH-QUERIES] LLM调用失败: %s，返回默认查询", e)
+            return [field_name]
+        except Exception as e:
+            logger.warning("[SEARCH-QUERIES] 异常: %s，返回默认查询", e)
             return [field_name]
 
     async def extract_answer_from_context(
@@ -373,11 +719,7 @@ class LLMService:
         field_name: str,
         contexts: List[str],
     ) -> Dict[str, Any]:
-        """从检索到的上下文中提取答案。
-
-        Returns:
-            {"answer": str|None, "confidence": float, "source": str}
-        """
+        """从检索到的上下文中提取答案。"""
         context_text = "\n---\n".join(contexts[:5])
         prompt = ANSWER_EXTRACTION_PROMPT.format(
             query=query,
@@ -386,31 +728,45 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             return self._extract_json(response)
-        except Exception:
-            return {"answer": None, "confidence": 0.0, "source": "解析失败"}
+        except LLMError as e:
+            logger.warning("[EXTRACT-ANSWER] LLM调用失败: %s", e)
+            return {"answer": None, "confidence": 0.0, "source": "LLM调用失败", "error": str(e)}
+        except Exception as e:
+            logger.warning("[EXTRACT-ANSWER] 异常: %s", e)
+            return {"answer": None, "confidence": 0.0, "source": "解析失败", "error": str(e)}
 
     async def generate_sql(self, schema_info: str, question: str) -> Dict[str, Any]:
-        """根据表结构信息生成 SQL 查询。
-
-        Returns:
-            {"sql": str, "explanation": str}
-        """
+        """根据表结构信息生成 SQL 查询。"""
         prompt = SQL_GENERATION_PROMPT.format(
             schema_info=schema_info,
             query=question,
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             return self._extract_json(response)
-        except Exception:
-            return {"sql": "", "explanation": "SQL 生成失败"}
+        except LLMError as e:
+            logger.warning("[GENERATE-SQL] LLM调用失败: %s", e)
+            return {"sql": "", "explanation": f"SQL生成失败: {e}"}
+        except Exception as e:
+            logger.warning("[GENERATE-SQL] 异常: %s", e)
+            return {"sql": "", "explanation": "SQL生成失败"}
 
     async def extract_row_answers(
         self,
@@ -419,11 +775,7 @@ class LLMService:
         empty_fields: str,
         contexts: List[str],
     ) -> Dict[str, Any]:
-        """行级批量提取：一次 LLM 调用填写一行中所有空字段。
-
-        Returns:
-            {"answers": {"字段名": "值"|null, ...}, "confidence": float}
-        """
+        """行级批量提取：一次 LLM 调用填写一行中所有空字段。"""
         context_text = "\n---\n".join(contexts[:5])
         prompt = ROW_FILL_PROMPT.format(
             table_headers=table_headers,
@@ -433,12 +785,21 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             return self._extract_json(response)
-        except Exception:
-            return {"answers": {}, "confidence": 0.0}
+        except LLMError as e:
+            logger.warning("[ROW-FILL] LLM调用失败: %s", e)
+            return {"answers": {}, "confidence": 0.0, "error": str(e)}
+        except Exception as e:
+            logger.warning("[ROW-FILL] 异常: %s", e)
+            return {"answers": {}, "confidence": 0.0, "error": str(e)}
 
     async def batch_extract_records(
         self,
@@ -447,11 +808,7 @@ class LLMService:
         table_context: str = "",
         document_title: str = "",
     ) -> List[Dict[str, str]]:
-        """从源文档中批量提取所有符合表头结构的记录。
-
-        Returns:
-            [{"字段名1": "值1", "字段名2": "值2", ...}, ...]
-        """
+        """从源文档中批量提取所有符合表头结构的记录。"""
         context_text = "\n---\n".join(contexts[:5])
         prompt = BATCH_EXTRACT_PROMPT.format(
             table_headers=table_headers,
@@ -461,16 +818,25 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
-        logger.debug("[BATCH-EXTRACT] LLM响应长度: %d", len(response) if response else 0)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
+            logger.debug("[BATCH-EXTRACT] LLM响应长度: %d", len(response) if response else 0)
+
             result = self._extract_json(response)
             records = result.get("records", [])
             logger.debug("[BATCH-EXTRACT] 解析成功: %d 条记录", len(records))
             return records
+        except LLMError as e:
+            logger.warning("[BATCH-EXTRACT] LLM调用失败: %s", e)
+            return []
         except Exception as e:
-            logger.warning("[BATCH-EXTRACT] JSON解析失败: %s, response前200字: %s", e, response[:200] if response else "None")
+            logger.warning("[BATCH-EXTRACT] JSON解析失败: %s", e)
             return []
 
     async def map_columns(
@@ -478,11 +844,7 @@ class LLMService:
         template_headers: List[str],
         db_columns: List[str],
     ) -> Dict[str, str]:
-        """用 AI 建立模板表头到数据库列名的映射。
-
-        Returns:
-            {"模板表头": "数据库列名", ...}
-        """
+        """用 AI 建立模板表头到数据库列名的映射。"""
         prompt = f"""请建立模板表头和数据库列名之间的映射关系。
 
 模板表头：{template_headers}
@@ -497,11 +859,22 @@ class LLMService:
 {{"模板表头1": "数据库列名1", "模板表头2": "数据库列名2"}}
 
 只返回JSON，不要其他说明。"""
+
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.1, max_tokens=65536, enable_thinking=False)
+
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.1,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             return self._extract_json(response)
-        except Exception:
+        except LLMError as e:
+            logger.warning("[MAP-COLUMNS] LLM调用失败: %s", e)
+            return {}
+        except Exception as e:
+            logger.warning("[MAP-COLUMNS] 异常: %s", e)
             return {}
 
     # ──────────────────────────── 分阶段填表相关 ────────────────────────────
@@ -515,21 +888,17 @@ class LLMService:
         raw_data_count: int,
         document_title: str = "",
     ) -> Dict[str, Any]:
-        """让LLM判断当前填写结果是否满足要求。
-
-        Returns:
-            {"is_satisfied": bool, "reason": str, "missing_fields": [...], "suggestions": str, "decision": str}
-        """
+        """让LLM判断当前填写结果是否满足要求。"""
         # 计算统计信息
-        data_rows = len(filled_rows) - 1 if len(filled_rows) > 0 else 0  # 排除表头
+        data_rows = len(filled_rows) - 1 if len(filled_rows) > 0 else 0
         filled_count = 0
-        for row in filled_rows[1:]:  # 跳过表头
+        for row in filled_rows[1:]:
             if any(str(cell).strip() for cell in row if cell is not None):
                 filled_count += 1
 
         # 准备示例行（最多5行）
         sample_rows = []
-        for i, row in enumerate(filled_rows[:6]):  # 表头+前5行数据
+        for i, row in enumerate(filled_rows[:6]):
             if i == 0:
                 sample_rows.append(f"[表头] {row}")
             else:
@@ -550,9 +919,15 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
+
             result = self._extract_json(response)
             return {
                 "is_satisfied": result.get("is_satisfied", False),
@@ -561,8 +936,17 @@ class LLMService:
                 "suggestions": result.get("suggestions", ""),
                 "decision": result.get("decision", "continue"),
             }
+        except LLMError as e:
+            logger.warning("[CHECK-SATISFACTION] LLM调用失败: %s", e)
+            return {
+                "is_satisfied": False,
+                "reason": f"LLM调用失败: {e}",
+                "missing_fields": [],
+                "suggestions": "请重试或检查数据源",
+                "decision": "continue",
+            }
         except Exception as e:
-            logger.warning("[CHECK-SATISFACTION] JSON解析失败: %s, response: %s", e, response[:200] if response else "None")
+            logger.warning("[CHECK-SATISFACTION] JSON解析失败: %s", e)
             return {
                 "is_satisfied": False,
                 "reason": "LLM判断结果解析失败",
@@ -576,17 +960,13 @@ class LLMService:
         table_headers: str,
         graph_results: List[Dict[str, Any]]
     ) -> List[Dict[str, str]]:
-        """从图谱查询结果中提取结构化记录。
-
-        Returns:
-            [{"字段名1": "值1", "字段名2": "值2", ...}, ...]
-        """
+        """从图谱查询结果中提取结构化记录。"""
         if not graph_results:
             return []
 
         # 构建图谱结果文本
         result_texts = []
-        for i, r in enumerate(graph_results[:20]):  # 最多20条
+        for i, r in enumerate(graph_results[:20]):
             content = r.get("content", "")
             if content:
                 result_texts.append(f"{i+1}. {content}")
@@ -616,15 +996,24 @@ class LLMService:
 只返回JSON，不要其他说明。"""
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
+
             result = self._extract_json(response)
             records = result.get("records", [])
             logger.debug("[EXTRACT-FROM-GRAPH] 提取到 %d 条记录", len(records))
             return records
+        except LLMError as e:
+            logger.warning("[EXTRACT-FROM-GRAPH] LLM调用失败: %s", e)
+            return []
         except Exception as e:
-            logger.warning("[EXTRACT-FROM-GRAPH] JSON解析失败: %s, response: %s", e, response[:200] if response else "None")
+            logger.warning("[EXTRACT-FROM-GRAPH] JSON解析失败: %s", e)
             return []
 
     # ──────────────────────────── 文档操作 ────────────────────────────
@@ -658,16 +1047,39 @@ class LLMService:
 只返回JSON，不要其他说明。"""
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
+            response = await self.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=65536,
+                enable_thinking=False
+            )
             return self._extract_json(response)
+        except LLMError as e:
+            logger.error("[DOCUMENT-OPERATION] LLM调用失败: %s", e)
+            return {
+                "operation_type": "query",
+                "result": "",
+                "success": False,
+                "message": f"LLM调用失败: {e.details.suggested_action or str(e)}"
+            }
         except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: response={response[:200]}, error={e}")
-            return {"operation_type": "query", "result": response, "success": False, "message": "响应解析失败"}
+            logger.error("[DOCUMENT-OPERATION] JSON解析失败: %s", e)
+            return {
+                "operation_type": "query",
+                "result": "",
+                "success": False,
+                "message": "响应解析失败"
+            }
         except Exception as e:
-            logger.error(f"响应处理异常: error={e}")
-            return {"operation_type": "query", "result": response, "success": False, "message": "响应处理异常"}
+            logger.error("[DOCUMENT-OPERATION] 异常: %s", e)
+            return {
+                "operation_type": "query",
+                "result": "",
+                "success": False,
+                "message": "响应处理异常"
+            }
 
 
 llm_service = LLMService()

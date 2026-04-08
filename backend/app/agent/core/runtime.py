@@ -101,12 +101,55 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 
 **重要：不要搬运数据！不要把 query_pg_database 返回的 records 数组原样传给 fill_table 的 data 参数。**
 
-#### 源文档和模板都是 xlsx（推荐用 source_query 自动模式）：
-1. 调用 fill_table(source_query={"doc_ids": [...], "query": "描述需要什么数据"}, template_id=模板ID)
-   - 工具内部自动完成：查询 → 返回数据摘要供审核 → 确认后填入模板
-   - LLM 只需描述需要什么数据，审核数据摘要是否正确
-2. 检查返回的数据摘要（前10行、中间5行、末尾5行、列信息、空值统计等）
-3. 如果摘要正确，确认填入；如果不足则调整 query 重试
+#### 源文档和模板都是 xlsx（必须使用 source_query 自动模式）：
+
+**强制要求**：当源文档和模板都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
+
+**单次调用流程：**
+```
+fill_table(
+    source_query={
+        "doc_ids": [...],
+        "query": "描述需要什么数据",
+        "fetch_all": true  # 关键：自动获取全部数据，不遗漏
+    },
+    template_id=模板ID,
+    fill_mode="overwrite"
+)
+```
+
+**工具会自动完成：**
+1. 查询数据并生成摘要（前10行、中间5行、末尾5行、列信息、空值统计等）
+2. 你审核数据摘要是否正确
+3. 确认无误后，工具自动填入全部数据（无需再次调用）
+
+**关键参数说明：**
+- `fetch_all: true` - **强烈推荐**：自动获取全部数据，不限制行数，确保数据完整
+- `fetch_all: false`（默认）- 最多获取500行，适合快速预览或小数据量
+
+**避免重复查询：**
+- 预览阶段（data_confirmed=false）和确认阶段（data_confirmed=true）之间，工具会自动复用数据
+- 你不需要在确认前再次调用 query_pg_database 获取完整数据
+
+**多表格文档填写：**
+```
+# 表格0
+fill_table(
+    source_query={"doc_ids": [...], "query": "查询表格0所需数据", "fetch_all": true},
+    template_id=模板ID,
+    target_table_index=0,
+    fill_mode="overwrite"
+)
+
+# 表格1（复用同一个文件）
+fill_table(
+    source_query={"doc_ids": [...], "query": "查询表格1所需数据", "fetch_all": true},
+    template_id=模板ID,
+    output_doc_id=上一步返回的output_file_id,  # 关键：继续填写同一个文件
+    target_table_index=1,
+    fill_mode="overwrite"  # 根据表格1当前状态判断
+)
+```
 
 #### 其他情况（源文档或模板不是 xlsx）：
 1. 使用 query_pg_database / query_knowledge_graph 查询数据
@@ -125,13 +168,23 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 
 3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
 
+**重要原则**：
+- ✅ 先用可用数据生成文件，再询问是否需要补充
+- ❌ 禁止因数据可能不完整而延迟生成文件
+- ❌ 禁止生成文件前征求用户确认
+
 ### 第五步：报告结果
-向用户报告：
-- 共填写了多少行数据
-- 预期应该有多少行（根据文档标题判断）
-- 填写完整度百分比
-- 数据来源说明
-- 下载链接
+
+向用户报告填写结果，**必须包含以下内容**：
+
+1. **填写行数**：共填写了多少行数据
+2. **预期行数**：根据文档标题判断应该有多少行
+3. **完整度百分比**：填写比例
+4. **数据来源说明**：数据来自哪些文档
+5. **下载链接（必须输出可点击链接）**：
+   - 使用 fill_table 返回的 `download_url` 字段
+   - 格式：`[点击下载填写完成的文档](download_url)`
+   - **必须使用 Markdown 链接格式，确保用户可以点击下载**
 
 ## 多表格文档填写策略
 
@@ -440,6 +493,7 @@ class AgentRuntime:
                 full_content = ""
                 full_reasoning = ""
                 tool_calls_buffer = []
+                finish_reason = None  # 初始化 finish_reason，用于流结束后检查
 
                 llm_stream = await llm_service.chat_completion(
                     messages=messages,
@@ -527,6 +581,19 @@ class AgentRuntime:
                     last_msg = messages[-1] if messages else None
                     is_after_tool_result = last_msg and last_msg.get('role') == 'tool'
 
+                    # 检查 finish_reason，如果是异常情况不应该认为任务已完成
+                    # 'stop' 和 'tool_calls' 是正常情况，其他都是异常
+                    is_abnormal_finish = finish_reason and finish_reason not in ['stop', 'tool_calls']
+
+                    if is_abnormal_finish:
+                        # 异常 finish_reason，记录错误
+                        error_msg = f"LLM返回异常状态（finish_reason={finish_reason}），无法继续处理"
+                        logger.error(f"[AgentRuntime._execute_loop] {error_msg}")
+                        tracker.fail_step(step.id, error_msg)
+                        await stream.emit_error(error_msg)
+                        await stream.emit_failed(error_msg, {"reasoning": full_reasoning, "finish_reason": finish_reason})
+                        return {"success": False, "error": error_msg, "steps": tracker.to_dict()}
+
                     # 如果有思考内容，说明LLM完成了思考但没有生成最终回复（可能是任务已完成）
                     # 如果没有思考内容但刚执行完工具，也可能是任务已完成
                     # 如果都没有，才视为错误
@@ -538,6 +605,7 @@ class AgentRuntime:
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
                     elif is_after_tool_result:
                         # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
+                        # 但只有在 finish_reason 正常（stop 或 tool_calls）时才认为是完成
                         logger.info(f"[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
                         await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})

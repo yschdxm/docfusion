@@ -454,9 +454,7 @@ export default function DocumentManager() {
                   
                   <div className="flex items-center gap-2">
                     <a
-                      href={doc.doc_category === 'output' 
-                        ? `/api/v1/table-fill/download/${doc.id}`
-                        : `/api/v1/documents/${doc.id}/download`}
+                      href={`/api/v1/documents/${doc.id}/download`}
                       className="p-2 rounded-lg hover:bg-blue-500/20 text-slate-400 hover:text-blue-400 transition-colors"
                       download
                     >

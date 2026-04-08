@@ -30,6 +30,55 @@ class FillTableTool(BaseTool):
     这是填表流程的最后一步。
     """
 
+    # 类级别的查询缓存（应对 context 重置的情况）
+    _query_cache: Dict[str, Dict] = {}
+    _CACHE_TTL_SECONDS = 300  # 缓存有效期5分钟
+
+    @classmethod
+    def _get_cached_data(cls, cache_key: str, query: str):
+        """获取缓存数据，带TTL检查"""
+        cached = cls._query_cache.get(cache_key)
+        if not cached:
+            return None
+
+        from datetime import datetime
+        timestamp = datetime.fromisoformat(cached.get("timestamp", "2000-01-01"))
+        if (datetime.utcnow() - timestamp).total_seconds() > cls._CACHE_TTL_SECONDS:
+            del cls._query_cache[cache_key]
+            return None
+
+        if cached.get("query") != query:
+            return None
+
+        return cached.get("records")
+
+    @classmethod
+    def _set_cached_data(cls, cache_key: str, query: str, records: List[Dict],
+                         template_headers: List[str], doc_ids: List[str]):
+        """设置缓存数据"""
+        from datetime import datetime
+        cls._query_cache[cache_key] = {
+            "records": records,
+            "template_headers": template_headers,
+            "query": query,
+            "doc_ids": doc_ids,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        cls._cleanup_expired_cache()
+
+    @classmethod
+    def _cleanup_expired_cache(cls):
+        """清理过期缓存"""
+        from datetime import datetime
+        now = datetime.utcnow()
+        expired_keys = [
+            key for key, value in list(cls._query_cache.items())
+            if (now - datetime.fromisoformat(value.get("timestamp", "2000-01-01"))).total_seconds()
+               > cls._CACHE_TTL_SECONDS
+        ]
+        for key in expired_keys:
+            del cls._query_cache[key]
+
     @property
     def name(self) -> str:
         return "fill_table"
@@ -127,7 +176,12 @@ fill_mode 详解（针对指定表格的操作）：
                         "max_rows": {
                             "type": "integer",
                             "default": 500,
-                            "description": "最大查询行数，默认500"
+                            "description": "最大查询行数，默认500。如需获取全部数据，请使用 fetch_all=true"
+                        },
+                        "fetch_all": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "是否获取全部数据。设为true时，工具会自动分批获取所有数据，忽略max_rows限制"
                         },
                         "data_confirmed": {
                             "type": "boolean",
@@ -226,6 +280,7 @@ fill_mode 详解（针对指定表格的操作）：
         sq_doc_ids = source_query.get("doc_ids", context.file_ids)
         sq_query = source_query.get("query", "")
         sq_max_rows = source_query.get("max_rows", 500)
+        fetch_all = source_query.get("fetch_all", False)
 
         if not sq_query:
             return ToolResult(success=False, error="source_query.query 不能为空")
@@ -247,29 +302,44 @@ fill_mode 详解（针对指定表格的操作）：
         if not template_headers:
             return ToolResult(success=False, error="无法获取模板表头")
 
-        logger.info(f"[FillTableTool][source_query] 模板表头: {template_headers}")
+        logger.info(f"[FillTableTool][source_query] 模板表头: {template_headers}, fetch_all={fetch_all}")
 
-        # 2. 查询源数据，将模板表头传入以指导 SQL 生成正确的列
+        # 2. 查询源数据，根据 fetch_all 参数决定查询策略
         from app.services.sql_query_service import sql_query_service as sql_service
-        augmented_query = (
-            f"{sq_query}\n\n"
-            f"重要：返回结果的列名必须与模板表头精确匹配。"
-            f"模板表头为：{template_headers}\n"
-            f"请只 SELECT 与模板表头匹配的列。"
-        )
-        query_result = await sql_service.generate_and_execute(
-            question=augmented_query,
-            doc_ids=sq_doc_ids,
-            max_retries=3
-        )
 
-        if query_result.get("error"):
-            return ToolResult(
-                success=False,
-                error=f"源数据查询失败: {query_result['error']}"
+        if fetch_all:
+            # 获取全部数据（自动分批）
+            augmented_query = (
+                f"{sq_query}\n\n"
+                f"重要：返回结果的列名必须与模板表头精确匹配。"
+                f"模板表头为：{template_headers}\n"
+                f"请只 SELECT 与模板表头匹配的列。"
+                f"请返回所有匹配的数据，不要限制行数。"
             )
+            source_records = await self._fetch_all_data(
+                sql_service, augmented_query, sq_doc_ids, template_headers, logger
+            )
+        else:
+            # 限制查询行数
+            augmented_query = (
+                f"{sq_query}\n\n"
+                f"重要：返回结果的列名必须与模板表头精确匹配。"
+                f"模板表头为：{template_headers}\n"
+                f"请只 SELECT 与模板表头匹配的列。"
+                f"请确保返回不超过 {sq_max_rows} 行数据。"
+            )
+            query_result = await sql_service.generate_and_execute(
+                question=augmented_query,
+                doc_ids=sq_doc_ids,
+                max_retries=3
+            )
+            if query_result.get("error"):
+                return ToolResult(
+                    success=False,
+                    error=f"源数据查询失败: {query_result['error']}"
+                )
+            source_records = query_result.get("records", [])
 
-        source_records = query_result.get("records", [])
         if not source_records:
             return ToolResult(
                 success=True,
@@ -277,7 +347,15 @@ fill_mode 详解（针对指定表格的操作）：
                 metadata={"source_query": sq_query}
             )
 
-        # 3. 生成数据摘要，返回给 LLM 审核
+        # 3. 缓存数据供确认阶段使用
+        cache_key = f"fill_table_cache_{template_id}_{hash(sq_query)}_{target_table_index or 0}"
+        self._set_cached_data(cache_key, sq_query, source_records, template_headers, sq_doc_ids)
+        # 同时存入 context.metadata（如果 context 可用）
+        if context:
+            context.metadata[cache_key] = self._query_cache[cache_key]
+        logger.info(f"[FillTableTool] 已缓存查询结果: {len(source_records)} 行数据, cache_key={cache_key}")
+
+        # 4. 生成数据摘要，返回给 LLM 审核
         summary = self._build_data_summary(source_records, template_headers)
         return ToolResult(
             success=True,
@@ -299,6 +377,7 @@ fill_mode 详解（针对指定表格的操作）：
         sq_doc_ids = source_query.get("doc_ids", context.file_ids)
         sq_query = source_query.get("query", "")
         sq_max_rows = source_query.get("max_rows", 500)
+        fetch_all = source_query.get("fetch_all", False)
 
         if not sq_query:
             return ToolResult(success=False, error="source_query.query 不能为空")
@@ -315,24 +394,56 @@ fill_mode 详解（针对指定表格的操作）：
         if not template_headers:
             return ToolResult(success=False, error="无法获取模板表头")
 
-        # 2. 重新查询数据（与预览阶段相同的查询）
-        from app.services.sql_query_service import sql_query_service as sql_service
-        augmented_query = (
-            f"{sq_query}\n\n"
-            f"重要：返回结果的列名必须与模板表头精确匹配。"
-            f"模板表头为：{template_headers}\n"
-            f"请只 SELECT 与模板表头匹配的列。"
-        )
-        query_result = await sql_service.generate_and_execute(
-            question=augmented_query,
-            doc_ids=sq_doc_ids,
-            max_retries=3
-        )
+        # 2. 尝试从缓存获取数据（优先使用缓存，避免重复查询）
+        cache_key = f"fill_table_cache_{template_id}_{hash(sq_query)}_{target_table_index or 0}"
 
-        if query_result.get("error"):
-            return ToolResult(success=False, error=f"源数据查询失败: {query_result['error']}")
+        # 首先尝试从 context.metadata 获取（同一会话）
+        cached = context.metadata.get(cache_key) if context else None
+        if cached and cached.get("query") == sq_query:
+            source_records = cached["records"]
+            template_headers = cached.get("template_headers", template_headers)
+            logger.info(f"[FillTableTool][source_query-confirmed] 从 context 缓存获取 {len(source_records)} 行数据")
+        else:
+            # 其次从类缓存获取（跨会话，检查TTL）
+            cached_records = self._get_cached_data(cache_key, sq_query)
+            if cached_records:
+                source_records = cached_records
+                logger.info(f"[FillTableTool][source_query-confirmed] 从类缓存获取 {len(source_records)} 行数据")
+            else:
+                # 缓存未命中，重新查询
+                logger.warning(f"[FillTableTool][source_query-confirmed] 缓存未命中，重新查询数据")
+                from app.services.sql_query_service import sql_query_service as sql_service
 
-        source_records = query_result.get("records", [])
+                if fetch_all:
+                    # 获取全部数据
+                    augmented_query = (
+                        f"{sq_query}\n\n"
+                        f"重要：返回结果的列名必须与模板表头精确匹配。"
+                        f"模板表头为：{template_headers}\n"
+                        f"请只 SELECT 与模板表头匹配的列。"
+                        f"请返回所有匹配的数据，不要限制行数。"
+                    )
+                    source_records = await self._fetch_all_data(
+                        sql_service, augmented_query, sq_doc_ids, template_headers, logger
+                    )
+                else:
+                    # 限制查询行数
+                    augmented_query = (
+                        f"{sq_query}\n\n"
+                        f"重要：返回结果的列名必须与模板表头精确匹配。"
+                        f"模板表头为：{template_headers}\n"
+                        f"请只 SELECT 与模板表头匹配的列。"
+                        f"请确保返回不超过 {sq_max_rows} 行数据。"
+                    )
+                    query_result = await sql_service.generate_and_execute(
+                        question=augmented_query,
+                        doc_ids=sq_doc_ids,
+                        max_retries=3
+                    )
+                    if query_result.get("error"):
+                        return ToolResult(success=False, error=f"源数据查询失败: {query_result['error']}")
+                    source_records = query_result.get("records", [])
+
         if not source_records:
             return ToolResult(success=True, data={"filled_rows": 0, "total_rows": 0, "message": "查询未返回数据"})
 
@@ -403,6 +514,77 @@ fill_mode 详解（针对指定表格的操作）：
                 lines.append(f"行{i+1}: {json.dumps(record, ensure_ascii=False)}")
 
         return "\n".join(lines)
+
+    async def _fetch_all_data(
+        self,
+        sql_service,
+        augmented_query: str,
+        sq_doc_ids: List[str],
+        template_headers: List[str],
+        logger
+    ) -> List[Dict]:
+        """分批获取全部数据
+
+        策略：
+        1. 首次查询获取数据
+        2. 如果达到LIMIT上限(10000条)，尝试分批获取更多
+        3. 最多获取50000条，防止无限循环
+        """
+        # 第一次查询
+        query_result = await sql_service.generate_and_execute(
+            question=augmented_query,
+            doc_ids=sq_doc_ids,
+            max_retries=3
+        )
+
+        records = query_result.get("records", [])
+        total_fetched = len(records)
+
+        # 如果达到LIMIT上限，尝试分批获取更多
+        if total_fetched >= 10000:
+            logger.info(f"[FillTableTool] 首次查询返回{total_fetched}条，可能还有更多数据，尝试分批获取")
+
+            offset = total_fetched
+            batch_size = 5000
+            max_total = 50000  # 最多获取5万行，防止无限循环
+
+            while total_fetched < max_total:
+                batch_query = (
+                    f"{augmented_query}\n\n"
+                    f"请使用 OFFSET {offset} LIMIT {batch_size} 获取下一批数据"
+                )
+
+                batch_result = await sql_service.generate_and_execute(
+                    question=batch_query,
+                    doc_ids=sq_doc_ids,
+                    max_retries=2
+                )
+
+                batch_records = batch_result.get("records", [])
+                if not batch_records:
+                    break
+
+                records.extend(batch_records)
+                total_fetched += len(batch_records)
+                offset += len(batch_records)
+
+                logger.info(f"[FillTableTool] 分批获取: 已获取 {total_fetched} 行")
+
+                # 如果这批数据不足batch_size，说明已经获取完毕
+                if len(batch_records) < batch_size:
+                    break
+
+        # 去重
+        seen = set()
+        unique_records = []
+        for record in records:
+            key = tuple(sorted([(k, str(v)) for k, v in record.items()]))
+            if key not in seen:
+                seen.add(key)
+                unique_records.append(record)
+
+        logger.info(f"[FillTableTool] 最终获取: {len(unique_records)} 条唯一记录（原始 {len(records)} 条）")
+        return unique_records
 
     def _get_template_headers(self, file_path: str, file_type: str, target_table_index: int = None) -> List[str]:
         """获取模板文件的表头"""

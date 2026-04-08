@@ -87,6 +87,12 @@ class PGQueryTool(BaseTool):
 - docx/md/txt文档：PG中**没有数据**，这些文档的数据在Neo4j知识图谱中，应该直接使用 query_knowledge_graph
 - 如果传入的doc_ids包含非xlsx文档，本工具会返回提示建议使用Neo4j
 
+**填表任务重要提醒**：
+当执行填表任务且源文档和模板都是 xlsx 时，**禁止使用此工具查询后手动传入 data 参数给 fill_table**。
+正确做法：直接使用 fill_table 的 source_query 参数，让工具内部自动完成查询和填表。
+- ❌ 错误：先调用 query_pg_database 获取数据，再把结果传给 fill_table 的 data 参数
+- ✅ 正确：直接调用 fill_table(source_query={"doc_ids": [...], "query": "..."}, template_id=...)
+
 特点：
 - 支持自然语言查询，自动转换为SQL
 - 只能查询，不能修改数据
