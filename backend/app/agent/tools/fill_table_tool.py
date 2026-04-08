@@ -110,7 +110,31 @@ fill_mode 详解（针对指定表格的操作）：
                         "type": "object",
                         "description": "一行数据，字段名对应表头"
                     },
-                    "description": "填表数据，数组形式，每个元素是一行的数据"
+                    "description": "填表数据，数组形式，每个元素是一行的数据。数据量大时建议使用 source_query 代替"
+                },
+                "source_query": {
+                    "type": "object",
+                    "properties": {
+                        "doc_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "源文档ID列表"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "自然语言查询描述"
+                        },
+                        "max_rows": {
+                            "type": "integer",
+                            "default": 500,
+                            "description": "最大查询行数，默认500"
+                        },
+                        "data_confirmed": {
+                            "type": "boolean",
+                            "description": "是否已确认数据摘要。首次调用时不传或传false，工具返回数据预览；确认无误后再次调用时传true执行实际填充"
+                        }
+                    },
+                    "description": "自动数据源模式。首次调用返回数据预览，确认后再次调用并设置data_confirmed=true执行填充"
                 },
                 "fill_mode": {
                     "type": "string",
@@ -125,7 +149,7 @@ fill_mode 详解（针对指定表格的操作）：
                     "description": "目标表格索引（从0开始），用于多表格文档。如果不指定，自动选择第一个合适的表格"
                 }
             },
-            "required": ["data"]
+            "required": []
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
@@ -137,8 +161,23 @@ fill_mode 详解（针对指定表格的操作）：
             template_id = params.get("template_id", "")
             output_doc_id = params.get("output_doc_id", "")
             data = params.get("data", [])
+            source_query = params.get("source_query")
             fill_mode = params.get("fill_mode", "overwrite")
             target_table_index = params.get("target_table_index")
+
+            # source_query 模式：自动查询数据并填充
+            if source_query and not data:
+                # 检查是否已确认（LLM 已审核过数据摘要）
+                if source_query.get("data_confirmed"):
+                    return await self._execute_confirmed_source_query(
+                        source_query, template_id, output_doc_id,
+                        fill_mode, target_table_index, context, logger
+                    )
+                else:
+                    return await self._execute_with_source_query(
+                        source_query, template_id, output_doc_id,
+                        fill_mode, target_table_index, context, logger
+                    )
 
             if not data:
                 return ToolResult(
@@ -174,6 +213,218 @@ fill_mode 详解（针对指定表格的操作）：
                 success=False,
                 error=f"表格填写失败: {str(e)}"
             )
+
+    async def _execute_with_source_query(
+        self, source_query: Dict, template_id: str, output_doc_id: str,
+        fill_mode: str, target_table_index: int, context: ToolContext, logger
+    ) -> ToolResult:
+        """source_query 模式：自动查询源数据并填入模板。
+
+        LLM 不需要搬运数据，只需传查询描述。
+        工具内部自动完成：查询 → 列名匹配 → 填充。
+        """
+        sq_doc_ids = source_query.get("doc_ids", context.file_ids)
+        sq_query = source_query.get("query", "")
+        sq_max_rows = source_query.get("max_rows", 500)
+
+        if not sq_query:
+            return ToolResult(success=False, error="source_query.query 不能为空")
+        if not template_id:
+            return ToolResult(success=False, error="source_query 模式下必须提供 template_id")
+
+        # 1. 获取模板表头
+        async with async_session() as db:
+            result = await db.execute(
+                select(Document).where(Document.id == template_id)
+            )
+            template_doc = result.scalar_one_or_none()
+
+        if not template_doc:
+            return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
+
+        # 获取模板表头
+        template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
+        if not template_headers:
+            return ToolResult(success=False, error="无法获取模板表头")
+
+        logger.info(f"[FillTableTool][source_query] 模板表头: {template_headers}")
+
+        # 2. 查询源数据，将模板表头传入以指导 SQL 生成正确的列
+        from app.services.sql_query_service import sql_query_service as sql_service
+        augmented_query = (
+            f"{sq_query}\n\n"
+            f"重要：返回结果的列名必须与模板表头精确匹配。"
+            f"模板表头为：{template_headers}\n"
+            f"请只 SELECT 与模板表头匹配的列。"
+        )
+        query_result = await sql_service.generate_and_execute(
+            question=augmented_query,
+            doc_ids=sq_doc_ids,
+            max_retries=3
+        )
+
+        if query_result.get("error"):
+            return ToolResult(
+                success=False,
+                error=f"源数据查询失败: {query_result['error']}"
+            )
+
+        source_records = query_result.get("records", [])
+        if not source_records:
+            return ToolResult(
+                success=True,
+                data={"filled_rows": 0, "total_rows": 0, "message": "查询未返回数据"},
+                metadata={"source_query": sq_query}
+            )
+
+        # 3. 生成数据摘要，返回给 LLM 审核
+        summary = self._build_data_summary(source_records, template_headers)
+        return ToolResult(
+            success=True,
+            data={
+                "data_preview": summary,
+                "total_records": len(source_records),
+                "source_columns": list(source_records[0].keys()) if source_records else [],
+                "template_headers": template_headers,
+                "action_required": "请确认以上数据是否正确，然后调用 fill_table 时将 source_query.data_confirmed 设为 true 来执行实际填入。"
+            },
+            metadata={"source_query": sq_query, "stage": "preview"}
+        )
+
+    async def _execute_confirmed_source_query(
+        self, source_query: Dict, template_id: str, output_doc_id: str,
+        fill_mode: str, target_table_index: int, context: ToolContext, logger
+    ) -> ToolResult:
+        """source_query 确认模式：LLM 已审核过数据摘要，执行实际填入。"""
+        sq_doc_ids = source_query.get("doc_ids", context.file_ids)
+        sq_query = source_query.get("query", "")
+        sq_max_rows = source_query.get("max_rows", 500)
+
+        if not sq_query:
+            return ToolResult(success=False, error="source_query.query 不能为空")
+
+        # 1. 获取模板表头
+        async with async_session() as db:
+            result = await db.execute(select(Document).where(Document.id == template_id))
+            template_doc = result.scalar_one_or_none()
+
+        if not template_doc:
+            return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
+
+        template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
+        if not template_headers:
+            return ToolResult(success=False, error="无法获取模板表头")
+
+        # 2. 重新查询数据（与预览阶段相同的查询）
+        from app.services.sql_query_service import sql_query_service as sql_service
+        augmented_query = (
+            f"{sq_query}\n\n"
+            f"重要：返回结果的列名必须与模板表头精确匹配。"
+            f"模板表头为：{template_headers}\n"
+            f"请只 SELECT 与模板表头匹配的列。"
+        )
+        query_result = await sql_service.generate_and_execute(
+            question=augmented_query,
+            doc_ids=sq_doc_ids,
+            max_retries=3
+        )
+
+        if query_result.get("error"):
+            return ToolResult(success=False, error=f"源数据查询失败: {query_result['error']}")
+
+        source_records = query_result.get("records", [])
+        if not source_records:
+            return ToolResult(success=True, data={"filled_rows": 0, "total_rows": 0, "message": "查询未返回数据"})
+
+        # 3. 填入
+        data = source_records[:sq_max_rows]
+        logger.info(f"[FillTableTool][source_query-confirmed] 填入 {len(data)} 行数据")
+
+        if output_doc_id:
+            async with async_session() as db:
+                return await self._update_existing_file(
+                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger
+                )
+        else:
+            async with async_session() as db:
+                return await self._create_new_file(
+                    db, template_id, data, fill_mode, target_table_index, logger
+                )
+
+    def _build_data_summary(self, records: List[Dict], template_headers: List[str]) -> str:
+        """构建数据摘要：前5行 + 中间3行 + 末尾2行 + 列名 + 行数 + 数据质量统计"""
+        import json
+
+        total = len(records)
+        columns = list(records[0].keys()) if records else []
+
+        # 数据质量统计
+        null_counts = {col: 0 for col in columns}
+        unique_counts = {col: set() for col in columns}
+        for record in records:
+            for col in columns:
+                val = record.get(col)
+                if val is None or str(val).strip() == "" or str(val) == "None":
+                    null_counts[col] += 1
+                else:
+                    unique_counts[col].add(str(val))
+
+        unique_counts = {col: len(vals) for col, vals in unique_counts.items()}
+
+        lines = [f"共 {total} 行数据，{len(columns)} 列"]
+        lines.append(f"源数据列名: {columns}")
+        lines.append(f"模板表头:   {template_headers}")
+        lines.append("")
+
+        # 列信息摘要
+        lines.append("=== 列信息摘要 ===")
+        for col in columns:
+            null_pct = null_counts[col] / total * 100 if total > 0 else 0
+            lines.append(f"  {col}: 唯一值 {unique_counts[col]}，空值 {null_counts[col]} ({null_pct:.1f}%)")
+        lines.append("")
+
+        # 前10行
+        head_count = min(10, total)
+        lines.append(f"=== 前 {head_count} 行 ===")
+        for i, record in enumerate(records[:head_count]):
+            lines.append(f"行{i+1}: {json.dumps(record, ensure_ascii=False)}")
+
+        # 中间5行（如果数据够多）
+        if total > 20:
+            mid_start = total // 2 - 2
+            lines.append(f"\n=== 中间第 {mid_start+1}-{mid_start+5} 行 ===")
+            for i, record in enumerate(records[mid_start:mid_start+5]):
+                lines.append(f"行{mid_start+i+1}: {json.dumps(record, ensure_ascii=False)}")
+
+        # 末尾5行
+        if total > 10:
+            lines.append(f"\n=== 末尾 5 行 ===")
+            for i, record in enumerate(records[-5:], start=total-4):
+                lines.append(f"行{i+1}: {json.dumps(record, ensure_ascii=False)}")
+
+        return "\n".join(lines)
+
+    def _get_template_headers(self, file_path: str, file_type: str, target_table_index: int = None) -> List[str]:
+        """获取模板文件的表头"""
+        if file_type == "xlsx":
+            from openpyxl import load_workbook
+            wb = load_workbook(file_path, read_only=True)
+            ws = wb.active
+            headers = [str(cell.value) if cell.value else f"Column_{i+1}"
+                       for i, cell in enumerate(next(ws.iter_rows(min_row=1, max_row=1)))]
+            wb.close()
+            return headers
+        elif file_type == "docx":
+            from docx import Document as DocxDocument
+            doc = DocxDocument(file_path)
+            if not doc.tables:
+                return []
+            table_idx = target_table_index if target_table_index is not None else 0
+            table = doc.tables[min(table_idx, len(doc.tables) - 1)]
+            if table.rows:
+                return [cell.text.strip() if cell.text.strip() else f"Column_{i+1}"
+                        for i, cell in enumerate(table.rows[0].cells)]
+        return []
 
     async def _create_new_file(
         self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger
@@ -356,8 +607,19 @@ fill_mode 详解（针对指定表格的操作）：
             print(f"填写Excel失败: {e}")
             return False
 
+    def _is_empty_row(self, row) -> bool:
+        """检查表格行是否为空（所有单元格都为空或只有空白字符）"""
+        if not row.cells:
+            return True
+
+        for cell in row.cells:
+            text = cell.text.strip()
+            if text:
+                return False
+        return True
+
     async def _fill_word(self, file_path: str, data: List[Dict], fill_mode: str, target_table_index: int = None) -> bool:
-        """填写Word文件 - 支持多表格智能填写"""
+        """填写Word文件 - 支持多表格智能填写和空行优先填写"""
         import logging
         logger = logging.getLogger(__name__)
 
@@ -383,80 +645,114 @@ fill_mode 详解（针对指定表格的操作）：
                           for i, cell in enumerate(first_row.cells)]
                 logger.info(f"[FillTableTool] 表头: {headers}")
 
+            # 确定目标表格
+            target_table = None
+            if target_table_index is not None and target_table_index < len(doc.tables):
+                # 使用指定的表格索引
+                target_table = doc.tables[target_table_index]
+                logger.info(f"[FillTableTool] 使用指定的表格 {target_table_index} 作为填写目标")
+            else:
+                # 找到第一个非空表格（已有数据或只有表头）进行覆盖
+                for i, table in enumerate(doc.tables):
+                    logger.info(f"[FillTableTool] 检查表格 {i}: {len(table.rows)} 行")
+                    if len(table.rows) >= 1:  # 至少要有表头
+                        target_table = table
+                        logger.info(f"[FillTableTool] 选择表格 {i} 作为填写目标")
+                        break
+
+            if not target_table:
+                logger.error("[FillTableTool] 没有找到有效的表格")
+                return False
+
+            # 检测空行（从第二行开始，第一行是表头）
+            empty_rows = []
+            for i, row in enumerate(target_table.rows[1:], start=2):  # 从第2行开始（索引1）
+                if self._is_empty_row(row):
+                    empty_rows.append((i - 1, row))  # 存储行索引（从0开始）和行对象
+
+            logger.info(f"[FillTableTool] 检测到 {len(empty_rows)} 个空行")
+
             # 根据fill_mode处理
             if fill_mode == "overwrite":
-                # 确定目标表格
-                target_table = None
-                if target_table_index is not None and target_table_index < len(doc.tables):
-                    # 使用指定的表格索引
-                    target_table = doc.tables[target_table_index]
-                    logger.info(f"[FillTableTool] 使用指定的表格 {target_table_index} 作为填写目标")
-                else:
-                    # 找到第一个非空表格（已有数据或只有表头）进行覆盖
-                    for i, table in enumerate(doc.tables):
-                        logger.info(f"[FillTableTool] 检查表格 {i}: {len(table.rows)} 行")
-                        if len(table.rows) >= 1:  # 至少要有表头
-                            target_table = table
-                            logger.info(f"[FillTableTool] 选择表格 {i} 作为填写目标")
-                            break
-
-                if not target_table:
-                    logger.error("[FillTableTool] 没有找到有效的表格")
-                    return False
-
-                # 删除现有数据行，保留表头
-                rows_to_remove = len(target_table.rows) - 1
-                while len(target_table.rows) > 1:
-                    target_table._tbl.remove(target_table.rows[-1]._tr)
-                logger.info(f"[FillTableTool] 删除旧数据行: {rows_to_remove} 行")
-
-                # 填写数据到目标表格
+                # 优先填写空行
                 filled_count = 0
-                for row_data in data:
-                    row = target_table.add_row()
-                    for i, header in enumerate(headers):
-                        if i < len(row.cells):
-                            value = row_data.get(header, "")
-                            if value is None:
-                                value = ""
-                            row.cells[i].text = str(value)
-                    filled_count += 1
+                data_index = 0
 
-                logger.info(f"[FillTableTool] 填写完成, 新增 {filled_count} 行到表格")
+                # 先填写空行
+                for row_index, row in empty_rows:
+                    if data_index < len(data):
+                        row_data = data[data_index]
+                        for i, header in enumerate(headers):
+                            if i < len(row.cells):
+                                value = row_data.get(header, "")
+                                if value is None:
+                                    value = ""
+                                row.cells[i].text = str(value)
+                        filled_count += 1
+                        data_index += 1
+                        logger.info(f"[FillTableTool] 填写空行 {row_index}")
+
+                # 如果还有数据需要填写，删除剩余空行并添加新行
+                if data_index < len(data):
+                    # 删除未使用的空行
+                    for _, row in empty_rows[data_index:]:
+                        target_table._tbl.remove(row._tr)
+                    logger.info(f"[FillTableTool] 删除未使用的空行: {len(empty_rows) - data_index} 行")
+
+                    # 添加新行
+                    for row_data in data[data_index:]:
+                        row = target_table.add_row()
+                        for i, header in enumerate(headers):
+                            if i < len(row.cells):
+                                value = row_data.get(header, "")
+                                if value is None:
+                                    value = ""
+                                row.cells[i].text = str(value)
+                        filled_count += 1
+                        logger.info(f"[FillTableTool] 添加新行")
+
+                # 如果空行多于数据行，删除多余的空行
+                if len(empty_rows) > len(data):
+                    rows_to_remove = len(empty_rows) - len(data)
+                    for _, row in empty_rows[len(data):]:
+                        target_table._tbl.remove(row._tr)
+                    logger.info(f"[FillTableTool] 删除多余的空行: {rows_to_remove} 行")
+
+                logger.info(f"[FillTableTool] 填写完成, 总共填写 {filled_count} 行")
 
             else:  # append模式
-                # 确定目标表格
-                target_table = None
-                if target_table_index is not None and target_table_index < len(doc.tables):
-                    # 使用指定的表格索引
-                    target_table = doc.tables[target_table_index]
-                    logger.info(f"[FillTableTool] 使用指定的表格 {target_table_index} 作为追加目标")
-                else:
-                    # 找到第一个可以追加的表格
-                    for i, table in enumerate(doc.tables):
-                        logger.info(f"[FillTableTool] 检查表格 {i}: {len(table.rows)} 行")
-                        if len(table.rows) >= 1:
-                            target_table = table
-                            logger.info(f"[FillTableTool] 选择表格 {i} 作为追加目标")
-                            break
-
-                if not target_table:
-                    logger.error("[FillTableTool] 没有找到有效的表格进行追加")
-                    return False
-
-                # 追加数据
+                # 优先填写空行，然后追加
                 filled_count = 0
-                for row_data in data:
-                    row = target_table.add_row()
-                    for i, header in enumerate(headers):
-                        if i < len(row.cells):
-                            value = row_data.get(header, "")
-                            if value is None:
-                                value = ""
-                            row.cells[i].text = str(value)
-                    filled_count += 1
+                data_index = 0
 
-                logger.info(f"[FillTableTool] 追加完成, 新增 {filled_count} 行到表格")
+                # 先填写空行
+                for row_index, row in empty_rows:
+                    if data_index < len(data):
+                        row_data = data[data_index]
+                        for i, header in enumerate(headers):
+                            if i < len(row.cells):
+                                value = row_data.get(header, "")
+                                if value is None:
+                                    value = ""
+                                row.cells[i].text = str(value)
+                        filled_count += 1
+                        data_index += 1
+                        logger.info(f"[FillTableTool] 填写空行 {row_index}")
+
+                # 如果还有数据需要填写，追加新行
+                if data_index < len(data):
+                    for row_data in data[data_index:]:
+                        row = target_table.add_row()
+                        for i, header in enumerate(headers):
+                            if i < len(row.cells):
+                                value = row_data.get(header, "")
+                                if value is None:
+                                    value = ""
+                                row.cells[i].text = str(value)
+                        filled_count += 1
+                        logger.info(f"[FillTableTool] 追加新行")
+
+                logger.info(f"[FillTableTool] 追加完成, 总共填写 {filled_count} 行")
 
             doc.save(file_path)
             logger.info(f"[FillTableTool] 文档已保存: {file_path}")

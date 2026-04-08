@@ -184,6 +184,9 @@ class ToolExecutor:
     def format_tool_result(self, tool_name: str, result: ToolResult) -> str:
         """格式化工具结果为文本，供LLM使用
 
+        对于返回大量记录的工具（如 query_pg_database），做智能压缩：
+        只展示摘要 + 前5条 + 后2条，避免撑爆 LLM 上下文。
+
         Args:
             tool_name: 工具名称
             result: 工具执行结果
@@ -192,7 +195,10 @@ class ToolExecutor:
             格式化后的文本
         """
         if result.success:
-            data_str = json.dumps(result.data, ensure_ascii=False, indent=2) if result.data else "成功"
+            if result.data and tool_name == "query_pg_database":
+                data_str = self._compress_query_result(result.data)
+            else:
+                data_str = json.dumps(result.data, ensure_ascii=False, indent=2) if result.data else "成功"
             formatted = f"""工具 "{tool_name}" 执行成功
 
 执行时间: {result.execution_time_ms}ms
@@ -211,6 +217,50 @@ class ToolExecutor:
 """
             logger.debug(f"[ToolExecutor] 格式化工具错误结果 | {tool_name} | 错误: {result.error}")
             return formatted
+
+    def _compress_query_result(self, data: Any) -> str:
+        """压缩 query_pg_database 等返回大量记录的结果。
+
+        只给 LLM 展示摘要 + 前5条 + 后2条，避免上下文爆炸。
+        完整数据仍保留在 ToolResult.data 中供工具内部使用。
+        """
+        if not isinstance(data, dict):
+            return json.dumps(data, ensure_ascii=False, indent=2)
+
+        records = data.get("records", [])
+        if len(records) <= 10:
+            return json.dumps(data, ensure_ascii=False, indent=2)
+
+        # 构建摘要
+        columns = data.get("columns", [])
+        records_count = data.get("records_count", len(records))
+        total_count = data.get("total_count", records_count)
+        query = data.get("query", "")
+
+        summary_parts = [f"共 {records_count} 条记录"]
+        if total_count > records_count:
+            summary_parts.append(f"（去重前 {total_count} 条）")
+        if columns:
+            summary_parts.append(f"列: {columns}")
+        summary = "，".join(summary_parts)
+
+        # 前5条 + 后2条预览
+        preview_head = json.dumps(records[:5], ensure_ascii=False, indent=2)
+        preview_tail = json.dumps(records[-2:], ensure_ascii=False, indent=2)
+        omitted = len(records) - 7
+
+        return f"""查询: {query}
+{summary}
+
+前5条:
+{preview_head}
+
+... (省略 {omitted} 条) ...
+
+后2条:
+{preview_tail}
+
+提示: 如需填写表格，请使用 fill_table(source_query=...) 自动查询并填充，无需手动搬运数据。"""
 
     def get_available_tools_description(self) -> str:
         """生成可用工具的说明文本，用于System Prompt"""

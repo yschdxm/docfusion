@@ -122,8 +122,7 @@ class PGQueryTool(BaseTool):
                 },
                 "max_rows": {
                     "type": "integer",
-                    "default": 100,
-                    "description": "最大返回行数，默认100"
+                    "description": "最大返回行数。注意：如不传入此参数，默认限制为200行；如需查询更多数据，请显式传入行数参数。建议查询行数不超过500行，避免上下文爆炸"
                 }
             },
             "required": ["query"]
@@ -134,7 +133,9 @@ class PGQueryTool(BaseTool):
         try:
             query = params.get("query", "")
             doc_ids = params.get("doc_ids", context.file_ids)
+            # 未传入max_rows时默认限制为200行，防止上下文爆炸
             max_rows = params.get("max_rows", 200)
+            has_explicit_limit = "max_rows" in params
 
             if not query:
                 return ToolResult(
@@ -211,33 +212,55 @@ class PGQueryTool(BaseTool):
 
             # 如果结果为空，给出友好提示和优化建议
             if not unique_records:
+                response_data = {
+                    "query": query,
+                    "records_count": 0,
+                    "records": [],
+                    "columns": [],
+                    "suggestion": "未找到匹配数据。建议优化策略: 1) 使用更宽泛的关键词 2) 尝试LIKE模糊匹配 3) 检查列名是否正确 4) 使用不同表述重试查询"
+                }
+                # 如果未显式传入行数限制，添加提示信息
+                if not has_explicit_limit:
+                    response_data["row_limit_notice"] = (
+                        f"本次查询限制返回前 {max_rows} 行（默认限制）。"
+                        f"如需查询更多行数，请传入 max_rows 参数（建议不超过500行）。"
+                    )
                 return ToolResult(
                     success=True,  # 查询本身成功，只是没数据
-                    data={
-                        "query": query,
-                        "records_count": 0,
-                        "records": [],
-                        "columns": [],
-                        "suggestion": "未找到匹配数据。建议优化策略: 1) 使用更宽泛的关键词 2) 尝试LIKE模糊匹配 3) 检查列名是否正确 4) 使用不同表述重试查询"
-                    },
+                    data=response_data,
                     metadata={
                         "queried_doc_ids": doc_ids,
-                        "sql_samples": all_sqls[:3] if all_sqls else []
+                        "sql_samples": all_sqls[:3] if all_sqls else [],
+                        "max_rows_applied": max_rows,
+                        "is_default_limit": not has_explicit_limit
                     }
+                )
+
+            # 构建响应数据
+            response_data = {
+                "query": query,
+                "records_count": len(unique_records),
+                "total_count": len(all_records),
+                "records": unique_records,
+                "columns": list(unique_records[0].keys()) if unique_records else []
+            }
+
+            # 如果未显式传入行数限制，添加提示信息
+            if not has_explicit_limit:
+                response_data["row_limit_notice"] = (
+                    f"本次查询返回前 {max_rows} 行数据（默认限制）。"
+                    f"如需查询更多行数，请传入 max_rows 参数（建议不超过500行）。"
                 )
 
             return ToolResult(
                 success=True,
-                data={
-                    "query": query,
-                    "records_count": len(unique_records),
-                    "records": unique_records,
-                    "columns": list(unique_records[0].keys()) if unique_records else []
-                },
+                data=response_data,
                 metadata={
                     "queried_doc_ids": doc_ids,
                     "total_fetched": len(all_records),
-                    "sql_samples": all_sqls[:3] if all_sqls else []
+                    "sql_samples": all_sqls[:3] if all_sqls else [],
+                    "max_rows_applied": max_rows,
+                    "is_default_limit": not has_explicit_limit
                 }
             )
 

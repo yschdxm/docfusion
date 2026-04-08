@@ -230,15 +230,22 @@ class AgentStreamService {
         break
 
       case 'thinking_start':
-        steps.set(stepId, {
-          id: stepId,
-          type: 'thinking',
-          name: event.data.message || '思考中',
-          description: 'Agent正在分析任务',
-          status: 'running',
-          progress: 0,
-          thinkingContent: '',
-        })
+        // 如果已存在该步骤，保留已有的 thinkingContent
+        const existingThinkingStep = steps.get(stepId)
+        if (existingThinkingStep) {
+          existingThinkingStep.status = 'running'
+          existingThinkingStep.name = event.data.message || existingThinkingStep.name
+        } else {
+          steps.set(stepId, {
+            id: stepId,
+            type: 'thinking',
+            name: event.data.message || '思考中',
+            description: 'Agent正在分析任务',
+            status: 'running',
+            progress: 0,
+            thinkingContent: '',
+          })
+        }
         break
 
       case 'thinking_chunk':
@@ -333,10 +340,10 @@ class AgentStreamService {
 
       case 'completed':
         // 标记现有思考步骤为完成，不创建新步骤
-        const existingThinkingStep = steps.get(stepId)
-        if (existingThinkingStep && existingThinkingStep.type === 'thinking') {
-          existingThinkingStep.status = 'completed'
-          existingThinkingStep.progress = 100
+        const completedThinkingStep = steps.get(stepId)
+        if (completedThinkingStep && completedThinkingStep.type === 'thinking') {
+          completedThinkingStep.status = 'completed'
+          completedThinkingStep.progress = 100
         }
         break
 

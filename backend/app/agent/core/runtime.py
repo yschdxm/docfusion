@@ -21,6 +21,9 @@ from app.agent.core.tracker import StepTracker, StepType
 from app.agent.base.tool import ToolContext
 
 from app.services.llm_service import llm_service
+from app.db.postgres import async_session
+from app.models.document import Document
+from sqlalchemy import select
 
 
 logger = logging.getLogger(__name__)
@@ -94,41 +97,33 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 - 表格的数据范围（如"空气质量监测数据"、"城市GDP排名"）
 - **多表格文档：仔细阅读每个表格的 context 字段，理解每个表格对应哪个城市/地区**
 
-### 第三步：查询数据（根据文档类型选择工具）
-- **xlsx源文档**：
-  1. 使用 query_pg_database 查询结构化数据
-  2. 如果结果不足，优化查询条件重试
-  3. 多次优化后仍不足，切换到 query_knowledge_graph
+### 第三步：填写表格
 
-- **docx/md/txt源文档**：
-  1. 直接使用 query_knowledge_graph 查询实体数据
-  2. 如果结果不足，立即使用 rag_search 补充
-  3. 必要时使用 read_document 读取文档内容
+**重要：不要搬运数据！不要把 query_pg_database 返回的 records 数组原样传给 fill_table 的 data 参数。**
 
-### 第四步：填写表格（增量模式，确保完整）
-1. 首次调用 fill_table(fill_mode="overwrite") 创建新文件
-   - 必须提供 template_id
-   - 返回结果中包含 output_file_id，后续追加需要用到
+#### 源文档和模板都是 xlsx（推荐用 source_query 自动模式）：
+1. 调用 fill_table(source_query={"doc_ids": [...], "query": "描述需要什么数据"}, template_id=模板ID)
+   - 工具内部自动完成：查询 → 返回数据摘要供审核 → 确认后填入模板
+   - LLM 只需描述需要什么数据，审核数据摘要是否正确
+2. 检查返回的数据摘要（前10行、中间5行、末尾5行、列信息、空值统计等）
+3. 如果摘要正确，确认填入；如果不足则调整 query 重试
 
-2. **强制性数据完整性检查（必须执行）**：
+#### 其他情况（源文档或模板不是 xlsx）：
+1. 使用 query_pg_database / query_knowledge_graph 查询数据
+2. 将查询结果作为 data 参数传给 fill_table
+3. 必要时使用 rag_search 补充
+
+### 第四步：数据完整性检查
+1. **强制性检查（必须执行）**：
    - 已填行数是否与表格应有的规模匹配？
    - 文档标题是否暗示更多数据？（如"百强"应有约100行，"TOP50"应有50行）
-   - 查询返回的数据是否还有剩余未填入？
    - **填写比例 < 80% 时必须继续查询**
 
-3. 如果数据不充分，继续查询更多数据：
+2. 如果数据不充分，调整 source_query 的 query 参数重试：
    - 更换查询关键词
-   - 使用不同的查询工具（如Neo4j查完用RAG补充）
-   - 使用 read_document 直接读取文档内容提取
+   - 扩大查询范围
 
-4. 使用 fill_table(fill_mode="append", output_doc_id=xxx) 追加数据
-   - 必须提供 output_doc_id（前一次调用返回的output_file_id）
-   - 同时提供 template_id
-
-5. **重复步骤2-4直到满足以下条件之一**：
-   - 数据填写完整（达到预期行数或比例 > 80%）
-   - 所有数据源已穷尽（PG + Neo4j + RAG + 文档提取都无新数据）
-   - 连续3次追加都未能增加新数据
+3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
 
 ### 第五步：报告结果
 向用户报告：
@@ -401,7 +396,12 @@ class AgentRuntime:
 
         # 构建对话历史
         logger.info("[AgentRuntime._execute_loop] 构建对话消息...")
-        messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE}]
+
+        # 构建用户上下文信息（选择的文件）
+        user_context = await self._build_user_context(context)
+        system_content = SYSTEM_PROMPT_TEMPLATE + user_context
+
+        messages = [{"role": "system", "content": system_content}]
         messages.extend(context.conversation_history)
         messages.append({"role": "user", "content": message})
 
@@ -497,11 +497,9 @@ class AgentRuntime:
                         tool_calls = chunk.get('tool_calls') or []
                         tool_calls_count = len(tool_calls)
                         logger.info(f"[AgentRuntime._execute_loop] LLM返回finish_reason={finish_reason}, content长度={content_len}, reasoning长度={reasoning_len}, tool_calls数量={tool_calls_count}")
-                        # 即使有 finish_reason，也要处理当前 chunk 的内容
-                        # 不立即 break，让循环自然结束（因为这是最后一个 chunk）
-                        # 但为了兼容性，如果 finish_reason 是 stop，可以立即 break
-                        if finish_reason == "stop":
-                            break
+                        # 注意：这里不立即 break，让循环自然结束
+                        # 因为当前 chunk 可能还包含内容或工具调用
+                        # 如果是 stop 且没有内容/工具调用，会在后续逻辑中处理
 
                 response_time = (datetime.utcnow() - response_start).total_seconds()
                 logger.info(f"[AgentRuntime._execute_loop] LLM流式调用完成 | 耗时: {response_time:.2f}s | 内容长度: {len(full_content)} | 思考长度: {len(full_reasoning)} | 工具调用: {len(tool_calls_buffer)}")
@@ -524,24 +522,45 @@ class AgentRuntime:
                 # 检查内容是否为空或只有空白字符
                 content_stripped = full_content.strip() if full_content else ""
                 if not content_stripped:
-                    # 没有工具调用且没有回复内容，说明LLM返回为空（可能是content_filter或其他问题）
-                    error_msg = f"LLM未返回有效内容（finish_reason={finish_reason}），思考内容长度: {len(full_reasoning)}, 对话消息数: {len(messages)}"
-                    logger.error(f"[AgentRuntime._execute_loop] {error_msg}")
+                    # 没有工具调用且没有回复内容
+                    # 检查上一条消息是否是工具执行结果
+                    last_msg = messages[-1] if messages else None
+                    is_after_tool_result = last_msg and last_msg.get('role') == 'tool'
 
-                    # 获取最近的工具调用信息
-                    tool_calls_info = []
-                    for msg in messages:
-                        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                            for tc in msg['tool_calls']:
-                                tool_calls_info.append(tc.get('function', {}).get('name', 'N/A'))
+                    # 如果有思考内容，说明LLM完成了思考但没有生成最终回复（可能是任务已完成）
+                    # 如果没有思考内容但刚执行完工具，也可能是任务已完成
+                    # 如果都没有，才视为错误
+                    if full_reasoning and full_reasoning.strip():
+                        # 有思考内容但没有最终回复，说明LLM完成了任务但不需要回复
+                        logger.info(f"[AgentRuntime._execute_loop] LLM完成任务但无最终回复（有思考内容），思考长度: {len(full_reasoning)}")
+                        tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "LLM完成任务但无最终回复"})
+                        await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
+                    elif is_after_tool_result:
+                        # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
+                        logger.info(f"[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
+                        tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
+                        await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
+                    else:
+                        # 没有工具调用且没有内容/思考，说明LLM返回为空（可能是content_filter或其他问题）
+                        error_msg = f"LLM未返回有效内容（finish_reason={finish_reason}），思考内容长度: {len(full_reasoning)}, 对话消息数: {len(messages)}"
+                        logger.error(f"[AgentRuntime._execute_loop] {error_msg}")
 
-                    logger.error(f"[AgentRuntime._execute_loop] 最近工具调用: {tool_calls_info}")
-                    logger.error(f"[AgentRuntime._execute_loop] 最后一条用户消息: {messages[-1].get('content', '')[:200]}")
+                        # 获取最近的工具调用信息
+                        tool_calls_info = []
+                        for msg in messages:
+                            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                                for tc in msg['tool_calls']:
+                                    tool_calls_info.append(tc.get('function', {}).get('name', 'N/A'))
 
-                    tracker.fail_step(step.id, error_msg)
-                    await stream.emit_error(error_msg)
-                    await stream.emit_failed(error_msg, {"reasoning": full_reasoning, "message_count": len(messages)})
-                    return {"success": False, "error": error_msg, "steps": tracker.to_dict()}
+                        logger.error(f"[AgentRuntime._execute_loop] 最近工具调用: {tool_calls_info}")
+                        logger.error(f"[AgentRuntime._execute_loop] 最后一条用户消息: {messages[-1].get('content', '')[:200]}")
+
+                        tracker.fail_step(step.id, error_msg)
+                        await stream.emit_error(error_msg)
+                        await stream.emit_failed(error_msg, {"reasoning": full_reasoning, "message_count": len(messages)})
+                        return {"success": False, "error": error_msg, "steps": tracker.to_dict()}
 
                 # 有实际回复内容，正常完成任务
                 tracker.complete_step(step.id, {"response": full_content, "reasoning": full_reasoning})
@@ -642,3 +661,74 @@ class AgentRuntime:
             "steps": tracker.to_dict(),
             "reached_max_iterations": True
         }
+
+    async def _build_user_context(self, context: ToolContext) -> str:
+        """构建用户上下文信息（选择的文件）
+
+        将用户选择的文档信息添加到System Prompt中，让LLM知道有哪些文件可用。
+        """
+        context_parts = []
+
+        # 查询文档详情
+        all_file_ids = list(context.file_ids)
+        if context.template_id:
+            all_file_ids.append(context.template_id)
+
+        doc_details = {}
+        if all_file_ids:
+            try:
+                async with async_session() as db:
+                    # 将字符串ID转换为UUID
+                    from uuid import UUID
+                    uuid_ids = []
+                    for fid in all_file_ids:
+                        try:
+                            uuid_ids.append(UUID(fid) if isinstance(fid, str) else fid)
+                        except ValueError:
+                            continue
+
+                    if uuid_ids:
+                        result = await db.execute(
+                            select(Document).where(Document.id.in_(uuid_ids))
+                        )
+                        docs = result.scalars().all()
+                        doc_details = {str(doc.id): doc for doc in docs}
+            except Exception as e:
+                logger.warning(f"[AgentRuntime] 获取文档详情失败: {e}")
+
+        # 添加源文档信息
+        if context.file_ids:
+            context_parts.append("\n\n## 用户已选择的文档（源文档）")
+            for fid in context.file_ids:
+                doc = doc_details.get(fid)
+                if doc:
+                    context_parts.append(f"- ID: {fid}")
+                    context_parts.append(f"  文件名: {doc.original_filename}")
+                    context_parts.append(f"  类型: {doc.file_type}")
+                    context_parts.append(f"  分类: {doc.doc_category}")
+                else:
+                    context_parts.append(f"- ID: {fid}")
+            context_parts.append("\n这些文档包含用户想要处理的数据。请根据需要查询这些文档的内容。")
+
+        # 添加模板文档信息
+        if context.template_id:
+            context_parts.append("\n## 用户已选择的模板")
+            doc = doc_details.get(context.template_id)
+            if doc:
+                context_parts.append(f"- ID: {context.template_id}")
+                context_parts.append(f"  文件名: {doc.original_filename}")
+                context_parts.append(f"  类型: {doc.file_type}")
+            else:
+                context_parts.append(f"- ID: {context.template_id}")
+            context_parts.append("\n这是用户提供的表格模板，需要填入数据。")
+
+        # 添加文件使用提示
+        if context.file_ids or context.template_id:
+            context_parts.append("\n## 文件使用提示")
+            if context.file_ids:
+                context_parts.append("- 源文档是用户指定的数据来源，必须优先使用这些文档")
+                context_parts.append("- 不要询问用户选择了什么文档，直接使用上述文件信息")
+            if context.template_id:
+                context_parts.append("- 填表时必须使用指定的template_id作为输出目标")
+
+        return "\n".join(context_parts) if context_parts else ""

@@ -48,6 +48,11 @@ class Neo4jQueryTool(BaseTool):
 - 只有在PostgreSQL (query_pg_database) 查询尝试优化后仍无结果时才使用此工具
 - 不要作为第一优先级直接使用
 
+重要参数说明：
+- doc_ids (可选): 限定查询的文档ID列表。如果提供，只查询这些文档中的实体；
+  如果不提供，工具将返回错误，提示需要指定查询范围。
+- query (必需): 自然语言查询描述
+
 特点：
 - 这是数据查找的第二优先级（PG > Neo4j > RAG）
 - 支持自然语言查询，自动转换为Cypher

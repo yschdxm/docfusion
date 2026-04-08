@@ -207,7 +207,7 @@ class SQLQueryService:
         messages.append({"role": "user", "content": prompt})
 
         try:
-            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=2000)
+            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
             sql_result = llm_service._extract_json(response)
             sql = sql_result.get("sql", "")
         except Exception as e:
@@ -227,7 +227,7 @@ class SQLQueryService:
                 return {"sql": sql, "records": [], "error": f"包含危险关键字: {forbidden}"}
 
         if "LIMIT" not in sql_stripped:
-            sql = sql.rstrip(";") + " LIMIT 200"
+            sql = sql.rstrip(";") + " LIMIT 10000"
 
         try:
             async with engine.connect() as conn:
@@ -354,9 +354,9 @@ class SQLQueryService:
                 records = result.get("records", [])
                 all_records.extend(records)
 
-                # 如果获取到足够数据，提前返回
-                if len(all_records) >= 10:
-                    logger.info("[SQL-RETRY] 第%d次尝试成功，获取%d条记录", attempt + 1, len(all_records))
+                # 如果获取到数据，提前返回（不要无意义重试）
+                if len(records) > 0:
+                    logger.info("[SQL-RETRY] 第%d次尝试成功，获取%d条记录", attempt + 1, len(records))
                     break
                 else:
                     logger.info("[SQL-RETRY] 第%d次尝试获取%d条记录，数据不足，继续重试", attempt + 1, len(records))

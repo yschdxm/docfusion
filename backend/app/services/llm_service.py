@@ -309,7 +309,7 @@ class LLMService:
         prompt = NER_PROMPT.format(text=text[:80000])
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             result = self._extract_json(response)
@@ -359,7 +359,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=1000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             result = self._extract_json(response)
@@ -386,7 +386,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=2000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             return self._extract_json(response)
@@ -405,7 +405,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=2000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             return self._extract_json(response)
@@ -433,7 +433,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=2000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             return self._extract_json(response)
@@ -461,7 +461,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=16000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
         logger.debug("[BATCH-EXTRACT] LLM响应长度: %d", len(response) if response else 0)
 
         try:
@@ -498,7 +498,7 @@ class LLMService:
 
 只返回JSON，不要其他说明。"""
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.1, max_tokens=1000)
+        response = await self.chat_completion(messages, temperature=0.1, max_tokens=65536, enable_thinking=False)
         try:
             return self._extract_json(response)
         except Exception:
@@ -550,7 +550,7 @@ class LLMService:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=2000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             result = self._extract_json(response)
@@ -616,7 +616,7 @@ class LLMService:
 只返回JSON，不要其他说明。"""
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3, max_tokens=8000)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             result = self._extract_json(response)
@@ -658,7 +658,7 @@ class LLMService:
 只返回JSON，不要其他说明。"""
 
         messages = [{"role": "user", "content": prompt}]
-        response = await self.chat_completion(messages, temperature=0.3)
+        response = await self.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
 
         try:
             return self._extract_json(response)

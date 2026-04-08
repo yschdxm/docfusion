@@ -33,19 +33,26 @@ class Neo4jQueryService:
             )
             rel_types = rel_types_result[0]["types"] if rel_types_result else []
 
-            # 查询指定文档中的节点样本（每种类型的前2个）
+            # 查询节点样本（每种类型的前2个）
             sample_nodes = []
+            # 根据 doc_ids 动态构建过滤条件
+            query_filter = ""
+            params = {}
             if doc_ids:
+                query_filter = "WHERE any(did IN $doc_ids WHERE did IN n.document_ids)"
+                params = {"doc_ids": doc_ids}
+
+            if labels:
                 for label in labels[:5]:  # 只取前5种类型避免查询过多
                     try:
                         nodes_result = await run_cypher(
                             f"""
                             MATCH (n:{label})
-                            WHERE any(did IN $doc_ids WHERE did IN n.document_ids)
+                            {query_filter}
                             RETURN n.name as name, keys(n) as prop_keys, labels(n) as labels
                             LIMIT 2
                             """,
-                            {"doc_ids": doc_ids}
+                            params
                         )
                         if nodes_result:
                             sample_nodes.extend(nodes_result)
@@ -96,7 +103,7 @@ class Neo4jQueryService:
 
         try:
             messages = [{"role": "user", "content": prompt}]
-            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=8000)
+            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
             result = llm_service._extract_json(response)
             records = result.get("records", [])
             return records
@@ -118,7 +125,7 @@ class Neo4jQueryService:
             {"cypher": str, "records": List[Dict], "error": str|None}
         """
         if not doc_ids:
-            return {"cypher": "", "records": [], "error": "没有提供doc_ids"}
+            return {"cypher": "", "records": [], "error": "没有提供doc_ids参数。请在查询时指定doc_ids参数，限定查询的文档范围。例如：doc_ids=['doc_id_1', 'doc_id_2']"}
 
         schema = await self._get_neo4j_schema(doc_ids)
         headers_str = "，".join([h for h in table_headers if h]) if table_headers else "相关字段"
@@ -147,7 +154,7 @@ class Neo4jQueryService:
         messages.append({"role": "user", "content": prompt})
 
         try:
-            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=2000)
+            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
             result = llm_service._extract_json(response)
             cypher = result.get("cypher", "")
             explanation = result.get("explanation", "")

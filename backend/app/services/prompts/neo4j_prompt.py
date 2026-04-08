@@ -13,6 +13,8 @@ NEO4J_QUERY_PROMPT = """你是Neo4j Cypher查询专家。根据用户需求和�
 
 ## 文档ID过滤（只查询这些文档的实体）
 {doc_ids}
+- 如果 doc_ids 非空：只查询这些文档的实体
+- 如果 doc_ids 为空：工具将返回错误，提示需要指定查询范围
 
 ## 文档标题（数据范围约束）
 {document_title}
@@ -28,7 +30,9 @@ NEO4J_QUERY_PROMPT = """你是Neo4j Cypher查询专家。根据用户需求和�
 
 ## 要求
 1. 使用Cypher语法
-2. 必须包含文档过滤: WHERE any(did IN $doc_ids WHERE did IN n.document_ids)
+2. **重要**：必须包含文档过滤: WHERE any(did IN $doc_ids WHERE did IN n.document_ids)
+   - 如果 doc_ids 为空，工具将返回错误，提示需要指定查询范围
+   - 在实际查询中，doc_ids 参数由用户提供或从上下文获取
 3. 返回的字段名应与表头对应，但**重要**：AS别名只能使用英文字母、数字、下划线，不能包含中文括号（）或特殊字符
 4. 首次查询可使用精确匹配或模糊匹配（CONTAINS）
 5. 直接查询节点的属性（如n.city, n.GDP），不要查询n.attributes
