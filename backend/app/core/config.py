@@ -30,8 +30,6 @@ class Settings(BaseSettings):
     LOG_LEVEL_UVICORN: str = os.getenv("LOG_LEVEL_UVICORN", "WARNING")
     LOG_LEVEL_SQLALCHEMY: str = os.getenv("LOG_LEVEL_SQLALCHEMY", "WARNING")
     LOG_LEVEL_NEO4J_DRIVER: str = os.getenv("LOG_LEVEL_NEO4J_DRIVER", "WARNING")
-    LOG_LEVEL_REDIS: str = os.getenv("LOG_LEVEL_REDIS", "WARNING")
-    LOG_LEVEL_CELERY: str = os.getenv("LOG_LEVEL_CELERY", "WARNING")
 
     # SECRET_KEY 是必需的
     SECRET_KEY: Optional[str] = None
@@ -41,7 +39,6 @@ class Settings(BaseSettings):
     NEO4J_URL: Optional[str] = None
     NEO4J_USER: Optional[str] = None
     NEO4J_PASSWORD: Optional[str] = None
-    REDIS_URL: Optional[str] = None
     QDRANT_URL: Optional[str] = None
 
     # MiMO API
@@ -68,10 +65,6 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800
 
-    # Celery
-    CELERY_BROKER_URL: Optional[str] = None
-    CELERY_RESULT_BACKEND: Optional[str] = None
-
     class Config:
         # .env 文件在项目根目录，相对于 backend 目录
         env_file = "../.env"
@@ -87,12 +80,9 @@ class Settings(BaseSettings):
             "NEO4J_URL": "Neo4j 图数据库连接",
             "NEO4J_USER": "Neo4j 用户名",
             "NEO4J_PASSWORD": "Neo4j 密码",
-            "REDIS_URL": "Redis 连接",
             "QDRANT_URL": "Qdrant 向量数据库连接",
             "MIMO_API_KEY": "MiMO 模型 API 密钥",
             "GITEE_AI_API_KEY": "Gitee AI API 密钥（用于嵌入和重排模型）",
-            "CELERY_BROKER_URL": "Celery 消息队列",
-            "CELERY_RESULT_BACKEND": "Celery 结果后端",
         }
 
         missing_fields = []

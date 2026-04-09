@@ -46,8 +46,6 @@ def setup_logging():
         LOG_LEVEL_UVICORN   - uvicorn (默认 WARNING)
         LOG_LEVEL_SQLALCHEMY - sqlalchemy (默认 WARNING)
         LOG_LEVEL_NEO4J_DRIVER - neo4j 驱动 (默认 WARNING)
-        LOG_LEVEL_REDIS     - redis (默认 WARNING)
-        LOG_LEVEL_CELERY    - celery (默认 WARNING)
     """
     settings = get_settings()
     s = settings
@@ -139,8 +137,6 @@ def setup_logging():
             "fastapi":         {"level": s.LOG_LEVEL_UVICORN, "handlers": ["console", "file"], "propagate": False},
             "sqlalchemy":      {"level": s.LOG_LEVEL_SQLALCHEMY, "handlers": ["console", "file"], "propagate": False},
             "neo4j":           {"level": s.LOG_LEVEL_NEO4J_DRIVER, "handlers": ["console", "file"], "propagate": False},
-            "redis":           {"level": s.LOG_LEVEL_REDIS,   "handlers": ["console", "file"], "propagate": False},
-            "celery":          {"level": s.LOG_LEVEL_CELERY,  "handlers": ["console", "file"], "propagate": False},
         },
 
         "root": {

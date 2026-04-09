@@ -38,9 +38,9 @@
 
 ## 技术栈
 
-- **后端**：Python FastAPI + Celery + Redis
+- **后端**：Python FastAPI
 - **前端**：React 18 + TypeScript + Vite + Tailwind CSS
-- **数据库**：PostgreSQL + MongoDB + Neo4j
+- **数据库**：PostgreSQL + Neo4j
 - **AI 模型**：MiMO v2 Flash（通过 API 调用）
 - **部署**：Docker Compose
 
@@ -102,15 +102,9 @@ SECRET_KEY=your_secret_key_here
 
 # 数据库配置
 POSTGRES_URL=postgresql://docfusion:docfusion123@localhost:5432/docfusion
-MONGODB_URL=mongodb://localhost:27017/docfusion
 NEO4J_URL=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_neo4j_password
-REDIS_URL=redis://localhost:6379/0
-
-# Celery 配置
-CELERY_BROKER_URL=redis://localhost:6379/1
-CELERY_RESULT_BACKEND=redis://localhost:6379/2
 ```
 
 **注意**：`.env` 文件包含敏感信息，不要提交到版本控制系统。

@@ -7,9 +7,9 @@
 **项目类型：** 全栈Web应用
 
 **核心技术栈：**
-- 后端：Python FastAPI + Celery + Redis
+- 后端：Python FastAPI
 - 前端：React 18 + TypeScript + Vite + Tailwind CSS
-- 数据库：PostgreSQL + MongoDB + Neo4j
+- 数据库：PostgreSQL + Neo4j
 - AI模型：MiMO v2 Flash (通过API调用)
 - 部署：Docker Compose
 
@@ -104,11 +104,9 @@ code3/
 ## 环境变量配置
 
 POSTGRES_URL=postgresql://docfusion:docfusion123@postgres:5432/docfusion
-MONGODB_URL=mongodb://mongo:27017/docfusion
 NEO4J_URL=bolt://neo4j:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=neo4j123
-REDIS_URL=redis://redis:6379/0
 MIMO_API_KEY=sk-cnp5q8ys4bj0xmked6o0913fyq6jzjt1cs5o5ucxik57a49q
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2-flash
