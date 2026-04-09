@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 
 from docx import Document
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 
@@ -35,10 +37,10 @@ class DocxParser:
         headings = []
 
         try:
-            for para in doc.paragraphs:
+            for source_index, para in enumerate(doc.paragraphs):
                 if para.text.strip():
                     style_name = para.style.name if para.style else "Normal"
-                    content.append({"text": para.text, "style": style_name})
+                    content.append({"text": para.text, "style": style_name, "source_index": source_index})
                     if style_name.startswith("Heading"):
                         level = int(style_name[-1]) if style_name[-1].isdigit() else 1
                         headings.append({"level": level, "text": para.text})
@@ -233,3 +235,20 @@ class DocxParser:
         target_run.font.size = source_run.font.size
         target_run.font.color.rgb = source_run.font.color.rgb
         target_run.font.highlight_color = source_run.font.highlight_color
+
+    @staticmethod
+    def set_paragraph_font(paragraph: Paragraph, font_name: str = "", font_size_pt: float = None) -> None:
+        for run in paragraph.runs:
+            if font_name:
+                run.font.name = font_name
+                r_pr = run._element.get_or_add_rPr()
+                r_fonts = r_pr.rFonts
+                if r_fonts is None:
+                    r_fonts = OxmlElement("w:rFonts")
+                    r_pr.append(r_fonts)
+                r_fonts.set(qn("w:ascii"), font_name)
+                r_fonts.set(qn("w:hAnsi"), font_name)
+                r_fonts.set(qn("w:eastAsia"), font_name)
+                r_fonts.set(qn("w:cs"), font_name)
+            if font_size_pt is not None:
+                run.font.size = Pt(float(font_size_pt))
