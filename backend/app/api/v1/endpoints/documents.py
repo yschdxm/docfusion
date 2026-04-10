@@ -184,6 +184,7 @@ async def upload_documents(
 
 
 @router.get("/", response_model=List[dict])
+@router.get("", response_model=List[dict])
 async def list_documents(
     doc_category: Optional[str] = None,
     skip: int = 0,

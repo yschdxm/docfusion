@@ -4,6 +4,7 @@ import os
 from app.core.logging import setup_logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
@@ -38,6 +39,16 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan
 )
+
+# 信任的主机名，防止 Host 头攻击
+# 支持环境变量 ALLOWED_HOSTS，格式: host1,host2,host3
+allowed_hosts_str = os.getenv("ALLOWED_HOSTS", "*")
+if allowed_hosts_str == "*":
+    allowed_hosts = ["*"]
+else:
+    allowed_hosts = [host.strip() for host in allowed_hosts_str.split(",")]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 app.add_middleware(
     CORSMiddleware,

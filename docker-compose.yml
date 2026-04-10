@@ -36,6 +36,7 @@ services:
       # 应用配置
       - DEBUG=${DEBUG}
       - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
       # 日志级别配置
       - LOG_LEVEL=${LOG_LEVEL}
       - LOG_LEVEL_DB=${LOG_LEVEL_DB}
