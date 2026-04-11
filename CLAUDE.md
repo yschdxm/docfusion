@@ -7,9 +7,9 @@
 **项目类型：** 全栈Web应用
 
 **核心技术栈：**
-- 后端：Python FastAPI + Celery + Redis
+- 后端：Python FastAPI
 - 前端：React 18 + TypeScript + Vite + Tailwind CSS
-- 数据库：PostgreSQL + MongoDB + Neo4j
+- 数据库：PostgreSQL + Neo4j
 - AI模型：MiMO v2 Flash (通过API调用)
 - 部署：Docker Compose
 
@@ -88,14 +88,25 @@ code3/
 - 基于图谱的问答
 - 跨文档数据关联发现
 
+### 5. LLM 流控模块
+
+功能：限制 LLM API 调用频率和 token 使用量，避免超额费用
+
+核心能力：
+- RPM (Requests Per Minute) 限制：每分钟最大请求数
+- TPM (Tokens Per Minute) 限制：每分钟最大 token 数
+- 自动等待机制：当达到限制时自动等待
+
+关键文件：
+- backend/app/core/rate_limiter.py - 流控管理器
+- backend/app/services/llm_service.py - 集成流控的 LLM 服务
+
 ## 环境变量配置
 
 POSTGRES_URL=postgresql://docfusion:docfusion123@postgres:5432/docfusion
-MONGODB_URL=mongodb://mongo:27017/docfusion
 NEO4J_URL=bolt://neo4j:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=neo4j123
-REDIS_URL=redis://redis:6379/0
 MIMO_API_KEY=sk-cnp5q8ys4bj0xmked6o0913fyq6jzjt1cs5o5ucxik57a49q
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2-flash

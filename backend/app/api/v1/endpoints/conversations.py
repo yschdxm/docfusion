@@ -27,6 +27,7 @@ class MessageCreate(BaseModel):
     role: str
     content: str
     action_data: Optional[Dict[str, Any]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
 
 
 class ConversationResponse(BaseModel):
@@ -109,6 +110,7 @@ async def get_conversation(
                 "role": msg.role,
                 "content": msg.content,
                 "action_data": msg.action_data,
+                "steps": msg.steps,
                 "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else None
             }
             for msg in messages
@@ -210,7 +212,8 @@ async def add_message(
         conversation_id=conversation_id,
         role=data.role,
         content=data.content,
-        action_data=data.action_data
+        action_data=data.action_data,
+        steps=data.steps
     )
     db.add(msg)
     
@@ -243,7 +246,9 @@ async def update_message(
     msg.content = data.content
     if data.action_data is not None:
         msg.action_data = data.action_data
-    
+    if data.steps is not None:
+        msg.steps = data.steps
+
     await db.commit()
     
     return {"message": "Message updated"}

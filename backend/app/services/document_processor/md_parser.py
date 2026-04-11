@@ -1,7 +1,7 @@
 import markdown
 from bs4 import BeautifulSoup
-from typing import Dict, List, Any
-import re
+from typing import Dict, Any
+from .chunker import chunk_by_sections, chunk_table
 
 
 class MdParser:
@@ -32,14 +32,32 @@ class MdParser:
         paragraphs = [p.get_text() for p in soup.find_all("p") if p.get_text().strip()]
         
         code_blocks = [code.get_text() for code in soup.find_all("code")]
-        
+
+        # 构建段落列表用于分块
+        para_list = []
+        for h in headings:
+            para_list.append({"text": h["text"], "style": f"Heading {h['level']}"})
+        for p in paragraphs:
+            para_list.append({"text": p, "style": "Normal"})
+
+        # 生成结构化 chunks
+        chunks = chunk_by_sections(para_list, headings)
+        chunk_idx = len(chunks)
+        for table_data in tables:
+            table_chunks = chunk_table(table_data)
+            for tc in table_chunks:
+                tc["chunk_index"] = chunk_idx
+                chunk_idx += 1
+            chunks.extend(table_chunks)
+
         return {
             "full_text": content,
             "html": html,
             "headings": headings,
             "tables": tables,
             "paragraphs": paragraphs,
-            "code_blocks": code_blocks
+            "code_blocks": code_blocks,
+            "chunks": chunks,
         }
     
     @staticmethod

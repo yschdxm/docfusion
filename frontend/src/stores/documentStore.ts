@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import toast from 'react-hot-toast'
 import api from '../services/api'
 
 export interface DocumentInfo {
@@ -28,7 +29,7 @@ interface DocumentStore {
   deleteDocument: (id: string) => Promise<void>
 }
 
-export const useDocumentStore = create<DocumentStore>((set, get) => ({
+export const useDocumentStore = create<DocumentStore>((set) => ({
   documents: [],
   isLoading: false,
 
@@ -44,6 +45,7 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       }
     } catch (error) {
       console.error('Failed to fetch documents:', error)
+      toast.error('获取文件列表失败，请刷新页面重试')
     } finally {
       set({ isLoading: false })
     }

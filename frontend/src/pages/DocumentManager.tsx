@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { FileText, Table, FolderOpen, Trash2, Download, Search, Plus, File, Filter, RefreshCw, Loader2, CheckCircle, XCircle } from 'lucide-react'
+import { FileText, Table, FolderOpen, Trash2, Download, Search, Plus, File, Filter, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useDocumentStore } from '../stores/documentStore'
 import Dropdown from '../components/ui/Dropdown'
@@ -22,7 +22,7 @@ export default function DocumentManager() {
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
-  const pollingRef = useRef<NodeJS.Timeout | null>(null)
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isMountedRef = useRef(true)
 
   useEffect(() => {
@@ -454,9 +454,7 @@ export default function DocumentManager() {
                   
                   <div className="flex items-center gap-2">
                     <a
-                      href={doc.doc_category === 'output' 
-                        ? `/api/v1/table-fill/download/${doc.id}`
-                        : `/api/v1/documents/${doc.id}/download`}
+                      href={`/api/v1/documents/${doc.id}/download`}
                       className="p-2 rounded-lg hover:bg-blue-500/20 text-slate-400 hover:text-blue-400 transition-colors"
                       download
                     >

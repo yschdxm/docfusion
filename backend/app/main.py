@@ -1,30 +1,36 @@
+import logging
+import os
+
+from app.core.logging import setup_logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-import os
 
 from app.core.config import get_settings
 from app.api.v1.api import api_router
 from app.db.postgres import init_db
-from app.db.mongodb import init_mongodb, close_mongodb
 from app.db.neo4j_db import init_neo4j, close_neo4j
 
+setup_logging()
+
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Application starting up")
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "output"), exist_ok=True)
-    
+
     await init_db()
-    await init_mongodb()
     await init_neo4j()
-    
+
     yield
-    
-    await close_mongodb()
+
+    logger.info("Application shutting down")
     await close_neo4j()
 
 
@@ -33,6 +39,16 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan
 )
+
+# 信任的主机名，防止 Host 头攻击
+# 支持环境变量 ALLOWED_HOSTS，格式: host1,host2,host3
+allowed_hosts_str = os.getenv("ALLOWED_HOSTS", "*")
+if allowed_hosts_str == "*":
+    allowed_hosts = ["*"]
+else:
+    allowed_hosts = [host.strip() for host in allowed_hosts_str.split(",")]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 app.add_middleware(
     CORSMiddleware,

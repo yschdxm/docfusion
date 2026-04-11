@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { MessageSquare, X, Minus, Maximize2, Send, Loader2, Trash2, ChevronDown } from 'lucide-react'
-import { useChatStore, Message, ChatSession } from '../stores/chatStore'
+import { MessageSquare, Minus, Send, Loader2, Trash2, ChevronDown, Download } from 'lucide-react'
+import { useChatStore } from '../stores/chatStore'
 import { useLocation } from 'react-router-dom'
 import api from '../services/api'
 
@@ -185,7 +185,22 @@ export default function ChatFloatWindow() {
                     : 'bg-white/10 text-slate-200'
                 }`}
               >
-                {message.content}
+                <div className="whitespace-pre-wrap">{message.content}</div>
+                {/* 填表完成后的下载链接 */}
+                {message.action_data?.result?.filled_file_url && (
+                  <div className="mt-3 pt-3 border-t border-white/10">
+                    <a
+                      href={message.action_data.result.filled_file_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-500/20 text-green-400
+                                rounded-lg hover:bg-green-500/30 transition-colors text-xs"
+                    >
+                      <Download className="w-3 h-3" />
+                      下载填写结果
+                    </a>
+                  </div>
+                )}
               </div>
             </div>
           ))

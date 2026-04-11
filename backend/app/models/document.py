@@ -65,10 +65,25 @@ class Conversation(Base):
 class Message(Base):
     """对话消息表"""
     __tablename__ = "messages"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     conversation_id = Column(String(50), nullable=False, index=True)
     role = Column(String(20), nullable=False)  # user, assistant
     content = Column(Text, nullable=False)
     action_data = Column(JSON, nullable=True)  # 操作卡片数据
+    steps = Column(JSON, nullable=True)  # Agent 执行步骤
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DocumentExtraction(Base):
+    """文档提取结果表"""
+    __tablename__ = "document_extractions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    entities_count = Column(Integer, default=0)
+    relations_count = Column(Integer, default=0)
+    chunks_count = Column(Integer, default=0)
+    xlsx_schema = Column(JSON, default=[])  # 存储 xlsx 表结构信息
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

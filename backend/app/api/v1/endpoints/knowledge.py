@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from typing import List
+from fastapi import APIRouter, HTTPException, Query
+from typing import List, Optional
 from app.schemas.knowledge import (
     KnowledgeQueryRequest,
     KnowledgeGraphResponse,
@@ -11,9 +11,12 @@ router = APIRouter()
 
 
 @router.get("/graph", response_model=KnowledgeGraphResponse)
-async def get_knowledge_graph(limit: int = 100):
+async def get_knowledge_graph(
+    limit: int = 500,
+    document_id: Optional[str] = Query(None, description="按文档ID过滤图谱数据")
+):
     try:
-        graph_data = await knowledge_graph_service.get_graph(limit=limit)
+        graph_data = await knowledge_graph_service.get_graph(limit=limit, document_id=document_id)
         return KnowledgeGraphResponse(
             nodes=graph_data.get("nodes", []),
             edges=graph_data.get("edges", [])

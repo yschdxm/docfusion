@@ -144,13 +144,22 @@ export default function KnowledgeGraph() {
 
   useEffect(() => {
     fetchDocuments()
-    fetchGraph()
   }, [fetchDocuments])
+
+  // 选中文档变化时，按文档 ID 请求后端图谱数据
+  useEffect(() => {
+    fetchGraph()
+  }, [selectedDocs])
 
   const fetchGraph = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await api.get('/knowledge/graph', { params: { limit: 500 } })
+      const params: Record<string, string | number> = { limit: 500 }
+      // 只选了一个文档时，按文档 ID 过滤
+      if (selectedDocs.length === 1) {
+        params.document_id = selectedDocs[0]
+      }
+      const response = await api.get('/knowledge/graph', { params })
       setAllNodes(response.data.nodes || [])
       setAllEdges(response.data.edges || [])
     } catch (error) {
@@ -159,12 +168,12 @@ export default function KnowledgeGraph() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [selectedDocs])
 
-  // 过滤节点并去重
+  // 过滤节点并去重（选了多个文档时客户端过滤，选一个时后端已过滤）
   const filteredNodes = (() => {
     const filtered = allNodes.filter(node => {
-      const matchDoc = selectedDocs.length === 0 || 
+      const matchDoc = selectedDocs.length <= 1 ||
         (node.document_ids && node.document_ids.some(id => selectedDocs.includes(id)))
       const matchType = entityTypeFilter === 'all' || node.type === entityTypeFilter
       return matchDoc && matchType

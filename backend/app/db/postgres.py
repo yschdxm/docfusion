@@ -1,12 +1,16 @@
+import logging
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
 engine = create_async_engine(
     settings.POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://"),
-    echo=settings.DEBUG,
+    echo=False,
     pool_pre_ping=True,
 )
 
@@ -28,3 +32,4 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("PostgreSQL database initialized")
