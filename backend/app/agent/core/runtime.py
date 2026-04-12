@@ -291,12 +291,14 @@ class AgentRuntime:
         self,
         registry: ToolRegistry,
         max_iterations: int = 30,
-        max_tool_retries: int = 3
+        max_tool_retries: int = 3,
+        system_prompt: Optional[str] = None
     ):
         self.registry = registry
         self.executor = ToolExecutor(registry)
         self.max_iterations = max_iterations
         self.max_tool_retries = max_tool_retries
+        self.system_prompt = system_prompt or SYSTEM_PROMPT_TEMPLATE
         logger.info(f"[AgentRuntime] 初始化 | max_iterations={max_iterations}, max_tool_retries={max_tool_retries}")
 
     async def run(
@@ -346,14 +348,18 @@ class AgentRuntime:
         file_ids: List[str],
         template_id: Optional[str] = None,
         conversation_history: List[Dict[str, str]] = None,
-        cancel_event: Optional[asyncio.Event] = None
+        cancel_event: Optional[asyncio.Event] = None,
+        on_stream_created=None
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
         Args:
             cancel_event: 取消事件，当设置时任务会被取消
+            on_stream_created: 回调函数，接收创建的StreamManager
         """
         stream = StreamManager()
+        if on_stream_created:
+            on_stream_created(stream)
         tracker = StepTracker()
 
         context = ToolContext(
@@ -452,7 +458,7 @@ class AgentRuntime:
 
         # 构建用户上下文信息（选择的文件）
         user_context = await self._build_user_context(context)
-        system_content = SYSTEM_PROMPT_TEMPLATE + user_context
+        system_content = self.system_prompt + user_context
 
         messages = [{"role": "system", "content": system_content}]
         messages.extend(context.conversation_history)
@@ -498,7 +504,7 @@ class AgentRuntime:
                 llm_stream = await llm_service.chat_completion(
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=64000,  # 使用模型的最大输出长度 64K
+                    max_tokens=65536,  # 使用模型的最大输出长度 64K
                     enable_thinking=True,
                     stream=True,
                     tools=openai_tools,
@@ -508,6 +514,11 @@ class AgentRuntime:
                 has_emitted_content = False
 
                 async for chunk in llm_stream:
+                    # 检测客户端是否已断开
+                    if stream.is_closed():
+                        logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止LLM消费")
+                        break
+
                     # 处理思考内容
                     if chunk.get("reasoning_content"):
                         # 如果之前已经开始输出内容，现在又出现思考，说明是交替模式
@@ -564,6 +575,11 @@ class AgentRuntime:
                 await stream.emit_error(f"LLM调用失败: {e}")
                 return {"success": False, "error": str(e), "steps": tracker.to_dict()}
 
+            # 检测客户端是否已断开（LLM循环后）
+            if stream.is_closed():
+                logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止执行循环")
+                return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+
             # 更新思考内容
             tracker.update_thinking(step.id, full_reasoning)
             # 如果还没有发送thinking_end（没有content的情况），在这里发送
@@ -606,7 +622,7 @@ class AgentRuntime:
                     elif is_after_tool_result:
                         # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
                         # 但只有在 finish_reason 正常（stop 或 tool_calls）时才认为是完成
-                        logger.info(f"[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
+                        logger.info("[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
                         await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}

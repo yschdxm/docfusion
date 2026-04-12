@@ -148,6 +148,15 @@ class Neo4jQueryTool(BaseTool):
             # 限制结果数
             unique_records = unique_records[:max_results]
 
+            # 如果有错误且无结果，返回失败而非静默空列表
+            if not unique_records and errors:
+                error_summary = "; ".join(errors[:3])
+                return ToolResult(
+                    success=False,
+                    error=f"Neo4j查询未返回结果，查询过程中出现错误: {error_summary}",
+                    metadata={"queried_doc_ids": doc_ids, "errors": errors}
+                )
+
             return ToolResult(
                 success=True,
                 data={

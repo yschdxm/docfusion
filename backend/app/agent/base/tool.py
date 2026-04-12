@@ -8,10 +8,17 @@
 - execute: 执行工具的方法
 """
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
+
+# UUID格式校验正则
+_UUID_PATTERN = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
 
 
 class ToolContext(BaseModel):
@@ -72,6 +79,15 @@ class BaseTool(ABC):
                 # 实现工具逻辑
                 return ToolResult(success=True, data={"result": "success"})
     """
+
+    @staticmethod
+    def validate_uuid(value: Any, field_name: str) -> Optional[str]:
+        """校验UUID格式，返回错误信息或None（表示校验通过）"""
+        if not value:
+            return f"缺少必需参数: {field_name}"
+        if not _UUID_PATTERN.match(str(value)):
+            return f"{field_name}格式不正确（期望UUID格式，如: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx），收到: '{value}'"
+        return None
 
     @property
     @abstractmethod

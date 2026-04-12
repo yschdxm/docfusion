@@ -354,10 +354,14 @@ class SQLQueryService:
                 records = result.get("records", [])
                 all_records.extend(records)
 
-                # 如果获取到数据，提前返回（不要无意义重试）
+                # 如果获取到足够数据，提前返回；数据偏少则继续重试
                 if len(records) > 0:
-                    logger.info("[SQL-RETRY] 第%d次尝试成功，获取%d条记录", attempt + 1, len(records))
-                    break
+                    if len(records) >= 10 or attempt == max_retries - 1:
+                        logger.info("[SQL-RETRY] 第%d次尝试成功，获取%d条记录", attempt + 1, len(records))
+                        break
+                    else:
+                        logger.info("[SQL-RETRY] 第%d次尝试仅获取%d条记录，数据偏少，继续重试", attempt + 1, len(records))
+                        last_error = f"仅返回{len(records)}条记录，数据不够充分，请使用更宽泛的查询条件"
                 else:
                     logger.info("[SQL-RETRY] 第%d次尝试获取%d条记录，数据不足，继续重试", attempt + 1, len(records))
                     last_error = f"仅返回{len(records)}条记录，数据不够充分"

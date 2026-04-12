@@ -83,12 +83,12 @@ class AgentEvent(BaseModel):
         """转换为SSE格式"""
         # 将step_id和timestamp包含在data中，以便前端使用
         data = {
-            "event_type": self.event_type,
+            "event_type": self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type,
             "step_id": self.step_id,
             "timestamp": self.timestamp,
             **self.data
         }
-        return f"event: {self.event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        return f"event: {self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -104,6 +104,7 @@ class StreamManager:
     def __init__(self):
         self._event_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
         self._is_closed = False
+        self._is_cancelled = False
         self._current_step_id: Optional[str] = None
 
     async def emit(self, event: AgentEvent) -> None:
@@ -364,7 +365,7 @@ class StreamManager:
                 # 使用timeout避免永久阻塞
                 event = await asyncio.wait_for(
                     self._event_queue.get(),
-                    timeout=300.0  # 5分钟超时
+                    timeout=600.0  # 10分钟超时
                 )
 
                 if event is None:  # 结束标记
@@ -390,3 +391,13 @@ class StreamManager:
     def is_closed(self) -> bool:
         """检查流是否已关闭"""
         return self._is_closed
+
+    def is_cancelled(self) -> bool:
+        """检查是否被取消（客户端断开）"""
+        return self._is_cancelled
+
+    async def cancel(self) -> None:
+        """标记为已取消（客户端断开时调用）"""
+        self._is_cancelled = True
+        logger.info("[StreamManager] 流已被标记为取消")
+        await self.close()

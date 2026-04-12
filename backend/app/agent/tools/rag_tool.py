@@ -75,24 +75,27 @@ class RAGTool(BaseTool):
                 )
 
             # 调用RAG服务
-            # 注意：search_relevant_documents 返回按文档聚合的结果
-            results = await rag_service.search_relevant_documents(
-                query=query,
-                top_k=top_k
-            )
-
-            # 如果指定了doc_ids，过滤结果
             if doc_ids:
-                results = [r for r in results if r.get("doc_id") in doc_ids]
+                # 使用支持 doc_ids 前置过滤的 search_for_field
+                results = await rag_service.search_for_field(
+                    query=query,
+                    doc_ids=doc_ids,
+                    top_k=top_k
+                )
+            else:
+                results = await rag_service.search_relevant_documents(
+                    query=query,
+                    top_k=top_k
+                )
 
-            # 格式化结果
+            # 格式化结果（兼容两种搜索方法的返回格式）
             formatted_results = []
             for result in results:
                 formatted_results.append({
-                    "doc_id": result.get("doc_id"),
+                    "doc_id": result.get("doc_id") or (result.get("metadata", {}) or {}).get("original_doc_id"),
                     "doc_name": result.get("doc_name"),
-                    "content": result.get("content", "")[:500],  # 限制长度
-                    "score": result.get("score", 0),
+                    "content": result.get("content", "")[:500],
+                    "score": result.get("score", 0) or result.get("rerank_score", 0),
                     "chunk_type": result.get("chunk_type", "text")
                 })
 

@@ -46,6 +46,7 @@ export default function DocumentOperation() {
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const streamingContentRef = useRef('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -110,10 +111,7 @@ export default function DocumentOperation() {
 
   // 监听 localMessages 变化
   useEffect(() => {
-    console.log('[DocumentOperation] localMessages changed, length:', localMessages.length)
-    if (localMessages.length > 0) {
-      console.log('[DocumentOperation] Last message:', localMessages[localMessages.length - 1])
-    }
+    // localMessages updated
   }, [localMessages])
 
   // 新建对话
@@ -246,6 +244,7 @@ export default function DocumentOperation() {
 
     // 流式开始前重置中间回复状态
     setStreamingContent('')
+    streamingContentRef.current = ''
 
     try {
       await agentStreamService.streamChat(
@@ -258,72 +257,121 @@ export default function DocumentOperation() {
         },
         // 事件回调
         (event, steps) => {
-          console.log('[DocumentOperation] onEvent:', event.event_type, 'steps count:', steps.length)
+
+          // 处理 assistant_message 事件 — 中途回复，以消息气泡输出
+          if (event.event_type === 'assistant_message') {
+            // 子Agent的中途回复不处理（由桥接转发的事件带有 agent_name）
+            if (event.data.agent_name) return
+            const message = event.data.message || ''
+            if (message) {
+              const messagesToAdd: Message[] = []
+
+              // 0. 如果有残留的 streamingContent，先保存为消息（避免空气泡）
+              if (streamingContentRef.current) {
+                messagesToAdd.push({
+                  role: 'assistant',
+                  content: streamingContentRef.current,
+                  timestamp: Date.now(),
+                })
+              }
+
+              // 1. 将当前步骤保存为一条已完成的消息（步骤面板），之后折叠
+              if (latestSteps.length > 0) {
+                messagesToAdd.push({
+                  role: 'assistant',
+                  content: '',
+                  timestamp: Date.now(),
+                  steps: [...latestSteps],
+                })
+              }
+
+              // 2. 中途回复内容作为独立消息气泡追加
+              messagesToAdd.push({
+                role: 'assistant',
+                content: message,
+                timestamp: Date.now(),
+              })
+
+              // 批量推入消息
+              if (messagesToAdd.length > 0) {
+                setLocalMessages(msgs => [...msgs, ...messagesToAdd])
+              }
+
+              // 持久化中途回复（步骤消息 + 回复内容合并为一条）
+              const stepsForPersist = latestSteps.length > 0 ? [...latestSteps] : undefined
+              addMessage(currentSessionId!, {
+                role: 'assistant',
+                content: message,
+                steps: stepsForPersist,
+              }).catch(err => {
+                // 持久化失败不影响本地显示（setLocalMessages已更新）
+                console.error('[DocumentOperation] 中途回复持久化失败:', err)
+              })
+
+              // 3. 清空所有运行时状态
+              latestSteps = []
+              setCurrentSteps([])
+              setStreamingContent('')
+              streamingContentRef.current = ''
+            }
+            return
+          }
+
           latestSteps = steps
           setCurrentSteps([...steps])
 
-          // 处理 content_chunk 事件 - 实时更新回复内容
+          // 处理 content_chunk 事件 - 实时更新回复内容（仅用于最终回复的流式显示）
           if (event.event_type === 'content_chunk' && event.data.content) {
-            setStreamingContent(prev => prev + event.data.content)
+            // 过滤子Agent的 content_chunk（bridge 转发的事件带有 agent_name）
+            if (event.data.agent_name) return
+            setStreamingContent(prev => {
+              const next = prev + event.data.content
+              streamingContentRef.current = next
+              return next
+            })
           }
-
-          // 处理 assistant_message 事件 - 已作为 assistant_reply 步骤添加到 currentSteps 中
-          // 同时将内容追加到 streamingContent 以支持中断保存
-          if (event.event_type === 'assistant_message') {
-            const message = event.data.message || ''
-            if (message) {
-              setStreamingContent(prev => prev + '\n\n' + message)
-            }
-          }
-
-          // 当开始接收内容时，自动折叠思考过程
-          // 注意：思考面板展开状态已移除，由组件内部管理
         },
         // 完成回调
         (result) => {
-          console.log('[DocumentOperation] onComplete called', result)
           setIsStreaming(false)
           setIsLoading(false)
-
-          // 重置流式内容
-          const finalContent = streamingContent || result.message
           setStreamingContent('')
+          streamingContentRef.current = ''
 
-          // 添加AI回复 - 使用latestSteps避免闭包问题
-          const aiMsg: Message = {
-            role: 'assistant',
-            content: finalContent,
-            timestamp: Date.now(),
-            steps: latestSteps.length > 0 ? latestSteps : currentSteps
-          }
+          // 如果有步骤、下载链接或非空消息，添加最终消息
+          const hasSteps = latestSteps.length > 0
+          const hasDownload = !!result.download_url
+          const hasContent = !!result.message
 
-          console.log('[DocumentOperation] Adding AI message:', aiMsg)
-
-          // 如果有输出文件，添加action
-          if (result.download_url) {
-            aiMsg.action = {
-              action_type: 'completed',
-              filled_file_url: result.download_url,
-              filled_file_id: result.output_file_id
+          if (hasSteps || hasDownload || hasContent) {
+            const aiMsg: Message = {
+              role: 'assistant',
+              content: result.message,
+              timestamp: Date.now(),
+              steps: latestSteps.length > 0 ? latestSteps : undefined,
             }
-          }
 
-          setLocalMessages(prev => {
-            console.log('[DocumentOperation] setLocalMessages called, prev length:', prev.length)
-            return [...prev, aiMsg]
-          })
-          addMessage(currentSessionId!, {
-            role: 'assistant',
-            content: result.message,
-            action_data: aiMsg.action,
-            steps: latestSteps.length > 0 ? latestSteps : currentSteps
-          })
+            if (result.download_url) {
+              aiMsg.action = {
+                action_type: 'completed',
+                filled_file_url: result.download_url,
+                filled_file_id: result.output_file_id
+              }
+            }
+
+            setLocalMessages(prev => [...prev, aiMsg])
+            addMessage(currentSessionId!, {
+              role: 'assistant',
+              content: result.message,
+              action_data: aiMsg.action,
+              steps: latestSteps.length > 0 ? latestSteps : undefined
+            })
+          }
 
           if (result.success) {
             toast.success('任务完成！')
           }
 
-          // 流式完成后清空 currentSteps，避免和 msg.steps 重复显示
           setCurrentSteps([])
         },
         // 错误回调
@@ -336,29 +384,44 @@ export default function DocumentOperation() {
                             error?.toString().includes('AbortError') ||
                             error?.toString().includes('BodyStreamBuffer was aborted')
 
-          if (isAborted) {
-            // 用户取消，保留已生成的内容
-            if (streamingContent) {
-              const content = streamingContent
-              const partialMsg: Message = {
-                role: 'assistant',
-                content: content,
-                timestamp: Date.now()
-              }
-              setLocalMessages(prev => [...prev, partialMsg])
-              addMessage(currentSessionId!, { role: 'assistant', content: content, steps: currentSteps })
-            }
-          } else {
-            // 真正的错误
-            const errorMsg: Message = {
+          // 无论何种原因中断，都保留已输出的内容和步骤
+          const messagesToAdd: Message[] = []
+          const contentToSave = streamingContentRef.current
+
+          if (contentToSave) {
+            messagesToAdd.push({
               role: 'assistant',
-              content: `抱歉，任务执行失败：${error}`,
+              content: contentToSave,
               timestamp: Date.now()
-            }
-            setLocalMessages(prev => [...prev, errorMsg])
-            addMessage(currentSessionId!, { role: 'assistant', content: errorMsg.content, steps: currentSteps })
+            })
+          }
+
+          if (latestSteps.length > 0) {
+            messagesToAdd.push({
+              role: 'assistant',
+              content: '',
+              timestamp: Date.now(),
+              steps: [...latestSteps],
+            })
+          }
+
+          if (messagesToAdd.length > 0) {
+            setLocalMessages(prev => [...prev, ...messagesToAdd])
+            addMessage(currentSessionId!, {
+              role: 'assistant',
+              content: contentToSave || `[任务${isAborted ? '已取消' : '中断'}]`,
+              steps: latestSteps.length > 0 ? latestSteps : undefined
+            })
+          }
+
+          if (!isAborted) {
+            // 非取消的错误，额外显示错误提示
             toast.error('请求失败')
           }
+
+          // 清空流式状态
+          setStreamingContent('')
+          streamingContentRef.current = ''
         },
         abortControllerRef.current?.signal
       )
@@ -370,17 +433,43 @@ export default function DocumentOperation() {
       const isAborted = (error as Error)?.toString().includes('abort') ||
                         (error as Error)?.toString().includes('AbortError')
 
+      // 无论何种原因中断，都保留已输出的内容和步骤
+      const messagesToAdd: Message[] = []
+      const contentToSave = streamingContentRef.current
+
+      if (contentToSave) {
+        messagesToAdd.push({
+          role: 'assistant',
+          content: contentToSave,
+          timestamp: Date.now()
+        })
+      }
+
+      if (latestSteps.length > 0) {
+        messagesToAdd.push({
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          steps: [...latestSteps],
+        })
+      }
+
+      if (messagesToAdd.length > 0) {
+        setLocalMessages(prev => [...prev, ...messagesToAdd])
+        addMessage(currentSessionId, {
+          role: 'assistant',
+          content: contentToSave || `[任务${isAborted ? '已取消' : '中断'}]`,
+          steps: latestSteps.length > 0 ? latestSteps : undefined
+        })
+      }
+
       if (!isAborted) {
         toast.error('网络请求失败')
-
-        const errorMsg: Message = {
-          role: 'assistant',
-          content: '抱歉，发生了错误，请重试。',
-          timestamp: Date.now()
-        }
-        setLocalMessages(prev => [...prev, errorMsg])
-        addMessage(currentSessionId, { role: 'assistant', content: errorMsg.content })
       }
+
+      // 清空流式状态
+      setStreamingContent('')
+      streamingContentRef.current = ''
     }
   }
 
@@ -447,38 +536,102 @@ export default function DocumentOperation() {
           template_id: selectedTemplateId || undefined,
           conversation_id: activeSessionId!
         },
-        (_event, steps) => {
+        (event, steps) => {
+          // 处理 assistant_message 事件 — 中途回复
+          if (event.event_type === 'assistant_message') {
+            if (event.data.agent_name) return
+            const message = event.data.message || ''
+            if (message) {
+              const messagesToAdd: Message[] = []
+
+              if (streamingContentRef.current) {
+                messagesToAdd.push({
+                  role: 'assistant',
+                  content: streamingContentRef.current,
+                  timestamp: Date.now(),
+                })
+              }
+
+              if (latestSteps.length > 0) {
+                messagesToAdd.push({
+                  role: 'assistant',
+                  content: '',
+                  timestamp: Date.now(),
+                  steps: [...latestSteps],
+                })
+              }
+
+              messagesToAdd.push({
+                role: 'assistant',
+                content: message,
+                timestamp: Date.now(),
+              })
+
+              if (messagesToAdd.length > 0) {
+                setLocalMessages(msgs => [...msgs, ...messagesToAdd])
+              }
+
+              // 持久化中途回复
+              const stepsForPersist = latestSteps.length > 0 ? [...latestSteps] : undefined
+              addMessage(activeSessionId!, {
+                role: 'assistant',
+                content: message,
+                steps: stepsForPersist,
+              })
+
+              latestSteps = []
+              setCurrentSteps([])
+              setStreamingContent('')
+              streamingContentRef.current = ''
+            }
+            return
+          }
+
           latestSteps = steps
           setCurrentSteps([...steps])
 
-          // 处理 assistant_message 事件 - 已作为 assistant_reply 步骤添加到 currentSteps 中
+          // 处理 content_chunk 事件
+          if (event.event_type === 'content_chunk' && event.data.content) {
+            if (event.data.agent_name) return
+            setStreamingContent(prev => {
+              const next = prev + event.data.content
+              streamingContentRef.current = next
+              return next
+            })
+          }
         },
         (result) => {
           setIsStreaming(false)
           setIsLoading(false)
-      
-          const aiMsg: Message = {
-            role: 'assistant',
-            content: result.message,
-            timestamp: Date.now(),
-            steps: latestSteps.length > 0 ? latestSteps : currentSteps
-          }
 
-          if (result.download_url) {
-            aiMsg.action = {
-              action_type: 'completed',
-              filled_file_url: result.download_url,
-              filled_file_id: result.output_file_id
+          const hasSteps = latestSteps.length > 0
+          const hasDownload = !!result.download_url
+          const hasContent = !!result.message
+
+          if (hasSteps || hasDownload || hasContent) {
+            const aiMsg: Message = {
+              role: 'assistant',
+              content: result.message,
+              timestamp: Date.now(),
+              steps: latestSteps.length > 0 ? latestSteps : undefined,
             }
-          }
 
-          setLocalMessages(prev => [...prev, aiMsg])
-          addMessage(activeSessionId!, {
-            role: 'assistant',
-            content: result.message,
-            action_data: aiMsg.action,
-            steps: latestSteps.length > 0 ? latestSteps : currentSteps
-          })
+            if (result.download_url) {
+              aiMsg.action = {
+                action_type: 'completed',
+                filled_file_url: result.download_url,
+                filled_file_id: result.output_file_id
+              }
+            }
+
+            setLocalMessages(prev => [...prev, aiMsg])
+            addMessage(activeSessionId!, {
+              role: 'assistant',
+              content: result.message,
+              action_data: aiMsg.action,
+              steps: latestSteps.length > 0 ? latestSteps : undefined
+            })
+          }
 
           // 更新消息状态
           const msgId = (currentPendingAction as any)._messageId
@@ -486,8 +639,12 @@ export default function DocumentOperation() {
             updateMessage(activeSessionId!, msgId, {
               role: 'assistant',
               content: result.message,
-              action_data: aiMsg.action,
-              steps: latestSteps.length > 0 ? latestSteps : currentSteps
+              action_data: result.download_url ? {
+                action_type: 'completed',
+                filled_file_url: result.download_url,
+                filled_file_id: result.output_file_id
+              } : undefined,
+              steps: latestSteps.length > 0 ? latestSteps : undefined
             })
           }
 
@@ -515,7 +672,7 @@ export default function DocumentOperation() {
               timestamp: Date.now()
             }
             setLocalMessages(prev => [...prev, errorMsg])
-            addMessage(activeSessionId!, { role: 'assistant', content: errorMsg.content, steps: currentSteps })
+            addMessage(activeSessionId!, { role: 'assistant', content: errorMsg.content, steps: latestSteps.length > 0 ? latestSteps : undefined })
           }
         },
         abortControllerRef.current?.signal
@@ -741,6 +898,8 @@ export default function DocumentOperation() {
                     </div>
                   )}
 
+                  {/* 空内容的步骤消息不渲染气泡 */}
+                  {msg.content ? (
                   <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[80%] rounded-2xl p-4 ${
                       msg.role === 'user'
@@ -752,6 +911,13 @@ export default function DocumentOperation() {
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
+                              p: ({ children, node }: any) => {
+                                const hasPre = node?.children?.some(
+                                  (child: any) => child.tagName === 'pre' || child.tagName === 'code' && !child.properties?.inline
+                                )
+                                if (hasPre) return <div className="mb-4 last:mb-0">{children}</div>
+                                return <p>{children}</p>
+                              },
                               code: ({ inline, children, ...props }: any) => (
                                 inline ? (
                                   <code className="bg-slate-700 px-1 py-0.5 rounded text-sm" {...props}>
@@ -793,6 +959,7 @@ export default function DocumentOperation() {
                       </span>
                     </div>
                   </div>
+                  ) : null}
 
                   {/* 显示操作卡片 */}
                   {msg.action && (
@@ -832,6 +999,13 @@ export default function DocumentOperation() {
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
+                          p: ({ children, node }: any) => {
+                            const hasPre = node?.children?.some(
+                              (child: any) => child.tagName === 'pre' || child.tagName === 'code' && !child.properties?.inline
+                            )
+                            if (hasPre) return <div className="mb-4 last:mb-0">{children}</div>
+                            return <p>{children}</p>
+                          },
                           code: ({ inline, children, ...props }: any) => (
                             inline ? (
                               <code className="bg-slate-700 px-1 py-0.5 rounded text-sm" {...props}>

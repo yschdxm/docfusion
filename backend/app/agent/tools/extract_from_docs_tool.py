@@ -3,15 +3,18 @@
 
 功能：
 - 从多个文档中批量提取信息
-- 支持结构化、RAG、混合三种模式
+- 使用RAG检索 + LLM提取结构化记录
 - 返回统一的提取结果
 """
 
+import logging
 from typing import Any, Dict, List
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.services.rag_service import rag_service
 from app.services.llm_service import llm_service
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractFromDocsTool(BaseTool):
@@ -27,23 +30,17 @@ class ExtractFromDocsTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """从多个文档中提取指定字段的信息。
+        return """从多个文档中提取指定字段的信息。内部使用向量检索找到相关片段，再用LLM批量提取结构化记录。
 
 使用场景：
-- PG和Neo4j查询未找到完整数据时
-- 需要从原始文档中提取特定信息
+- 需要从非结构化文档（docx/md/txt）中提取表格数据
+- PG和Neo4j查询未找到数据时的补充手段
 - 批量提取多个字段
 
-提取模式：
-- structured: 使用结构化方法提取（基于文档结构）
-- rag: 使用RAG检索后提取
-- hybrid: 混合模式（先RAG，再结构化）
-
 数据查找优先级：
-1. PostgreSQL - 结构化数据
+1. PostgreSQL - xlsx结构化数据首选
 2. Neo4j知识图谱 - 实体关系数据
-3. RAG向量检索 - 非结构化文本
-4. 原始文档提取 (此工具) - 最后手段"""
+3. 此工具（RAG检索+LLM提取） - 非结构化文档的首选手段"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -62,9 +59,9 @@ class ExtractFromDocsTool(BaseTool):
                 },
                 "extraction_mode": {
                     "type": "string",
-                    "enum": ["structured", "rag", "hybrid"],
+                    "enum": ["rag", "hybrid"],
                     "default": "hybrid",
-                    "description": "提取模式: structured(结构化)、rag(向量检索)、hybrid(混合)"
+                    "description": "提取模式: rag(向量检索)、hybrid(混合)"
                 },
                 "max_records": {
                     "type": "integer",
@@ -96,19 +93,17 @@ class ExtractFromDocsTool(BaseTool):
                 )
 
             all_records = []
+            errors = []
 
-            # 根据提取模式选择策略
-            if extraction_mode in ["rag", "hybrid"]:
-                # 使用RAG检索
-                for doc_id in doc_ids:
-                    try:
-                        records = await self._extract_with_rag(doc_id, fields)
-                        all_records.extend(records)
-                    except Exception as e:
-                        print(f"RAG提取失败 {doc_id}: {e}")
-
-            # 如果hybrid模式且RAG结果不足，可以尝试其他方法
-            # 这里简化处理，仅使用RAG
+            # 使用RAG检索 + LLM提取
+            for doc_id in doc_ids:
+                try:
+                    records = await self._extract_with_rag(doc_id, fields)
+                    all_records.extend(records)
+                except Exception as e:
+                    error_msg = f"文档 {doc_id} 提取失败: {str(e)}"
+                    logger.error(f"[ExtractFromDocsTool] {error_msg}")
+                    errors.append(error_msg)
 
             # 去重
             seen = set()
@@ -123,17 +118,25 @@ class ExtractFromDocsTool(BaseTool):
             # 限制记录数
             unique_records = unique_records[:max_records]
 
+            # 如果所有文档都失败了且没有任何记录，返回错误
+            if not unique_records and errors and len(errors) == len(doc_ids):
+                return ToolResult(
+                    success=False,
+                    error="所有文档提取均失败:\n" + "\n".join(errors),
+                )
+
             return ToolResult(
                 success=True,
                 data={
                     "fields": fields,
                     "records_count": len(unique_records),
                     "records": unique_records,
-                    "extraction_mode": extraction_mode
+                    "extraction_mode": extraction_mode,
                 },
                 metadata={
                     "doc_ids": doc_ids,
-                    "queried_doc_count": len(doc_ids)
+                    "queried_doc_count": len(doc_ids),
+                    "errors": errors if errors else None,
                 }
             )
 
@@ -152,7 +155,7 @@ class ExtractFromDocsTool(BaseTool):
             fields_str = "、".join(fields)
             query = f"提取以下字段的所有信息：{fields_str}"
 
-            results = await rag_service.search_relevant_documents(
+            results = await rag_service.search_for_field(
                 query=query,
                 doc_ids=[doc_id],
                 top_k=10

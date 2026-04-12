@@ -71,11 +71,10 @@ class GetTableStructureTool(BaseTool):
         try:
             template_id = params.get("template_id", "")
 
-            if not template_id:
-                return ToolResult(
-                    success=False,
-                    error="模板ID不能为空"
-                )
+            # UUID格式校验
+            uuid_error = BaseTool.validate_uuid(template_id, "template_id")
+            if uuid_error:
+                return ToolResult(success=False, error=uuid_error)
 
             # 查询文档
             async with async_session() as db:
