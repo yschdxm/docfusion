@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.postgres import get_db
 from app.services.llm_service import llm_service
+from app.core.config import get_settings
 from pydantic import BaseModel
 import logging
 
@@ -58,6 +59,16 @@ async def agent_chat(
         message=f"💡 提示：请使用新的 /agent/stream 端点体验实时Agent思考过程！\n\n"
                f"您的消息：{request.message[:100]}{'...' if len(request.message) > 100 else ''}"
     )
+
+
+@router.get("/config")
+async def get_agent_config():
+    """返回应用配置"""
+    settings = get_settings()
+    return {
+        "onlyoffice_server_url": settings.ONLYOFFICE_SERVER_URL,
+        "backend_public_url": settings.BACKEND_PUBLIC_URL,
+    }
 
 
 @router.post("/generate-title")

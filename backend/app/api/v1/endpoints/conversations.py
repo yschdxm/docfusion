@@ -94,7 +94,7 @@ async def get_conversation(
     msg_result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc())
+        .order_by(Message.id.asc())
     )
     messages = msg_result.scalars().all()
     
@@ -107,6 +107,7 @@ async def get_conversation(
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
         "messages": [
             {
+                "id": msg.id,
                 "role": msg.role,
                 "content": msg.content,
                 "action_data": msg.action_data,

@@ -37,6 +37,9 @@ services:
       - DEBUG=${DEBUG}
       - SECRET_KEY=${SECRET_KEY}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      # ONLYOFFICE 配置
+      - ONLYOFFICE_SERVER_URL=http://onlyoffice:8088
+      - BACKEND_PUBLIC_URL=http://backend:8000
       # 日志级别配置
       - LOG_LEVEL=${LOG_LEVEL}
       - LOG_LEVEL_DB=${LOG_LEVEL_DB}
@@ -127,11 +130,29 @@ services:
     networks:
       - docfusion-net
 
+  onlyoffice:
+    image: docker.1ms.run/onlyoffice/documentserver:latest
+    restart: unless-stopped
+    expose:
+      - "8088"
+    ports:
+      - "8088:80"
+    environment:
+      - JWT_ENABLED=false
+      - SECURE_LINK_SECRET=yQYi0yzvGKxkIs8tfLaL
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - ./onlyoffice/local.json:/etc/onlyoffice/documentserver/local.json:ro
+      - ./onlyoffice/ds.conf:/etc/onlyoffice/documentserver/nginx/ds.conf:ro
+    networks:
+      - docfusion-net
+
 volumes:
   uploads:
   postgres_data:
   neo4j_data:
   qdrant_data:
+  onlyoffice_data:
 
 networks:
   docfusion-net:

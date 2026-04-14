@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     SSL_VERIFY_MIMO: bool = True  # MiMO模型SSL验证
     SSL_VERIFY_GITEE_AI: bool = True  # Gitee AI（嵌入和重排模型）SSL验证
 
+    # ONLYOFFICE
+    ONLYOFFICE_SERVER_URL: str = "http://localhost:8088"
+    BACKEND_PUBLIC_URL: str = "http://localhost:8000"
+
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800

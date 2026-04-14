@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, X, Square } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, X, Square, Eye } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -9,6 +9,9 @@ import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
 import AgentThinkingPanel from '../components/AgentThinkingPanel'
 import agentStreamService, { AgentStep } from '../services/agentStreamService'
+import { useDocumentPreview, getFileType } from '../hooks/useDocumentPreview'
+import type { PreviewFile } from '../hooks/useDocumentPreview'
+import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -28,7 +31,6 @@ export default function DocumentOperation() {
     setActiveSession,
     deleteSession,
     updateSessionFiles,
-    addMessage,
     updateMessage,
     loadSessions,
     setMinimized
@@ -49,9 +51,22 @@ export default function DocumentOperation() {
   const streamingContentRef = useRef('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const abortControllerRef = useRef<AbortController | null>(null)
+  const currentConnectionRef = useRef<string | null>(null)  // 当前活跃的 SSE connectionId
+  const currentConnectionSessionRef = useRef<string | null>(null)  // 当前连接对应的 sessionId
   const docDropdownRef = useRef<HTMLDivElement>(null)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
+
+  // 文档预览面板
+  const {
+    isPanelOpen,
+    togglePanel,
+    previewFiles,
+    currentFile: previewCurrentFile,
+    setCurrentFile: setPreviewCurrentFile,
+    addOperatedFile,
+    clearPreview,
+    isLoading: previewIsLoading,
+  } = useDocumentPreview()
 
   const sourceDocs = documents.filter(d => d.doc_category === 'source')
   const templateDocs = documents.filter(d => d.doc_category === 'template')
@@ -62,27 +77,59 @@ export default function DocumentOperation() {
     setMinimized(true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 组件卸载时断开 SSE 连接（但不取消后端任务）
+  useEffect(() => {
+    return () => {
+      if (currentConnectionSessionRef.current) {
+        agentStreamService.cancelSession(currentConnectionSessionRef.current)
+      }
+    }
+  }, [])
+
   // 恢复会话时加载消息和选择状态
   useEffect(() => {
     if (activeSessionId) {
+      const sessionId = activeSessionId  // 捕获当前值
+
+      // 清空上一个会话的流式状态
+      setStreamingContent('')
+      streamingContentRef.current = ''
+      setCurrentSteps([])
+      setIsStreaming(false)
+      setIsLoading(false)
+
       const { loadSessionMessages } = useChatStore.getState()
-      loadSessionMessages(activeSessionId, true).then(() => {
-        const updatedSession = useChatStore.getState().sessions.find(s => s.id === activeSessionId)
+      const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
+
+      loadSessionMessages(sessionId, true).then(() => {
+        // 异步竞态保护：如果 activeSessionId 已变化，丢弃结果
+        if (useChatStore.getState().activeSessionId !== sessionId) return
+        const updatedSession = useChatStore.getState().sessions.find(s => s.id === sessionId)
         if (updatedSession) {
-          const loadedMessages = updatedSession.messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            action: m.action_data,
-            timestamp: m.timestamp,
-            steps: m.steps
-          }))
-          setLocalMessages(loadedMessages)
+          // 如果有运行中的任务，不要用 DB 数据覆盖 localMessages（流式回调会持续更新）
+          // 仅在 localMessages 为空时才从 DB 加载
+          if (!runningTaskId || localMessages.length === 0) {
+            const loadedMessages = updatedSession.messages.map(m => ({
+              role: m.role,
+              content: m.content,
+              action: m.action_data,
+              timestamp: m.timestamp,
+              steps: m.steps
+            }))
+            setLocalMessages(loadedMessages)
+          }
 
           if (updatedSession.fileIds && updatedSession.fileIds.length > 0) {
             setSelectedDocIds([...updatedSession.fileIds])
           }
           if (updatedSession.templateId) {
             setSelectedTemplateId(updatedSession.templateId)
+          }
+
+          // 检查该 session 是否有正在运行的任务，自动重连
+          if (runningTaskId && !agentStreamService.hasActiveConnection(sessionId)) {
+            console.log(`[DocumentOperation] 检测到运行中的任务: ${runningTaskId}，自动重连`)
+            reconnectToTask(runningTaskId, updatedSession)
           }
         }
       })
@@ -91,6 +138,127 @@ export default function DocumentOperation() {
       setPendingAction(null)
     }
   }, [activeSessionId])
+
+  // SSE 回调工厂 — 所有流式连接共用同一套 UI 回调，无持久化逻辑（后端统一保存）
+  const createStreamCallbacks = useCallback((
+    sessionId: string,
+    latestStepsRef: { current: AgentStep[] },
+  ) => {
+    const onEvent = (event: any, steps: AgentStep[]) => {
+      if (currentConnectionSessionRef.current !== sessionId) return
+
+      if (event.event_type === 'assistant_message') {
+        const message = event.data.message || ''
+        if (message) {
+          if (event.data.agent_name) return // 子Agent消息：后端统一保存
+          const messagesToAdd: Message[] = []
+          if (streamingContentRef.current) {
+            messagesToAdd.push({ role: 'assistant', content: streamingContentRef.current, timestamp: Date.now() })
+          }
+          if (latestStepsRef.current.length > 0) {
+            messagesToAdd.push({ role: 'assistant', content: '', timestamp: Date.now(), steps: [...latestStepsRef.current] })
+          }
+          messagesToAdd.push({ role: 'assistant', content: message, timestamp: Date.now() })
+          if (messagesToAdd.length > 0) setLocalMessages(msgs => [...msgs, ...messagesToAdd])
+          latestStepsRef.current = []
+          setCurrentSteps([])
+          setStreamingContent(''); streamingContentRef.current = ''
+        }
+        return
+      }
+
+      latestStepsRef.current = steps
+      setCurrentSteps([...steps])
+
+      if (event.event_type === 'tool_result') {
+        const toolName = event.data.tool_name
+        const result = event.data.result
+        const editTools = [
+          'ReplaceTextTool', 'RewriteParagraphTool', 'InsertAfterTool',
+          'HeadingPromoteTool', 'ListFormatTool', 'ParagraphSplitTool',
+          'SetTextStyleTool', 'ConvertTool'
+        ]
+        const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table'
+        if (isEditOrFill && result && result.download_url) {
+          const filename = result.output_filename || result.output_file || 'output'
+          const file: PreviewFile = {
+            id: result.output_file_id || filename,
+            name: filename,
+            fileUrl: `${window.location.origin}${result.download_url}`,
+            fileType: getFileType(filename),
+            source: 'operated',
+          }
+          addOperatedFile(file)
+        }
+      }
+
+      if (event.event_type === 'content_chunk' && event.data.content) {
+        if (event.data.agent_name) return
+        setStreamingContent(prev => {
+          const next = prev + event.data.content
+          streamingContentRef.current = next
+          return next
+        })
+      }
+    }
+
+    const onComplete = (result: any) => {
+      if (currentConnectionSessionRef.current !== sessionId) return
+      setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      currentConnectionRef.current = null; currentConnectionSessionRef.current = null
+
+      // UI 即时显示 completed 的结果（后端已持久化到 DB，这里不做任何 API 调用）
+      if (result.message || result.download_url || latestStepsRef.current.length > 0) {
+        const aiMsg: Message = {
+          role: 'assistant',
+          content: result.message || '',
+          timestamp: Date.now(),
+          steps: latestStepsRef.current.length > 0 ? [...latestStepsRef.current] : undefined,
+        }
+        if (result.download_url) {
+          aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id }
+        }
+        setLocalMessages(prev => [...prev, aiMsg])
+      }
+      setCurrentSteps([])
+    }
+
+    const onError = (error: any) => {
+      if (currentConnectionSessionRef.current !== sessionId) return
+      setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      currentConnectionRef.current = null; currentConnectionSessionRef.current = null
+      if (error?.toString().includes('abort') || error?.toString().includes('AbortError')) return
+      toast.error(error)
+    }
+
+    return { onEvent, onComplete, onError }
+  }, [addOperatedFile])
+
+  // 重连到正在运行的任务（页面刷新/切换后恢复）
+  const reconnectToTask = useCallback((taskId: string, session: any) => {
+    setIsStreaming(true)
+    setIsLoading(true)
+    setCurrentSteps([])
+    setStreamingContent('')
+    streamingContentRef.current = ''
+    currentConnectionSessionRef.current = session.id
+
+    const latestStepsRef: { current: AgentStep[] } = { current: [] }
+    const { onEvent, onComplete, onError } = createStreamCallbacks(session.id, latestStepsRef)
+
+    const connId = agentStreamService.startStream(
+      session.id,
+      {
+        message: '',
+        file_ids: session.fileIds || [],
+        template_id: session.templateId || undefined,
+        conversation_id: session.id,
+      },
+      onEvent, onComplete, onError,
+      taskId
+    )
+    currentConnectionRef.current = connId
+  }, [createStreamCallbacks])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -114,56 +282,102 @@ export default function DocumentOperation() {
     // localMessages updated
   }, [localMessages])
 
+  // 断开当前连接（切换会话/新建/删除时，断开SSE，但后端任务继续运行）
+  const disconnectCurrentConnection = useCallback(() => {
+    if (currentConnectionSessionRef.current) {
+      agentStreamService.cancelSession(currentConnectionSessionRef.current)
+    }
+    currentConnectionRef.current = null
+    currentConnectionSessionRef.current = null
+    setIsStreaming(false)
+    setIsLoading(false)
+    setStreamingContent('')
+    streamingContentRef.current = ''
+    setCurrentSteps([])
+  }, [])
+
   // 新建对话
   const handleNewChat = async () => {
+    disconnectCurrentConnection()
     setSelectedDocIds([])
     setSelectedTemplateId(null)
+    clearPreview()
 
     const sessionId = await createSession(null, '新对话', [], null)
     setActiveSession(sessionId)
     setLocalMessages([])
     setPendingAction(null)
-    setCurrentSteps([])
-    setStreamingContent('')
   }
 
   // 切换会话
   const handleSwitchSession = (sessionId: string) => {
+    disconnectCurrentConnection()
     setActiveSession(sessionId)
     setShowHistory(false)
     setPendingAction(null)
-    setCurrentSteps([])
-    setStreamingContent('')
+    clearPreview()
   }
 
   // 删除会话
   const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation()
+    await agentStreamService.stopTask(sessionId)
+    if (currentConnectionSessionRef.current === sessionId) {
+      currentConnectionRef.current = null
+      currentConnectionSessionRef.current = null
+      setIsStreaming(false)
+      setIsLoading(false)
+      setStreamingContent('')
+      streamingContentRef.current = ''
+      setCurrentSteps([])
+    }
     await deleteSession(sessionId)
     if (activeSessionId === sessionId) {
       setLocalMessages([])
       setSelectedDocIds([])
       setSelectedTemplateId(null)
       setPendingAction(null)
-      setCurrentSteps([])
-        setStreamingContent('')
     }
   }
 
   // 处理文档选择
   const handleDocSelect = (docId: string) => {
-    setSelectedDocIds(prev =>
-      prev.includes(docId)
+    setSelectedDocIds(prev => {
+      const next = prev.includes(docId)
         ? prev.filter(id => id !== docId)
         : [...prev, docId]
-    )
+      // 预览最后一个选中的文档
+      if (next.length > 0) {
+        const lastDocId = next[next.length - 1]
+        const doc = documents.find(d => d.id === lastDocId)
+        if (doc) previewDocument(doc)
+      }
+      return next
+    })
   }
 
   // 处理模板选择
   const handleTemplateSelect = (docId: string) => {
     setSelectedTemplateId(prev => prev === docId ? null : docId)
     setShowTemplateDropdown(false)
+    // 预览选中的模板
+    if (docId) {
+      const doc = templateDocs.find(d => d.id === docId)
+      if (doc) previewDocument(doc)
+    }
   }
+
+  // 预览指定文档
+  const previewDocument = useCallback((doc: { id: string; original_filename: string; file_type: string }) => {
+    const file: PreviewFile = {
+      id: doc.id,
+      name: doc.original_filename,
+      fileUrl: `${window.location.origin}/api/v1/documents/${doc.id}/download`,
+      fileType: doc.file_type || getFileType(doc.original_filename),
+      source: 'selected',
+    }
+    addOperatedFile(file)
+  }, [addOperatedFile])
 
   // 判断任务类型
   const detectTaskType = (message: string): 'fill_table' | 'query' | 'auto' => {
@@ -177,7 +391,7 @@ export default function DocumentOperation() {
     return 'auto'
   }
 
-  // 发送消息 - 使用流式API
+  // 发送消息 - 使用流式API（后端统一持久化）
   const handleSend = async (actionConfirmed: boolean = false) => {
     const userMessage = inputValue.trim()
     if (!userMessage) return
@@ -187,8 +401,6 @@ export default function DocumentOperation() {
       return
     }
 
-    // 检查是否是填表任务但没有选择模板
-    // 注：现在支持智能文档选择，不需要强制选择模板
     const taskType = detectTaskType(userMessage)
 
     let currentSessionId = activeSessionId
@@ -208,7 +420,7 @@ export default function DocumentOperation() {
 
     const isFirstMessage = isNewSession || (localMessages.length === 0)
 
-    // 添加用户消息
+    // UI 显示用户消息（后端统一持久化，前端不调用 addMessage）
     const userMsg: Message = {
       role: 'user',
       content: userMessage,
@@ -220,6 +432,7 @@ export default function DocumentOperation() {
     setIsStreaming(true)
     setCurrentSteps([])
     setStreamingContent('')
+    streamingContentRef.current = ''
 
     // 生成标题
     if (isFirstMessage) {
@@ -232,264 +445,53 @@ export default function DocumentOperation() {
         .catch(e => console.error('Failed to generate title:', e))
     }
 
-    // 保存用户消息到数据库
-    await addMessage(currentSessionId, { role: 'user', content: userMessage })
+    // 使用工厂创建回调
+    const latestStepsRef: { current: AgentStep[] } = { current: [] }
+    const { onEvent, onComplete, onError } = createStreamCallbacks(currentSessionId, latestStepsRef)
 
-    // 使用流式API
-    // 保存steps的引用，避免闭包问题
-    let latestSteps: AgentStep[] = []
+    // 启动 SSE 连接
+    currentConnectionSessionRef.current = currentSessionId
 
-    // 创建 AbortController 用于取消请求
-    abortControllerRef.current = new AbortController()
+    const connId = agentStreamService.startStream(
+      currentSessionId,
+      {
+        message: userMessage,
+        file_ids: selectedDocIds,
+        template_id: selectedTemplateId || undefined,
+        conversation_id: currentSessionId,
+        task_type: taskType
+      },
+      onEvent, onComplete, onError
+    )
+    currentConnectionRef.current = connId
+  }
 
-    // 流式开始前重置中间回复状态
+  // 停止流式请求（用户主动停止，后端 cancel 端点统一保存累积状态）
+  const handleStop = async () => {
+    const sessionId = currentConnectionSessionRef.current
+    if (!sessionId) return
+
+    // UI 清理 — 后端 cancel 端点已保存累积的 steps 和 content
+    setIsStreaming(false)
+    setIsLoading(false)
     setStreamingContent('')
     streamingContentRef.current = ''
+    setCurrentSteps([])
 
-    try {
-      await agentStreamService.streamChat(
-        {
-          message: userMessage,
-          file_ids: selectedDocIds,
-          template_id: selectedTemplateId || undefined,
-          conversation_id: currentSessionId,
-          task_type: taskType
-        },
-        // 事件回调
-        (event, steps) => {
+    // 彻底取消任务（后端 + 前端 SSE）
+    await agentStreamService.stopTask(sessionId)
+    currentConnectionRef.current = null
+    currentConnectionSessionRef.current = null
 
-          // 处理 assistant_message 事件 — 中途回复，以消息气泡输出
-          if (event.event_type === 'assistant_message') {
-            // 子Agent的中途回复不处理（由桥接转发的事件带有 agent_name）
-            if (event.data.agent_name) return
-            const message = event.data.message || ''
-            if (message) {
-              const messagesToAdd: Message[] = []
-
-              // 0. 如果有残留的 streamingContent，先保存为消息（避免空气泡）
-              if (streamingContentRef.current) {
-                messagesToAdd.push({
-                  role: 'assistant',
-                  content: streamingContentRef.current,
-                  timestamp: Date.now(),
-                })
-              }
-
-              // 1. 将当前步骤保存为一条已完成的消息（步骤面板），之后折叠
-              if (latestSteps.length > 0) {
-                messagesToAdd.push({
-                  role: 'assistant',
-                  content: '',
-                  timestamp: Date.now(),
-                  steps: [...latestSteps],
-                })
-              }
-
-              // 2. 中途回复内容作为独立消息气泡追加
-              messagesToAdd.push({
-                role: 'assistant',
-                content: message,
-                timestamp: Date.now(),
-              })
-
-              // 批量推入消息
-              if (messagesToAdd.length > 0) {
-                setLocalMessages(msgs => [...msgs, ...messagesToAdd])
-              }
-
-              // 持久化中途回复（步骤消息 + 回复内容合并为一条）
-              const stepsForPersist = latestSteps.length > 0 ? [...latestSteps] : undefined
-              addMessage(currentSessionId!, {
-                role: 'assistant',
-                content: message,
-                steps: stepsForPersist,
-              }).catch(err => {
-                // 持久化失败不影响本地显示（setLocalMessages已更新）
-                console.error('[DocumentOperation] 中途回复持久化失败:', err)
-              })
-
-              // 3. 清空所有运行时状态
-              latestSteps = []
-              setCurrentSteps([])
-              setStreamingContent('')
-              streamingContentRef.current = ''
-            }
-            return
-          }
-
-          latestSteps = steps
-          setCurrentSteps([...steps])
-
-          // 处理 content_chunk 事件 - 实时更新回复内容（仅用于最终回复的流式显示）
-          if (event.event_type === 'content_chunk' && event.data.content) {
-            // 过滤子Agent的 content_chunk（bridge 转发的事件带有 agent_name）
-            if (event.data.agent_name) return
-            setStreamingContent(prev => {
-              const next = prev + event.data.content
-              streamingContentRef.current = next
-              return next
-            })
-          }
-        },
-        // 完成回调
-        (result) => {
-          setIsStreaming(false)
-          setIsLoading(false)
-          setStreamingContent('')
-          streamingContentRef.current = ''
-
-          // 如果有步骤、下载链接或非空消息，添加最终消息
-          const hasSteps = latestSteps.length > 0
-          const hasDownload = !!result.download_url
-          const hasContent = !!result.message
-
-          if (hasSteps || hasDownload || hasContent) {
-            const aiMsg: Message = {
-              role: 'assistant',
-              content: result.message,
-              timestamp: Date.now(),
-              steps: latestSteps.length > 0 ? latestSteps : undefined,
-            }
-
-            if (result.download_url) {
-              aiMsg.action = {
-                action_type: 'completed',
-                filled_file_url: result.download_url,
-                filled_file_id: result.output_file_id
-              }
-            }
-
-            setLocalMessages(prev => [...prev, aiMsg])
-            addMessage(currentSessionId!, {
-              role: 'assistant',
-              content: result.message,
-              action_data: aiMsg.action,
-              steps: latestSteps.length > 0 ? latestSteps : undefined
-            })
-          }
-
-          if (result.success) {
-            toast.success('任务完成！')
-          }
-
-          setCurrentSteps([])
-        },
-        // 错误回调
-        (error) => {
-          setIsStreaming(false)
-          setIsLoading(false)
-
-          // 检查是否是用户取消
-          const isAborted = error?.toString().includes('abort') ||
-                            error?.toString().includes('AbortError') ||
-                            error?.toString().includes('BodyStreamBuffer was aborted')
-
-          // 无论何种原因中断，都保留已输出的内容和步骤
-          const messagesToAdd: Message[] = []
-          const contentToSave = streamingContentRef.current
-
-          if (contentToSave) {
-            messagesToAdd.push({
-              role: 'assistant',
-              content: contentToSave,
-              timestamp: Date.now()
-            })
-          }
-
-          if (latestSteps.length > 0) {
-            messagesToAdd.push({
-              role: 'assistant',
-              content: '',
-              timestamp: Date.now(),
-              steps: [...latestSteps],
-            })
-          }
-
-          if (messagesToAdd.length > 0) {
-            setLocalMessages(prev => [...prev, ...messagesToAdd])
-            addMessage(currentSessionId!, {
-              role: 'assistant',
-              content: contentToSave || `[任务${isAborted ? '已取消' : '中断'}]`,
-              steps: latestSteps.length > 0 ? latestSteps : undefined
-            })
-          }
-
-          if (!isAborted) {
-            // 非取消的错误，额外显示错误提示
-            toast.error('请求失败')
-          }
-
-          // 清空流式状态
-          setStreamingContent('')
-          streamingContentRef.current = ''
-        },
-        abortControllerRef.current?.signal
-      )
-    } catch (error) {
-      setIsStreaming(false)
-      setIsLoading(false)
-
-      // 检查是否是用户取消导致的异常
-      const isAborted = (error as Error)?.toString().includes('abort') ||
-                        (error as Error)?.toString().includes('AbortError')
-
-      // 无论何种原因中断，都保留已输出的内容和步骤
-      const messagesToAdd: Message[] = []
-      const contentToSave = streamingContentRef.current
-
-      if (contentToSave) {
-        messagesToAdd.push({
-          role: 'assistant',
-          content: contentToSave,
-          timestamp: Date.now()
-        })
-      }
-
-      if (latestSteps.length > 0) {
-        messagesToAdd.push({
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          steps: [...latestSteps],
-        })
-      }
-
-      if (messagesToAdd.length > 0) {
-        setLocalMessages(prev => [...prev, ...messagesToAdd])
-        addMessage(currentSessionId, {
-          role: 'assistant',
-          content: contentToSave || `[任务${isAborted ? '已取消' : '中断'}]`,
-          steps: latestSteps.length > 0 ? latestSteps : undefined
-        })
-      }
-
-      if (!isAborted) {
-        toast.error('网络请求失败')
-      }
-
-      // 清空流式状态
-      setStreamingContent('')
-      streamingContentRef.current = ''
-    }
+    toast('已停止生成', { icon: '⏹️' })
   }
 
-  // 停止流式请求
-  const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      abortControllerRef.current = null
-      setIsStreaming(false)
-      setIsLoading(false)
-      // setIntermediateReply(null) // Removed to persist messages on stop
-      toast('已停止生成', { icon: '⏹️' })
-    }
-  }
-
-  // 确认执行操作
+  // 确认执行操作（后端统一持久化）
   const handleConfirmAction = async () => {
     if (!pendingAction) return
 
     const currentPendingAction = { ...pendingAction }
+    const confirmSessionId = activeSessionId!
 
     setLocalMessages(prev => {
       const newMessages = [...prev]
@@ -509,184 +511,59 @@ export default function DocumentOperation() {
 
     setPendingAction(null)
 
+    // UI 显示确认消息（后端统一持久化）
     const confirmMsg: Message = {
       role: 'user',
       content: '[确认执行操作]',
       timestamp: Date.now()
     }
     setLocalMessages(prev => [...prev, confirmMsg])
-    await addMessage(activeSessionId!, { role: 'user', content: confirmMsg.content })
 
     setIsLoading(true)
     setIsStreaming(true)
     setCurrentSteps([])
     setStreamingContent('')
+    streamingContentRef.current = ''
 
-    // 保存steps的引用，避免闭包问题
-    let latestSteps: AgentStep[] = []
+    // 使用工厂创建回调
+    const latestStepsRef: { current: AgentStep[] } = { current: [] }
+    const { onEvent, onComplete: rawOnComplete, onError } = createStreamCallbacks(confirmSessionId, latestStepsRef)
 
-    // 创建 AbortController 用于取消请求
-    abortControllerRef.current = new AbortController()
+    // 包装 onComplete，额外处理 updateMessage（confirm_fill 的 action_data 更新）
+    const onComplete = (result: any) => {
+      rawOnComplete(result)
 
-    try {
-      await agentStreamService.streamChat(
-        {
-          message: '确认执行之前的操作',
-          file_ids: selectedDocIds,
-          template_id: selectedTemplateId || undefined,
-          conversation_id: activeSessionId!
-        },
-        (event, steps) => {
-          // 处理 assistant_message 事件 — 中途回复
-          if (event.event_type === 'assistant_message') {
-            if (event.data.agent_name) return
-            const message = event.data.message || ''
-            if (message) {
-              const messagesToAdd: Message[] = []
+      const msgId = (currentPendingAction as any)._messageId
+      if (msgId) {
+        updateMessage(confirmSessionId, msgId, {
+          role: 'assistant',
+          content: result.message,
+          action_data: result.download_url ? {
+            action_type: 'completed',
+            filled_file_url: result.download_url,
+            filled_file_id: result.output_file_id
+          } : undefined,
+        })
+      }
 
-              if (streamingContentRef.current) {
-                messagesToAdd.push({
-                  role: 'assistant',
-                  content: streamingContentRef.current,
-                  timestamp: Date.now(),
-                })
-              }
-
-              if (latestSteps.length > 0) {
-                messagesToAdd.push({
-                  role: 'assistant',
-                  content: '',
-                  timestamp: Date.now(),
-                  steps: [...latestSteps],
-                })
-              }
-
-              messagesToAdd.push({
-                role: 'assistant',
-                content: message,
-                timestamp: Date.now(),
-              })
-
-              if (messagesToAdd.length > 0) {
-                setLocalMessages(msgs => [...msgs, ...messagesToAdd])
-              }
-
-              // 持久化中途回复
-              const stepsForPersist = latestSteps.length > 0 ? [...latestSteps] : undefined
-              addMessage(activeSessionId!, {
-                role: 'assistant',
-                content: message,
-                steps: stepsForPersist,
-              })
-
-              latestSteps = []
-              setCurrentSteps([])
-              setStreamingContent('')
-              streamingContentRef.current = ''
-            }
-            return
-          }
-
-          latestSteps = steps
-          setCurrentSteps([...steps])
-
-          // 处理 content_chunk 事件
-          if (event.event_type === 'content_chunk' && event.data.content) {
-            if (event.data.agent_name) return
-            setStreamingContent(prev => {
-              const next = prev + event.data.content
-              streamingContentRef.current = next
-              return next
-            })
-          }
-        },
-        (result) => {
-          setIsStreaming(false)
-          setIsLoading(false)
-
-          const hasSteps = latestSteps.length > 0
-          const hasDownload = !!result.download_url
-          const hasContent = !!result.message
-
-          if (hasSteps || hasDownload || hasContent) {
-            const aiMsg: Message = {
-              role: 'assistant',
-              content: result.message,
-              timestamp: Date.now(),
-              steps: latestSteps.length > 0 ? latestSteps : undefined,
-            }
-
-            if (result.download_url) {
-              aiMsg.action = {
-                action_type: 'completed',
-                filled_file_url: result.download_url,
-                filled_file_id: result.output_file_id
-              }
-            }
-
-            setLocalMessages(prev => [...prev, aiMsg])
-            addMessage(activeSessionId!, {
-              role: 'assistant',
-              content: result.message,
-              action_data: aiMsg.action,
-              steps: latestSteps.length > 0 ? latestSteps : undefined
-            })
-          }
-
-          // 更新消息状态
-          const msgId = (currentPendingAction as any)._messageId
-          if (msgId) {
-            updateMessage(activeSessionId!, msgId, {
-              role: 'assistant',
-              content: result.message,
-              action_data: result.download_url ? {
-                action_type: 'completed',
-                filled_file_url: result.download_url,
-                filled_file_id: result.output_file_id
-              } : undefined,
-              steps: latestSteps.length > 0 ? latestSteps : undefined
-            })
-          }
-
-          if (result.success) {
-            toast.success('操作完成！')
-          }
-        },
-        (error) => {
-          setIsStreaming(false)
-          setIsLoading(false)
-      
-          // 检查是否是用户取消
-          const isAborted = error?.toString().includes('abort') ||
-                            error?.toString().includes('AbortError') ||
-                            error?.toString().includes('BodyStreamBuffer was aborted')
-
-          if (isAborted) {
-            // 用户取消，不显示错误
-            toast('已停止生成', { icon: '⏹️' })
-          } else {
-            toast.error('操作失败')
-            const errorMsg: Message = {
-              role: 'assistant',
-              content: `操作失败：${error}`,
-              timestamp: Date.now()
-            }
-            setLocalMessages(prev => [...prev, errorMsg])
-            addMessage(activeSessionId!, { role: 'assistant', content: errorMsg.content, steps: latestSteps.length > 0 ? latestSteps : undefined })
-          }
-        },
-        abortControllerRef.current?.signal
-      )
-    } catch (error) {
-      setIsStreaming(false)
-      setIsLoading(false)
-        // 检查是否是用户取消导致的异常
-      const isAborted = (error as Error)?.toString().includes('abort') ||
-                        (error as Error)?.toString().includes('AbortError')
-      if (!isAborted) {
-        toast.error('请求失败')
+      if (result.success) {
+        toast.success('操作完成！')
       }
     }
+
+    currentConnectionSessionRef.current = confirmSessionId
+
+    const connId = agentStreamService.startStream(
+      confirmSessionId,
+      {
+        message: '确认执行之前的操作',
+        file_ids: selectedDocIds,
+        template_id: selectedTemplateId || undefined,
+        conversation_id: confirmSessionId
+      },
+      onEvent, onComplete, onError
+    )
+    currentConnectionRef.current = connId
   }
 
   return (
@@ -858,13 +735,22 @@ export default function DocumentOperation() {
             )}
           </div>
 
-          <button
-            onClick={handleNewChat}
-            className="flex items-center gap-2 px-3 py-1.5 text-slate-400 hover:bg-white/10 rounded-xl transition-colors text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            <span>新建对话</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleNewChat}
+              className="flex items-center gap-2 px-3 py-1.5 text-slate-400 hover:bg-white/10 rounded-xl transition-colors text-sm"
+            >
+              <Plus className="w-4 h-4" />
+              <span>新建对话</span>
+            </button>
+            <button
+              onClick={togglePanel}
+              className={`p-2 rounded-xl transition-colors ${isPanelOpen ? 'bg-primary-500/20 text-primary-400' : 'hover:bg-white/10 text-slate-400'}`}
+              title="文档预览"
+            >
+              <Eye className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* 消息列表 */}
@@ -1110,6 +996,16 @@ export default function DocumentOperation() {
           </div>
         </div>
       </div>
+
+      {/* 右侧文档预览面板 */}
+      <DocumentPreviewPanel
+        isPanelOpen={isPanelOpen}
+        onToggle={togglePanel}
+        previewFiles={previewFiles}
+        currentFile={previewCurrentFile}
+        onFileSelect={setPreviewCurrentFile}
+        isLoading={previewIsLoading}
+      />
     </div>
   )
 }

@@ -2,9 +2,8 @@
  * Agent流式API服务
  *
  * 使用 @microsoft/fetch-event-source 处理SSE流式响应
- * - 字节级buffer处理，彻底解决TCP分片问题
- * - 内置自动重连
- * - 支持POST + JSON body
+ * 支持多并发连接（每个会话独立的SSE连接）
+ * 支持断线重连：通过 task_id 接入已有任务，不重启
  */
 
 import { fetchEventSource, EventSourceMessage } from '@microsoft/fetch-event-source'
@@ -15,6 +14,7 @@ export interface AgentStreamRequest {
   template_id?: string | null
   conversation_id?: string | null
   task_type?: 'auto' | 'fill_table' | 'query' | 'operation'
+  task_id?: string  // 重连时携带
 }
 
 export interface AgentEvent {
@@ -36,31 +36,356 @@ export interface AgentStep {
   toolResult?: Record<string, any>
   thinkingContent?: string
   errorMessage?: string
-  agentName?: string          // 标识该步骤属于哪个agent
-  children?: AgentStep[]      // 子步骤（子agent的步骤）
-  streamingReply?: string     // 子Agent正在流式输出的回复内容
+  agentName?: string
+  children?: AgentStep[]
+  streamingReply?: string
+}
+
+/** 单个SSE连接的状态 */
+interface ConnectionState {
+  connectionId: string
+  sessionId: string
+  taskId: string | null
+  steps: Map<string, AgentStep>
+  currentAgentName: string | null
+  agentParentStepId: string | null
+  replyCounter: number
+  completedFired: boolean
+  taskEnded: boolean
+  cancelled: boolean  // 显式取消标记，cancelSession 设为 true
+  abortController: AbortController
+  reconnectAttempts: number
+  maxReconnectAttempts: number
+  // 回调
+  onEvent: (event: AgentEvent, steps: AgentStep[]) => void
+  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void
+  onError: (error: string) => void
+  // 重连用的请求参数
+  request: AgentStreamRequest
+  existingTaskId?: string
 }
 
 class AgentStreamService {
-  // 子Agent状态跟踪
-  private currentAgentName: string | null = null
-  private agentParentStepId: string | null = null
-  // 全局递增计数器，用于生成唯一的步骤ID
-  private _replyCounter = 0
+  private static TASK_ID_PREFIX = 'agent_task_'
+  private connections: Map<string, ConnectionState> = new Map()
+  private connectionCounter = 0
 
   /**
-   * 重置状态（每次新的流式调用前必须重置）
+   * 持久化 session → task_id 映射
    */
-  private reset(): void {
-    this.currentAgentName = null
-    this.agentParentStepId = null
-    this._replyCounter = 0
+  private persistTaskId(sessionId: string, taskId: string): void {
+    try {
+      localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify({
+        taskId,
+        timestamp: Date.now(),
+      }))
+    } catch { /* localStorage 不可用时静默 */ }
   }
 
   /**
-   * 将 EventSourceMessage 转换为 AgentEvent
+   * 从 localStorage 恢复 session 对应的 task_id
    */
-  private parseEvent(ev: EventSourceMessage): AgentEvent | null {
+  getRunningTaskId(sessionId: string): string | null {
+    try {
+      const raw = localStorage.getItem(AgentStreamService.TASK_ID_PREFIX + sessionId)
+      if (!raw) return null
+      const data = JSON.parse(raw)
+      // 超过10分钟的任务认为已过期
+      if (Date.now() - data.timestamp > 10 * 60 * 1000) {
+        this.clearPersistedTask(sessionId)
+        return null
+      }
+      return data.taskId
+    } catch {
+      return null
+    }
+  }
+
+  /** 清除 localStorage 中的 task_id */
+  clearPersistedTask(sessionId: string): void {
+    try {
+      localStorage.removeItem(AgentStreamService.TASK_ID_PREFIX + sessionId)
+    } catch { /* */ }
+  }
+
+  /**
+   * 彻底取消任务（用户主动停止）
+   * 调用后端取消接口 + 清除 localStorage + 断开 SSE
+   */
+  async stopTask(sessionId: string): Promise<void> {
+    const taskId = this.getRunningTaskId(sessionId)
+
+    // 调用后端取消接口
+    if (taskId) {
+      try {
+        await fetch(`/api/v1/agent/stream/${taskId}`, { method: 'DELETE' })
+      } catch (e) {
+        console.warn('[SSE] 取消后端任务失败:', e)
+      }
+    }
+
+    // 清除 localStorage
+    this.clearPersistedTask(sessionId)
+
+    // 断开前端 SSE 连接
+    this.cancelSession(sessionId)
+  }
+
+  /**
+   * 启动一个SSE连接（新任务或重连）
+   * 返回 connectionId，用于暂停/恢复/取消
+   */
+  startStream(
+    sessionId: string,
+    request: AgentStreamRequest,
+    onEvent: (event: AgentEvent, steps: AgentStep[]) => void,
+    onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void,
+    onError: (error: string) => void,
+    existingTaskId?: string
+  ): string {
+    const connectionId = `conn_${++this.connectionCounter}_${sessionId}`
+
+    // 如果该 session 已有连接，先取消旧的
+    this.cancelSession(sessionId)
+
+    const state: ConnectionState = {
+      connectionId,
+      sessionId,
+      taskId: existingTaskId || null,
+      steps: new Map(),
+      currentAgentName: null,
+      agentParentStepId: null,
+      replyCounter: 0,
+      completedFired: false,
+      taskEnded: false,
+      cancelled: false,
+      abortController: new AbortController(),
+      reconnectAttempts: 0,
+      maxReconnectAttempts: 3,
+      onEvent,
+      onComplete,
+      onError,
+      request,
+      existingTaskId,
+    }
+
+    this.connections.set(connectionId, state)
+    this._doStream(state)
+    return connectionId
+  }
+
+  /**
+   * 暂停回调（切换会话时调用，SSE连接不断开）
+   * 将回调替换为空操作，任务继续在后台运行
+   */
+  pauseConnection(connectionId: string): void {
+    const state = this.connections.get(connectionId)
+    if (!state) return
+    state.onEvent = () => {}
+    state.onComplete = () => {}
+    state.onError = () => {}
+  }
+
+  /**
+   * 恢复回调（回到会话时调用）
+   * 替换回调为新的回调，用 task_id 重连SSE以获取最新事件
+   */
+  resumeConnection(
+    connectionId: string,
+    onEvent: (event: AgentEvent, steps: AgentStep[]) => void,
+    onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void,
+    onError: (error: string) => void
+  ): void {
+    const state = this.connections.get(connectionId)
+    if (!state) return
+    state.onEvent = onEvent
+    state.onComplete = onComplete
+    state.onError = onError
+  }
+
+  /**
+   * 取消某个 session 的所有连接（彻底断开）
+   */
+  cancelSession(sessionId: string): void {
+    for (const [connId, state] of this.connections) {
+      if (state.sessionId === sessionId) {
+        state.cancelled = true
+        state.abortController.abort()
+        this.connections.delete(connId)
+      }
+    }
+    // 注意：不清除 localStorage 中的 task_id
+    // 因为 cancelSession 只是断开前端 SSE 连接，后端任务仍在运行
+    // 用户回到会话时需要靠 task_id 重连
+  }
+
+  /**
+   * 取消所有连接
+   */
+  cancelAll(): void {
+    for (const [, state] of this.connections) {
+      state.cancelled = true
+      state.abortController.abort()
+    }
+    this.connections.clear()
+  }
+
+  /** 获取某个 session 是否有活跃连接 */
+  hasActiveConnection(sessionId: string): boolean {
+    for (const [, state] of this.connections) {
+      if (state.sessionId === sessionId && !state.taskEnded) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** 获取某个 session 的活跃连接 ID */
+  getActiveConnectionId(sessionId: string): string | null {
+    for (const [connId, state] of this.connections) {
+      if (state.sessionId === sessionId && !state.taskEnded) {
+        return connId
+      }
+    }
+    return null
+  }
+
+  /** 获取连接当前的 steps */
+  getConnectionSteps(connectionId: string): AgentStep[] {
+    const state = this.connections.get(connectionId)
+    if (!state) return []
+    return Array.from(state.steps.values())
+  }
+
+  /** 获取连接的 taskId */
+  getConnectionTaskId(connectionId: string): string | null {
+    const state = this.connections.get(connectionId)
+    return state?.taskId || null
+  }
+
+  /**
+   * 执行SSE流式连接
+   */
+  private async _doStream(state: ConnectionState): Promise<void> {
+    const requestBody: Record<string, any> = { ...state.request }
+    if (state.taskId) {
+      requestBody.task_id = state.taskId
+      console.log(`[SSE][${state.connectionId}] 重连任务: ${state.taskId} (第${state.reconnectAttempts}次)`)
+    }
+
+    try {
+      await fetchEventSource('/api/v1/agent/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: state.abortController.signal,
+
+        onopen: async (response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`)
+          }
+        },
+
+        onmessage: (ev: EventSourceMessage) => {
+          const event = this._parseEvent(ev)
+          if (!event) return
+
+          if (event.data.task_id && !state.taskId) {
+            state.taskId = event.data.task_id
+            this.persistTaskId(state.sessionId, event.data.task_id)
+            console.log(`[SSE][${state.connectionId}] 获取 task_id: ${state.taskId}`)
+          }
+
+          this._processEvent(state, event)
+          const stepsArray = Array.from(state.steps.values())
+          state.onEvent(event, stepsArray)
+          this._logEvent(state.connectionId, event, state.steps)
+
+          if (this._isChildAgentEvent(state, event) && event.event_type === 'assistant_message') return
+          if (this._isChildAgentEvent(state, event)) return
+
+          if (event.event_type === 'completed') {
+            if (state.completedFired) return
+            state.completedFired = true
+            state.taskEnded = true
+            this.clearPersistedTask(state.sessionId)
+            state.onComplete({
+              success: true,
+              message: event.data.message || '任务完成',
+              output_file_id: event.data.result?.output_file_id,
+              download_url: event.data.result?.download_url,
+            })
+            state.abortController.abort()
+          } else if (event.event_type === 'failed') {
+            if (state.completedFired) return
+            state.completedFired = true
+            state.taskEnded = true
+            this.clearPersistedTask(state.sessionId)
+            const errorMsg = event.data.error || '任务执行失败'
+            state.onError(errorMsg)
+            state.abortController.abort()
+          } else if (event.event_type === 'cancelled') {
+            if (state.completedFired) return
+            state.completedFired = true
+            state.taskEnded = true
+            this.clearPersistedTask(state.sessionId)
+            state.onError(event.data.message || '任务已取消')
+            state.abortController.abort()
+          }
+        },
+
+        onclose: () => {
+          // 流正常关闭，不抛异常，重连由 onerror 统一控制
+        },
+
+        onerror: (_err) => {
+          // 显式取消或任务已结束 → 停止重试
+          if (state.cancelled || state.taskEnded) {
+            return null
+          }
+          // 重连次数耗尽 → 停止重试并通知
+          if (state.reconnectAttempts >= state.maxReconnectAttempts) {
+            state.onError(`连接中断，重连失败(${state.reconnectAttempts}次)`)
+            return null
+          }
+          // 继续重试
+          state.reconnectAttempts++
+          console.warn(`[SSE][${state.connectionId}] 连接中断，第${state.reconnectAttempts}次重试`)
+          return 5000  // 5秒后由 fetchEventSource 内部重试
+        },
+      })
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+
+      // 显式取消（cancelSession / stopTask）— 静默
+      if (state.cancelled) {
+        // 静默
+      }
+      // 用户 abort
+      else if (errMsg.includes('abort') || errMsg.includes('AbortError')) {
+        // handled in finally
+      }
+      // 任务已正常结束
+      else if (state.taskEnded) {
+        // handled in finally
+      }
+      // onerror 返回 null 导致的最终退出，不重复通知
+      else if (state.reconnectAttempts >= state.maxReconnectAttempts) {
+        // 已在 onerror 中通知
+      }
+      // 其他意外错误
+      else {
+        state.onError(`连接中断: ${errMsg}`)
+      }
+    } finally {
+      if (state.taskEnded) {
+        this.clearPersistedTask(state.sessionId)
+        this.connections.delete(state.connectionId)
+      }
+    }
+  }
+
+  private _parseEvent(ev: EventSourceMessage): AgentEvent | null {
     try {
       const parsedData = JSON.parse(ev.data)
       return {
@@ -75,186 +400,82 @@ class AgentStreamService {
     }
   }
 
-  /**
-   * 流式调用Agent
-   *
-   * @param request 请求参数
-   * @param onEvent 事件回调
-   * @param onComplete 完成回调
-   * @param onError 错误回调
-   * @param abortSignal 用于取消请求的AbortSignal
-   */
-  async streamChat(
-    request: AgentStreamRequest,
-    onEvent: (event: AgentEvent, steps: AgentStep[]) => void,
-    onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void,
-    onError: (error: string) => void,
-    abortSignal?: AbortSignal
-  ): Promise<void> {
-    const steps: Map<string, AgentStep> = new Map()
-    this.reset()
-
-    await fetchEventSource('/api/v1/agent/stream', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(request),
-      signal: abortSignal,
-
-      onopen: async (response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-      },
-
-      onmessage: (ev: EventSourceMessage) => {
-        const event = this.parseEvent(ev)
-        if (!event) return
-
-        this.processEvent(event, steps)
-        const stepsArray = Array.from(steps.values())
-        onEvent(event, stepsArray)
-
-        // === 完整消息级别日志 ===
-        this.logEvent(event, steps)
-
-        // 子Agent的 assistant_message 不触发父级回调（已在 handleChildEvent 中处理）
-        if (this.isChildAgentEvent(event) && event.event_type === 'assistant_message') return
-
-        // 子Agent的 completed/failed/cancelled 不触发父级回调
-        if (this.isChildAgentEvent(event)) return
-
-        // 检查是否完成、失败或取消（仅父级Agent）
-        if (event.event_type === 'completed') {
-          onComplete({
-            success: true,
-            message: event.data.message || '任务完成',
-            output_file_id: event.data.result?.output_file_id,
-            download_url: event.data.result?.download_url,
-          })
-        } else if (event.event_type === 'failed') {
-          onError(event.data.error || '任务执行失败')
-        } else if (event.event_type === 'cancelled') {
-          onError(event.data.message || '任务已取消')
-        }
-      },
-
-      onclose: () => {
-        // 流正常关闭
-      },
-
-      onerror: (err) => {
-        // 返回重试间隔(ms)，返回null停止重试
-        onError(err instanceof Error ? err.message : '连接中断')
-        return null  // 不自动重连
-      },
-    })
-  }
-
-  /**
-   * 打印完整消息级别日志
-   */
-  private logEvent(event: AgentEvent, steps: Map<string, AgentStep>): void {
+  private _logEvent(connectionId: string, event: AgentEvent, steps: Map<string, AgentStep>): void {
     const d = event.data
     switch (event.event_type) {
       case 'thinking_start':
-        console.log(`[SSE] 思考开始${d.agent_name ? ` (${d.agent_name})` : ''}`)
+        console.log(`[SSE][${connectionId}] 思考开始${d.agent_name ? ` (${d.agent_name})` : ''}`)
         break
       case 'thinking_end': {
         const thinkingStep = steps.get(event.step_id || '')
         const tc = thinkingStep?.thinkingContent
         const summary = tc ? tc.substring(0, 150) + (tc.length > 150 ? '...' : '') : ''
-        console.log(`[SSE] 思考完成${summary ? ': ' + summary : ''}`)
+        console.log(`[SSE][${connectionId}] 思考完成${summary ? ': ' + summary : ''}`)
         break
       }
       case 'tool_call':
-        console.log(`[SSE] 工具调用: ${d.tool_name}`)
+        console.log(`[SSE][${connectionId}] 工具调用: ${d.tool_name}`)
         break
       case 'tool_result': {
         const rStr = JSON.stringify(d.result ?? '')
         const rSum = rStr.substring(0, 100) + (rStr.length > 100 ? '...' : '')
-        console.log(`[SSE] 工具结果: ${d.tool_name} → ${rSum}`)
+        console.log(`[SSE][${connectionId}] 工具结果: ${d.tool_name} → ${rSum}`)
         break
       }
       case 'step_start':
         if (d.is_delegation_start) {
-          console.log(`[SSE] 委派开始: ${d.step_name}`)
+          console.log(`[SSE][${connectionId}] 委派开始: ${d.step_name}`)
         }
         break
       case 'step_end':
         if (d.is_delegation_end) {
-          console.log(`[SSE] 委派结束`)
+          console.log(`[SSE][${connectionId}] 委派结束`)
         }
         break
       case 'assistant_message': {
         const msg = d.message || ''
         const src = d.agent_name ? '子Agent' : '主Agent'
-        console.log(`[SSE] 中途回复(${src}): ${msg.substring(0, 100)}${msg.length > 100 ? '...' : ''}`)
+        console.log(`[SSE][${connectionId}] 中途回复(${src}): ${msg.substring(0, 100)}${msg.length > 100 ? '...' : ''}`)
         break
       }
       case 'content_end':
-        console.log('[SSE] 回复完成')
+        console.log(`[SSE][${connectionId}] 回复完成`)
         break
       case 'completed':
-        console.log(`[SSE] 任务完成`)
+        console.log(`[SSE][${connectionId}] 任务完成`)
         break
       case 'failed':
-        console.log(`[SSE] 任务失败: ${(d.error || '').substring(0, 150)}`)
+        console.log(`[SSE][${connectionId}] 任务失败: ${(d.error || '').substring(0, 150)}`)
         break
     }
   }
 
-  /**
-   * 判断事件是否属于当前子Agent
-   */
-  private isChildAgentEvent(event: AgentEvent): boolean {
+  private _isChildAgentEvent(state: ConnectionState, event: AgentEvent): boolean {
     if (event.data.is_delegation_end) return false
-    return !!(event.data.agent_name && this.currentAgentName && event.data.agent_name === this.currentAgentName)
+    return !!(event.data.agent_name && state.currentAgentName && event.data.agent_name === state.currentAgentName)
   }
 
-  /**
-   * 在委派步骤的children中查找或创建子步骤
-   */
-  private findOrCreateChildStep(
-    parentStep: AgentStep,
-    stepId: string,
-    type: AgentStep['type'],
-    name: string,
-    description: string
+  private _findOrCreateChildStep(
+    parentStep: AgentStep, stepId: string, type: AgentStep['type'], name: string, description: string
   ): AgentStep {
-    if (!parentStep.children) {
-      parentStep.children = []
-    }
+    if (!parentStep.children) parentStep.children = []
     const existing = parentStep.children.find(c => c.id === stepId)
     if (existing) return existing
-
-    const child: AgentStep = {
-      id: stepId,
-      type,
-      name,
-      description,
-      status: 'running',
-      progress: 0,
-    }
+    const child: AgentStep = { id: stepId, type, name, description, status: 'running', progress: 0 }
     parentStep.children.push(child)
     return child
   }
 
-  /**
-   * 处理子Agent的事件，归入委派步骤的children
-   */
-  private handleChildEvent(event: AgentEvent, steps: Map<string, AgentStep>): void {
-    if (!this.agentParentStepId) return
-    const parentStep = steps.get(this.agentParentStepId)
+  private _handleChildEvent(state: ConnectionState, event: AgentEvent): void {
+    if (!state.agentParentStepId) return
+    const parentStep = state.steps.get(state.agentParentStepId)
     if (!parentStep) return
-
     const stepId = event.step_id || `child_step_${Date.now()}`
 
     switch (event.event_type) {
       case 'step_start': {
-        const stepType = this.inferStepType(event.data.step_name || '')
-        this.findOrCreateChildStep(parentStep, stepId, stepType, event.data.step_name || '步骤', event.data.description || '')
+        const stepType = this._inferStepType(event.data.step_name || '')
+        this._findOrCreateChildStep(parentStep, stepId, stepType, event.data.step_name || '步骤', event.data.description || '')
         break
       }
       case 'step_progress': {
@@ -268,13 +489,13 @@ class AgentStreamService {
         break
       }
       case 'thinking_start': {
-        const child = this.findOrCreateChildStep(parentStep, stepId, 'thinking', event.data.message || '思考中', 'Agent正在分析任务')
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', event.data.message || '思考中', 'Agent正在分析任务')
         child.status = 'running'
         if (!child.thinkingContent) child.thinkingContent = ''
         break
       }
       case 'thinking_chunk': {
-        const child = this.findOrCreateChildStep(parentStep, stepId, 'thinking', '思考中', 'Agent正在分析任务')
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', '思考中', 'Agent正在分析任务')
         child.thinkingContent = (child.thinkingContent || '') + (event.data.content || '')
         break
       }
@@ -284,11 +505,7 @@ class AgentStreamService {
         break
       }
       case 'tool_call': {
-        const child = this.findOrCreateChildStep(
-          parentStep, stepId, 'tool_call',
-          `调用 ${event.data.tool_name}`,
-          `执行工具: ${event.data.tool_name}`
-        )
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'tool_call', `调用 ${event.data.tool_name}`, `执行工具: ${event.data.tool_name}`)
         child.toolName = event.data.tool_name
         child.toolParams = event.data.parameters
         child.status = 'running'
@@ -318,51 +535,36 @@ class AgentStreamService {
         const msg = event.data.message || ''
         if (msg) {
           parentStep.children?.push({
-            id: `reply_${++this._replyCounter}`,
-            type: 'assistant_reply',
-            name: 'AI回复',
-            description: msg,
-            status: 'completed',
-            progress: 100,
-            thinkingContent: msg,
+            id: `reply_${++state.replyCounter}`, type: 'assistant_reply', name: 'AI回复',
+            description: msg, status: 'completed', progress: 100, thinkingContent: msg,
           })
         }
         break
       }
       case 'completed':
       case 'failed': {
-        if (parentStep.children) {
-          parentStep.children.forEach(c => {
-            if (c.status === 'running') {
-              c.status = event.event_type === 'completed' ? 'completed' : 'error'
-              c.progress = 100
-            }
-          })
-        }
+        parentStep.children?.forEach(c => {
+          if (c.status === 'running') {
+            c.status = event.event_type === 'completed' ? 'completed' : 'error'
+            c.progress = 100
+          }
+        })
         break
       }
     }
   }
 
-  /**
-   * 处理事件，更新步骤状态
-   */
-  private processEvent(event: AgentEvent, steps: Map<string, AgentStep>): void {
-    // 委派结束事件总是需要处理（清除子Agent状态）
+  private _processEvent(state: ConnectionState, event: AgentEvent): void {
     if (event.data.is_delegation_end) {
-      const delegationStep = steps.get(event.step_id || '')
-      if (delegationStep) {
-        delegationStep.status = 'completed'
-        delegationStep.progress = 100
-      }
-      this.currentAgentName = null
-      this.agentParentStepId = null
+      const delegationStep = state.steps.get(event.step_id || '')
+      if (delegationStep) { delegationStep.status = 'completed'; delegationStep.progress = 100 }
+      state.currentAgentName = null
+      state.agentParentStepId = null
       return
     }
 
-    // 如果是子Agent的事件，归入children
-    if (this.isChildAgentEvent(event)) {
-      this.handleChildEvent(event, steps)
+    if (this._isChildAgentEvent(state, event)) {
+      this._handleChildEvent(state, event)
       return
     }
 
@@ -371,196 +573,74 @@ class AgentStreamService {
     switch (event.event_type) {
       case 'step_start':
         if (event.data.is_delegation_start) {
-          this.currentAgentName = event.data.agent_name
-          this.agentParentStepId = stepId
-          steps.set(stepId, {
-            id: stepId,
-            type: 'agent_delegation',
-            name: event.data.step_name,
-            description: event.data.description || '',
-            status: 'running',
-            progress: 0,
-            children: [],
-            agentName: event.data.agent_name,
+          state.currentAgentName = event.data.agent_name
+          state.agentParentStepId = stepId
+          state.steps.set(stepId, {
+            id: stepId, type: 'agent_delegation', name: event.data.step_name,
+            description: event.data.description || '', status: 'running', progress: 0,
+            children: [], agentName: event.data.agent_name,
           })
         } else {
-          steps.set(stepId, {
-            id: stepId,
-            type: this.inferStepType(event.data.step_name),
-            name: event.data.step_name,
-            description: event.data.description,
-            status: 'running',
-            progress: 0,
+          state.steps.set(stepId, {
+            id: stepId, type: this._inferStepType(event.data.step_name), name: event.data.step_name,
+            description: event.data.description, status: 'running', progress: 0,
           })
         }
         break
-
-      case 'step_progress': {
-        const progressStep = steps.get(stepId)
-        if (progressStep) progressStep.progress = event.data.progress || 0
-        break
-      }
-
-      case 'step_end': {
-        const endStep = steps.get(stepId)
-        if (endStep) { endStep.status = 'completed'; endStep.progress = 100 }
-        break
-      }
-
+      case 'step_progress': { const s = state.steps.get(stepId); if (s) s.progress = event.data.progress || 0; break }
+      case 'step_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100 } break }
       case 'tool_call':
-        steps.set(stepId, {
-          id: stepId,
-          type: 'tool_call',
-          name: `调用 ${event.data.tool_name}`,
-          description: `执行工具: ${event.data.tool_name}`,
-          status: 'running',
-          progress: 50,
-          toolName: event.data.tool_name,
-          toolParams: event.data.parameters,
+        state.steps.set(stepId, {
+          id: stepId, type: 'tool_call', name: `调用 ${event.data.tool_name}`,
+          description: `执行工具: ${event.data.tool_name}`, status: 'running', progress: 50,
+          toolName: event.data.tool_name, toolParams: event.data.parameters,
         })
         break
-
-      case 'tool_result': {
-        const toolStep = steps.get(stepId)
-        if (toolStep) { toolStep.status = 'completed'; toolStep.progress = 100; toolStep.toolResult = event.data.result }
-        break
-      }
-
-      case 'tool_error': {
-        const errorStep = steps.get(stepId)
-        if (errorStep) { errorStep.status = 'error'; errorStep.errorMessage = event.data.error }
-        break
-      }
-
+      case 'tool_result': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100; s.toolResult = event.data.result } break }
+      case 'tool_error': { const s = state.steps.get(stepId); if (s) { s.status = 'error'; s.errorMessage = event.data.error } break }
       case 'thinking_start': {
-        const existing = steps.get(stepId)
-        if (existing) {
-          existing.status = 'running'
-          existing.name = event.data.message || existing.name
-        } else {
-          steps.set(stepId, {
-            id: stepId,
-            type: 'thinking',
-            name: event.data.message || '思考中',
-            description: 'Agent正在分析任务',
-            status: 'running',
-            progress: 0,
-            thinkingContent: '',
-          })
-        }
+        const existing = state.steps.get(stepId)
+        if (existing) { existing.status = 'running'; existing.name = event.data.message || existing.name }
+        else { state.steps.set(stepId, { id: stepId, type: 'thinking', name: event.data.message || '思考中', description: 'Agent正在分析任务', status: 'running', progress: 0, thinkingContent: '' }) }
         break
       }
-
       case 'thinking_chunk': {
-        let thinkingStep = steps.get(stepId)
-        if (!thinkingStep) {
-          thinkingStep = {
-            id: stepId,
-            type: 'thinking',
-            name: '思考中',
-            description: 'Agent正在分析任务',
-            status: 'running',
-            progress: 0,
-            thinkingContent: '',
-          }
-          steps.set(stepId, thinkingStep)
-        }
-        thinkingStep.thinkingContent += event.data.content || ''
+        let s = state.steps.get(stepId)
+        if (!s) { s = { id: stepId, type: 'thinking', name: '思考中', description: 'Agent正在分析任务', status: 'running', progress: 0, thinkingContent: '' }; state.steps.set(stepId, s) }
+        s.thinkingContent += event.data.content || ''
         break
       }
-
-      case 'thinking_end': {
-        const endThinkingStep = steps.get(stepId)
-        if (endThinkingStep) { endThinkingStep.status = 'completed'; endThinkingStep.progress = 100; endThinkingStep.name = '思考完成' }
-        break
-      }
-
-      case 'content_chunk':
-        break
-
-      case 'content_end': {
-        const endContentStep = steps.get(stepId)
-        if (endContentStep) { endContentStep.status = 'completed'; endContentStep.progress = 100 }
-        break
-      }
-
-      case 'assistant_message':
-        steps.clear()
-        break
-
+      case 'thinking_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100; s.name = '思考完成' } break }
+      case 'content_chunk': break
+      case 'content_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100 } break }
+      case 'assistant_message': state.steps.clear(); break
       case 'data_retrieval_start':
-        steps.set(stepId, {
-          id: stepId,
-          type: 'data_retrieval',
-          name: `查询 ${event.data.source}`,
-          description: `从 ${event.data.source} 检索数据`,
-          status: 'running',
-          progress: 0,
-        })
+        state.steps.set(stepId, { id: stepId, type: 'data_retrieval', name: `查询 ${event.data.source}`, description: `从 ${event.data.source} 检索数据`, status: 'running', progress: 0 })
         break
-
-      case 'data_retrieval_progress': {
-        const retrievalStep = steps.get(stepId)
-        if (retrievalStep) retrievalStep.progress = event.data.records_found > 0 ? 50 : 0
-        break
-      }
-
+      case 'data_retrieval_progress': { const s = state.steps.get(stepId); if (s) s.progress = event.data.records_found > 0 ? 50 : 0; break }
       case 'fill_table_progress': {
-        let fillStep = steps.get(stepId)
-        if (!fillStep) {
-          fillStep = { id: stepId, type: 'fill_table', name: '填写表格', description: '正在将数据填入模板', status: 'running', progress: 0 }
-          steps.set(stepId, fillStep)
-        }
-        fillStep.progress = event.data.progress || 0
+        let s = state.steps.get(stepId)
+        if (!s) { s = { id: stepId, type: 'fill_table', name: '填写表格', description: '正在将数据填入模板', status: 'running', progress: 0 }; state.steps.set(stepId, s) }
+        s.progress = event.data.progress || 0
         break
       }
-
-      case 'completed': {
-        const completedStep = steps.get(stepId)
-        if (completedStep && completedStep.type === 'thinking') {
-          completedStep.status = 'completed'
-          completedStep.progress = 100
-        }
-        break
-      }
-
+      case 'completed': { const s = state.steps.get(stepId); if (s && s.type === 'thinking') { s.status = 'completed'; s.progress = 100 } break }
       case 'failed': {
-        const failStepId = event.step_id || `step_fail_${Date.now()}`
-        steps.set(failStepId, {
-          id: failStepId,
-          type: 'thinking',
-          name: '任务失败',
-          description: event.data.error || '任务执行失败',
-          status: 'error',
-          progress: 0,
-          errorMessage: event.data.error,
-        })
+        const fid = event.step_id || `step_fail_${Date.now()}`
+        state.steps.set(fid, { id: fid, type: 'thinking', name: '任务失败', description: event.data.error || '任务执行失败', status: 'error', progress: 0, errorMessage: event.data.error })
         break
       }
-
       case 'error': {
-        const errorStepId = event.step_id || `step_error_${Date.now()}`
-        const existingErrorStep = steps.get(errorStepId)
-        if (existingErrorStep) {
-          existingErrorStep.status = 'error'
-          existingErrorStep.errorMessage = event.data.error || event.data.message || '发生错误'
-        } else {
-          steps.set(errorStepId, {
-            id: errorStepId,
-            type: 'thinking',
-            name: '错误',
-            description: event.data.error || event.data.message || '发生错误',
-            status: 'error',
-            progress: 0,
-            errorMessage: event.data.error || event.data.message,
-          })
-        }
+        const eid = event.step_id || `step_error_${Date.now()}`
+        const e = state.steps.get(eid)
+        if (e) { e.status = 'error'; e.errorMessage = event.data.error || event.data.message || '发生错误' }
+        else { state.steps.set(eid, { id: eid, type: 'thinking', name: '错误', description: event.data.error || event.data.message || '发生错误', status: 'error', progress: 0, errorMessage: event.data.error || event.data.message }) }
         break
       }
     }
   }
 
-  private inferStepType(stepName: string): AgentStep['type'] {
+  private _inferStepType(stepName: string): AgentStep['type'] {
     if (stepName.includes('查询') || stepName.includes('检索')) return 'data_retrieval'
     if (stepName.includes('填写') || stepName.includes('填表')) return 'fill_table'
     if (stepName.includes('调用')) return 'tool_call'

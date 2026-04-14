@@ -349,15 +349,17 @@ class AgentRuntime:
         template_id: Optional[str] = None,
         conversation_history: List[Dict[str, str]] = None,
         cancel_event: Optional[asyncio.Event] = None,
-        on_stream_created=None
+        on_stream_created=None,
+        stream_manager: Optional['StreamManager'] = None
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
         Args:
             cancel_event: 取消事件，当设置时任务会被取消
             on_stream_created: 回调函数，接收创建的StreamManager
+            stream_manager: 外部传入的StreamManager（用于断线重连场景）
         """
-        stream = StreamManager()
+        stream = stream_manager or StreamManager()
         if on_stream_created:
             on_stream_created(stream)
         tracker = StepTracker()
@@ -394,11 +396,21 @@ class AgentRuntime:
                     break
         except Exception as e:
             logger.error(f"[AgentRuntime.run_stream] 流输出异常: {e}")
+            if stream_manager:
+                # 外部stream_manager（重连场景）：客户端断连不取消执行任务
+                # 任务继续运行，等待前端重连
+                logger.info("[AgentRuntime.run_stream] 客户端断连，任务继续运行")
+                return
             raise
 
         logger.info(f"[AgentRuntime.run_stream] 流式输出结束 | 共{event_count}个事件")
 
-        # 如果任务仍在运行，取消它
+        if stream_manager:
+            # 外部stream_manager（重连场景）：流正常结束，不取消执行任务
+            # 任务可能仍在运行（子Agent委派中），让它自然完成
+            return
+
+        # 内部stream_manager（首次连接场景）：如果任务仍在运行，取消它
         if not task.done():
             logger.info("[AgentRuntime.run_stream] 取消执行task")
             task.cancel()

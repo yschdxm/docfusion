@@ -55,9 +55,13 @@ class StreamBridge:
         try:
             event_count = 0
             while True:
+                # 父流已关闭，停止转发
+                if self.parent_stream.is_closed():
+                    logger.info(f"[StreamBridge] 父流已关闭，停止桥接 | 已转发 {event_count} 个事件")
+                    break
                 event = await asyncio.wait_for(
                     child_stream._event_queue.get(),
-                    timeout=300.0
+                    timeout=600.0
                 )
                 if event is None:  # 结束标记
                     break
