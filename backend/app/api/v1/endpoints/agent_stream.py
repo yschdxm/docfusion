@@ -111,13 +111,16 @@ class StepAccumulator:
                     break
 
         elif event_type == "tool_call":
-            self._find_or_create_child_step(parent, sid, "tool_call", f"调用 {data.get('tool_name', '')}", f"执行工具: {data.get('tool_name', '')}")
+            child = self._find_or_create_child_step(parent, sid, "tool_call", f"调用 {data.get('tool_name', '')}", f"执行工具: {data.get('tool_name', '')}")
+            child["toolName"] = data.get("tool_name")
+            child["toolParams"] = data.get("parameters")
 
         elif event_type == "tool_result":
             for child in parent.get("children", []):
                 if child.get("id") == sid:
                     child["status"] = "completed"
                     child["progress"] = 100
+                    child["toolResult"] = data.get("result")
                     break
 
         elif event_type == "tool_error":
@@ -751,16 +754,18 @@ async def cancel_agent_task(task_id: str):
     # 标记用户主动取消
     task.user_cancelled = True
 
-    # 后端统一持久化：保存累积的 steps 和 content
+    # 后端统一持久化：保存累积的 steps 和 content（仅在有实际内容时保存）
     if task.conversation_id and task.step_accumulator:
         acc = task.step_accumulator
-        content = acc.get_pending_content() or "（用户停止）"
+        content = acc.get_pending_content()
         steps = acc.get_steps()
-        if content != task.last_saved_content:
+        if content and content != task.last_saved_content:
             await _save_message(task.conversation_id, "assistant", content, steps=steps)
             logger.info(f"[Persist] 取消时保存累积内容: {content[:80]} | steps={len(steps)}")
-        else:
-            logger.info(f"[Persist] 取消时跳过保存（内容已保存过）")
+        elif steps:
+            # 没有 content 但有 steps，保存 steps
+            await _save_message(task.conversation_id, "assistant", "", steps=steps)
+            logger.info(f"[Persist] 取消时保存 steps: {len(steps)}")
 
     # 关闭 stream，使 runtime 中的循环收到信号
     if not task.stream.is_closed():

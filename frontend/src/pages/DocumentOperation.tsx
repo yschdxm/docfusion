@@ -174,9 +174,9 @@ export default function DocumentOperation() {
         const toolName = event.data.tool_name
         const result = event.data.result
         const editTools = [
-          'ReplaceTextTool', 'RewriteParagraphTool', 'InsertAfterTool',
-          'HeadingPromoteTool', 'ListFormatTool', 'ParagraphSplitTool',
-          'SetTextStyleTool', 'ConvertTool'
+          'replace_text', 'rewrite_paragraph', 'insert_after',
+          'heading_promote', 'list_format', 'paragraph_split',
+          'set_text_style', 'convert'
         ]
         const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table'
         if (isEditOrFill && result && result.download_url) {
@@ -471,14 +471,28 @@ export default function DocumentOperation() {
     const sessionId = currentConnectionSessionRef.current
     if (!sessionId) return
 
-    // UI 清理 — 后端 cancel 端点已保存累积的 steps 和 content
+    // 1. 保留已输出的内容到 localMessages（避免停止后消息消失）
+    const contentToSave = streamingContentRef.current
+    const stepsToSave = currentSteps.length > 0 ? [...currentSteps] : []
+    const messagesToAdd: Message[] = []
+    if (contentToSave) {
+      messagesToAdd.push({ role: 'assistant', content: contentToSave, timestamp: Date.now() })
+    }
+    if (stepsToSave.length > 0) {
+      messagesToAdd.push({ role: 'assistant', content: '', timestamp: Date.now(), steps: stepsToSave })
+    }
+    if (messagesToAdd.length > 0) {
+      setLocalMessages(prev => [...prev, ...messagesToAdd])
+    }
+
+    // 2. UI 清理
     setIsStreaming(false)
     setIsLoading(false)
     setStreamingContent('')
     streamingContentRef.current = ''
     setCurrentSteps([])
 
-    // 彻底取消任务（后端 + 前端 SSE）
+    // 3. 彻底取消任务（后端 + 前端 SSE）
     await agentStreamService.stopTask(sessionId)
     currentConnectionRef.current = null
     currentConnectionSessionRef.current = null

@@ -65,7 +65,7 @@ function StepDetails({ step }: { step: AgentStep }) {
       {step.toolParams && Object.keys(step.toolParams).length > 0 && (
         <div className="mt-2">
           <p className="text-xs text-slate-500 font-medium">参数:</p>
-          <pre className="mt-1 p-2 bg-slate-800/50 rounded-lg text-xs text-slate-300 overflow-x-auto scrollbar-thin">
+          <pre className="mt-1 p-2 bg-slate-800/50 rounded-lg text-xs text-slate-300 max-h-32 overflow-auto scrollbar-thin">
             {JSON.stringify(step.toolParams, null, 2)}
           </pre>
         </div>
@@ -75,7 +75,7 @@ function StepDetails({ step }: { step: AgentStep }) {
       {step.toolResult && (
         <div className="mt-2">
           <p className="text-xs text-slate-500 font-medium">结果:</p>
-          <div className="mt-1 p-2 bg-green-500/10 border border-green-500/20 rounded-lg text-xs text-slate-300 max-h-32 overflow-y-auto scrollbar-thin">
+          <div className="mt-1 p-2 bg-green-500/10 border border-green-500/20 rounded-lg text-xs text-slate-300 max-h-32 overflow-auto scrollbar-thin">
             {typeof step.toolResult === 'object' ? (
               <>
                 {step.toolResult.records_count !== undefined && (

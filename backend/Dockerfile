@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir \
 
 COPY . .
 
-RUN mkdir -p /app/uploads /app/uploads/output
+RUN mkdir -p /app/uploads /app/uploads/outputs
 
 EXPOSE 8000
 

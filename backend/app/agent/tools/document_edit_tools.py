@@ -10,16 +10,60 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.core.config import get_settings
+from app.db.postgres import async_session
+from app.models.document import Document
 from app.services.document_processor import DocxParser, MdParser, TxtParser, XlsxParser
 from app.services.llm_service import llm_service
 
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def _get_doc_path(file_id: str) -> Optional[str]:
+    """通过数据库查询文档文件路径"""
+    try:
+        doc_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
+    except ValueError:
+        return None
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Document).where(Document.id == doc_uuid)
+        )
+        doc = result.scalar_one_or_none()
+        if doc and doc.file_path and os.path.exists(doc.file_path):
+            return doc.file_path
+    return None
+
+
+async def _register_output_file(output_path: str, file_type: str) -> Dict[str, str]:
+    """将输出文件注册到数据库，返回 output_file_id、output_filename 和 download_url"""
+    output_filename = os.path.basename(output_path)
+    async with async_session() as db:
+        output_doc = Document(
+            filename=output_filename,
+            original_filename=output_filename,
+            file_path=output_path,
+            file_type=file_type,
+            doc_category="output",
+            status="completed",
+            file_size=os.path.getsize(output_path),
+        )
+        db.add(output_doc)
+        await db.commit()
+        await db.refresh(output_doc)
+        return {
+            "output_file_id": str(output_doc.id),
+            "output_filename": output_filename,
+            "download_url": f"/api/v1/documents/{output_doc.id}/download",
+        }
 
 
 HEADING_STYLE_KEYWORDS = ("heading", "标题", "title", "subtitle")
@@ -257,7 +301,7 @@ class ReplaceTextTool(BaseTool):
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
         # 获取文档路径
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -281,26 +325,18 @@ class ReplaceTextTool(BaseTool):
         paragraph["text"] = before.replace(old_text, new_text) if old_text else new_text
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段中的 '{old_text}' 替换为 '{new_text}'",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": [_make_change_record("replace_text", paragraph_index, before, paragraph["text"], params.get("reason", ""))],
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        """获取文档路径（需要从数据库查询）"""
-        # TODO: 实现从数据库查询文档路径
-        # 这里简化处理，实际需要查询数据库
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class RewriteParagraphTool(BaseTool):
@@ -328,7 +364,7 @@ class RewriteParagraphTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -351,23 +387,18 @@ class RewriteParagraphTool(BaseTool):
         paragraph["text"] = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已重写第 {paragraph_index + 1} 段",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": [_make_change_record("rewrite_paragraph", paragraph_index, before, paragraph["text"], params.get("reason", ""))],
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class InsertAfterTool(BaseTool):
@@ -396,7 +427,7 @@ class InsertAfterTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -419,23 +450,18 @@ class InsertAfterTool(BaseTool):
         _reindex_paragraphs(structure["paragraphs"])
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已在第 {paragraph_index + 1} 段后插入新内容",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": [_make_change_record("insert_after", insert_at, "", insert_text, params.get("reason", ""))],
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class HeadingPromoteTool(BaseTool):
@@ -463,7 +489,7 @@ class HeadingPromoteTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -488,23 +514,18 @@ class HeadingPromoteTool(BaseTool):
         after = f"[{paragraph['style']}] {paragraph['text']}"
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段调整为 Heading {level}",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": [_make_change_record("heading_promote", paragraph_index, before, after, params.get("reason", ""))],
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class ListFormatTool(BaseTool):
@@ -532,7 +553,7 @@ class ListFormatTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -564,23 +585,18 @@ class ListFormatTool(BaseTool):
             changes.append(_make_change_record("list_format", index, before, paragraph["text"], params.get("reason", "")))
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将 {len(changes)} 个段落格式化为{'有序' if list_type == 'number' else '无序'}列表",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": changes,
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class ParagraphSplitTool(BaseTool):
@@ -608,7 +624,7 @@ class ParagraphSplitTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -641,23 +657,18 @@ class ParagraphSplitTool(BaseTool):
         _reindex_paragraphs(paragraphs)
 
         output_file = _generate_output(structure, file_type, parsed_data)
+        reg = await _register_output_file(output_file, file_type)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段拆分为 {len(parts)} 个段落",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "changes": [_make_change_record("paragraph_split", paragraph_index, before, "\n".join(parts), params.get("reason", ""))],
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class SetTextStyleTool(BaseTool):
@@ -686,7 +697,10 @@ class SetTextStyleTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        from docx import Document as DocxDocument
+        from docx.shared import Pt
+
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -694,7 +708,7 @@ class SetTextStyleTool(BaseTool):
         if file_type != "docx":
             return ToolResult(success=False, error="字体样式设置仅支持docx文件")
 
-        doc = DocxParser.load_document(doc_path)
+        doc = DocxDocument(doc_path)
         all_paragraphs = list(doc.paragraphs)
         source_indexes = params.get("paragraph_indexes", [])
         font_name = params.get("font_name", "")
@@ -706,31 +720,30 @@ class SetTextStyleTool(BaseTool):
                 continue
             paragraph = all_paragraphs[index]
             before = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
-            DocxParser.set_paragraph_font(paragraph, font_name=font_name, font_size_pt=font_size_pt)
+            for run in paragraph.runs:
+                if font_name:
+                    run.font.name = font_name
+                if font_size_pt is not None:
+                    run.font.size = Pt(font_size_pt)
             after = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
             changes.append(_make_change_record("set_text_style", index, before, after, params.get("reason", "")))
 
         output_filename = f"output_{uuid4().hex}.docx"
         output_path = os.path.join(settings.UPLOAD_DIR, "output", output_filename)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        DocxParser.save_document(doc, output_path)
+        doc.save(output_path)
+        reg = await _register_output_file(output_path, "docx")
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已设置 {len(changes)} 个段落的字体样式",
                 "output_file": output_path,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_path)}",
+                **reg,
                 "changes": changes,
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None
 
 
 class ConvertTool(BaseTool):
@@ -757,7 +770,7 @@ class ConvertTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = self._get_doc_path(params["file_id"])
+        doc_path = await _get_doc_path(params["file_id"])
         if not doc_path:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
@@ -775,20 +788,15 @@ class ConvertTool(BaseTool):
         structure = _build_editable_structure(parsed_data, file_type)
 
         output_file = _generate_output(structure, target_format, parsed_data)
+        reg = await _register_output_file(output_file, target_format)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将文档从 {file_type} 转换为 {target_format}",
                 "output_file": output_file,
-                "download_url": f"/api/v1/agent/download-file/{os.path.basename(output_file)}",
+                **reg,
                 "output_format": target_format,
             },
         )
 
-    def _get_doc_path(self, file_id: str) -> Optional[str]:
-        upload_dir = settings.UPLOAD_DIR
-        for fname in os.listdir(upload_dir):
-            if fname.startswith(file_id):
-                return os.path.join(upload_dir, fname)
-        return None

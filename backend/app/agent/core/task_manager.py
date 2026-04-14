@@ -32,6 +32,7 @@ class Task:
     user_cancelled: bool = False  # 用户主动取消标记
     step_accumulator: Optional[object] = None  # StepAccumulator 实例（由 agent_stream 模块设置）
     last_saved_content: str = ""  # 最后保存的消息内容，用于去重
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)  # 用户取消信号
 
 
 class TaskManager:
