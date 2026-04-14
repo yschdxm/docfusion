@@ -1,0 +1,385 @@
+﻿import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { Network, Options } from 'vis-network/standalone'
+import { DataSet } from 'vis-data'
+import { Search, RefreshCw, Loader2, Network as NetworkIcon, List, Send, FileText, Filter } from 'lucide-react'
+import toast from 'react-hot-toast'
+import api from '../services/api'
+import { useDocumentStore } from '../stores/documentStore'
+import Dropdown from '../components/ui/Dropdown'
+import { useI18n } from '../hooks/useI18n'
+
+interface Node {
+  id: string
+  name: string
+  type: string
+  value?: string
+  document_ids?: string[]
+}
+
+interface Edge {
+  source: string
+  target: string
+  type: string
+  description?: string
+}
+
+interface QueryResult {
+  answer: string
+  relatedEntities: Node[]
+}
+
+const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const networkRef = useRef<Network | null>(null)
+
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    if (networkRef.current) {
+      networkRef.current.destroy()
+      networkRef.current = null
+    }
+
+    if (nodes.length === 0) return
+
+    const typeColors: Record<string, string> = {
+      PERSON: '#6aa2fd',
+      LOCATION: '#5beb90',
+      ORGANIZATION: '#d09dff',
+      DATE: '#fea566',
+      NUMBER: '#5ed8ed',
+      TABLE_DATA: '#fa81be',
+      CUSTOM: '#f5ce58',
+    }
+
+    const uniqueNodes: Node[] = []
+    const seenNodeIds = new Set<string>()
+    for (const node of nodes) {
+      if (!seenNodeIds.has(node.id)) {
+        seenNodeIds.add(node.id)
+        uniqueNodes.push(node)
+      }
+    }
+
+    const visNodes = new DataSet(
+      uniqueNodes.map((node) => ({
+        id: node.id,
+        label: node.name,
+        color: {
+          background: typeColors[node.type] || '#64748b',
+          border: typeColors[node.type] || '#64748b',
+          highlight: { background: '#165dff', border: '#165dff' },
+        },
+        font: { color: '#f8fafc', size: 12 },
+        shape: 'dot',
+        size: 20,
+      }))
+    )
+
+    const visEdges = new DataSet(
+      edges.map((edge, index) => ({
+        id: `edge-${index}`,
+        from: edge.source,
+        to: edge.target,
+        label: edge.type,
+        color: { color: '#94a3b8', highlight: '#165dff' },
+        font: { color: '#64748b', size: 10, strokeWidth: 0 },
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        smooth: { enabled: true, type: 'continuous', roundness: 0.5 },
+      }))
+    )
+
+    const options: Options = {
+      nodes: { borderWidth: 2, borderWidthSelected: 3 },
+      edges: { width: 1, selectionWidth: 2 },
+      physics: {
+        forceAtlas2Based: {
+          gravitationalConstant: -50,
+          centralGravity: 0.01,
+          springLength: 100,
+          springConstant: 0.08,
+        },
+        solver: 'forceAtlas2Based',
+        stabilization: { iterations: 150 },
+      },
+      interaction: { hover: true, tooltipDelay: 200 },
+    }
+
+    networkRef.current = new Network(containerRef.current, { nodes: visNodes, edges: visEdges }, options)
+
+    return () => {
+      if (networkRef.current) {
+        networkRef.current.destroy()
+        networkRef.current = null
+      }
+    }
+  }, [nodes, edges])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: '500px' }} className="bg-slate-50" />
+})
+
+GraphContainer.displayName = 'GraphContainer'
+
+export default function KnowledgeGraph() {
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
+  const { documents, fetchDocuments } = useDocumentStore()
+  const [allNodes, setAllNodes] = useState<Node[]>([])
+  const [allEdges, setAllEdges] = useState<Edge[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph')
+  const [query, setQuery] = useState('')
+  const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
+  const [isQuerying, setIsQuerying] = useState(false)
+  const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+  const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all')
+
+  const sourceDocs = documents.filter((d) => d.doc_category === 'source')
+
+  const fetchGraph = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const response = await api.get('/knowledge/graph', { params: { limit: 500 } })
+      setAllNodes(response.data.nodes || [])
+      setAllEdges(response.data.edges || [])
+    } catch (error) {
+      console.error('Fetch graph error:', error)
+      toast.error(tr('获取知识图谱失败', 'Failed to load knowledge graph', 'ナレッジグラフの取得に失敗しました'))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchDocuments()
+    fetchGraph()
+  }, [fetchDocuments, fetchGraph])
+
+  const filteredNodes = (() => {
+    const filtered = allNodes.filter((node) => {
+      const matchDoc = selectedDocs.length === 0 || (node.document_ids && node.document_ids.some((id) => selectedDocs.includes(id)))
+      const matchType = entityTypeFilter === 'all' || node.type === entityTypeFilter
+      return matchDoc && matchType
+    })
+
+    const uniqueNodes: Node[] = []
+    const seenIds = new Set<string>()
+    for (const node of filtered) {
+      if (!seenIds.has(node.id)) {
+        seenIds.add(node.id)
+        uniqueNodes.push(node)
+      }
+    }
+    return uniqueNodes
+  })()
+
+  const nodeIds = new Set(filteredNodes.map((n) => n.id))
+  const filteredEdges = allEdges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+
+  const handleQuery = async () => {
+    if (!query.trim()) return
+    setIsQuerying(true)
+    setQueryResult(null)
+    try {
+      const response = await api.post('/knowledge/query', { query })
+      setQueryResult({
+        answer: response.data.answer,
+        relatedEntities: response.data.related_entities || [],
+      })
+    } catch {
+      toast.error(tr('查询失败', 'Query failed', '検索に失敗しました'))
+    } finally {
+      setIsQuerying(false)
+    }
+  }
+
+  const toggleDocSelection = (docId: string) => {
+    setSelectedDocs((prev) => (prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]))
+  }
+
+  const entityTypes = Array.from(new Set(allNodes.map((n) => n.type)))
+
+  const typeColors: Record<string, string> = {
+    PERSON: 'bg-blue-50 border border-blue-200 text-blue-700',
+    LOCATION: 'bg-emerald-50 border border-emerald-200 text-emerald-700',
+    ORGANIZATION: 'bg-violet-50 border border-violet-200 text-violet-700',
+    DATE: 'bg-amber-50 border border-amber-200 text-amber-700',
+    NUMBER: 'bg-cyan-50 border border-cyan-200 text-cyan-700',
+    TABLE_DATA: 'bg-rose-50 border border-rose-200 text-rose-700',
+    CUSTOM: 'bg-slate-100 border border-slate-200 text-slate-700',
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="lg:col-span-1 space-y-4">
+          <div className="glass p-4">
+            <h3 className="text-sm font-medium text-slate-500 mb-3 flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              {tr('选择文档', 'Select Documents', '文書を選択')}
+            </h3>
+            <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-thin">
+              {sourceDocs.map((doc) => (
+                <label
+                  key={doc.id}
+                  className={`flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
+                    selectedDocs.includes(doc.id)
+                      ? 'bg-blue-50 border border-blue-200'
+                      : 'bg-slate-50 hover:bg-slate-100 border border-transparent'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDocs.includes(doc.id)}
+                    onChange={() => toggleDocSelection(doc.id)}
+                    className="w-4 h-4 rounded border-slate-300 bg-white text-primary-500"
+                  />
+                  <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span className="text-xs text-slate-900 truncate">{doc.original_filename}</span>
+                </label>
+              ))}
+              {sourceDocs.length === 0 && <p className="text-xs text-slate-500 text-center py-2">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</p>}
+            </div>
+            {selectedDocs.length > 0 && (
+              <button onClick={() => setSelectedDocs([])} className="mt-3 text-xs text-primary-500 hover:text-primary-600">
+                {tr('清除选择（显示全部）', 'Clear selection (show all)', '選択をクリア（すべて表示）')}
+              </button>
+            )}
+          </div>
+
+          <div className="glass p-4">
+            <h3 className="text-sm font-medium text-slate-500 mb-3 flex items-center gap-2">
+              <Filter className="w-4 h-4" />
+              {tr('实体类型', 'Entity Type', 'エンティティ種別')}
+            </h3>
+            <Dropdown
+              value={entityTypeFilter}
+              onChange={setEntityTypeFilter}
+              options={[{ value: 'all', label: tr('全部类型', 'All Types', 'すべての種別') }, ...entityTypes.map((type) => ({ value: type, label: type }))]}
+              placeholder={tr('选择实体类型', 'Select entity type', 'エンティティ種別を選択')}
+            />
+          </div>
+
+          <div className="glass p-4 space-y-3">
+            <div className="flex justify-between">
+              <span className="text-sm text-slate-500">{tr('实体节点', 'Entity Nodes', 'エンティティノード')}</span>
+              <span className="text-sm font-medium text-slate-900">{filteredNodes.length}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-slate-500">{tr('关系边', 'Edges', '関係エッジ')}</span>
+              <span className="text-sm font-medium text-slate-900">{filteredEdges.length}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-slate-500">{tr('实体类型', 'Entity Types', 'エンティティ種別')}</span>
+              <span className="text-sm font-medium text-slate-900">{entityTypes.length}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-3 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setViewMode('graph')}
+                className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${
+                  viewMode === 'graph'
+                    ? 'bg-white text-slate-900 border border-slate-300 shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <NetworkIcon className="w-4 h-4" />
+                {tr('图谱视图', 'Graph View', 'グラフ表示')}
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${
+                  viewMode === 'list'
+                    ? 'bg-white text-slate-900 border border-slate-300 shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <List className="w-4 h-4" />
+                {tr('列表视图', 'List View', 'リスト表示')}
+              </button>
+            </div>
+            <button onClick={fetchGraph} disabled={isLoading} className="btn-secondary flex items-center gap-2">
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              {tr('刷新', 'Refresh', '更新')}
+            </button>
+          </div>
+
+          <div className="glass p-4">
+            <div className="flex gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleQuery()}
+                  placeholder={tr('在知识图谱中提问...', 'Ask in the knowledge graph...', 'ナレッジグラフに質問...')}
+                  className="input pl-12"
+                />
+              </div>
+              <button onClick={handleQuery} disabled={isQuerying || !query.trim()} className="btn-primary disabled:opacity-50">
+                {isQuerying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+              </button>
+            </div>
+
+            {queryResult && (
+              <div className="mt-4 p-4 rounded-xl bg-primary-500/10 border border-primary-500/30">
+                <p className="text-slate-900 mb-3">{queryResult.answer}</p>
+                {queryResult.relatedEntities.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {queryResult.relatedEntities.map((entity, index) => (
+                      <span key={index} className={`px-3 py-1 rounded-full text-xs ${typeColors[entity.type] || 'bg-gray-500/20 text-gray-500'}`}>
+                        {entity.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {viewMode === 'graph' ? (
+            <div className="glass overflow-hidden" style={{ height: '500px' }}>
+              {filteredNodes.length > 0 ? (
+                <GraphContainer nodes={filteredNodes} edges={filteredEdges} />
+              ) : (
+                <div className="h-full flex items-center justify-center bg-slate-50">
+                  <div className="text-center">
+                    <NetworkIcon className="w-16 h-16 mx-auto mb-4 text-slate-400" />
+                    <p className="text-slate-600">{selectedDocs.length > 0 ? tr('选中文档暂无图谱数据', 'No graph data for selected documents', '選択文書にグラフデータがありません') : tr('暂无知识图谱数据', 'No knowledge graph data', 'ナレッジグラフデータがありません')}</p>
+                    <p className="text-sm text-slate-500 mt-2">{tr('请先完成文档信息提取', 'Please complete document extraction first', '先に文書抽出を完了してください')}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="glass p-3 max-h-[500px] overflow-y-auto scrollbar-thin">
+              {filteredNodes.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {filteredNodes.map((node) => (
+                    <div key={node.id} className="p-3 rounded-lg bg-slate-50 border border-slate-200 hover:border-primary-200 transition-colors">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded text-xs ${typeColors[node.type] || 'bg-gray-500/20 text-gray-500'}`}>{node.type}</span>
+                      </div>
+                      <p className="text-slate-900 font-medium">{node.name}</p>
+                      {node.value && <p className="text-sm text-slate-500 mt-1 truncate">{node.value}</p>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-20">
+                  <List className="w-16 h-16 mx-auto mb-4 text-slate-400" />
+                  <p className="text-slate-600">{selectedDocs.length > 0 ? tr('选中文档暂无实体数据', 'No entities for selected documents', '選択文書にエンティティがありません') : tr('暂无实体数据', 'No entities', 'エンティティがありません')}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
