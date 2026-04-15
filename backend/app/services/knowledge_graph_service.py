@@ -449,7 +449,12 @@ Sheet名：{sheet_name}
             if all_entities:
                 await self.build_graph_from_entities(document_id, all_entities, all_relations)
 
-    async def get_graph(self, limit: int = 500, document_id: str = None) -> Dict[str, Any]:
+    async def get_graph(
+        self,
+        limit: int = 500,
+        document_id: str = None,
+        user_doc_ids: List[str] = None
+    ) -> Dict[str, Any]:
         """获取图谱数据，返回所有类型节点。支持按文档 ID 过滤。"""
         if document_id:
             nodes_result = await run_cypher(
@@ -473,6 +478,30 @@ Sheet名：{sheet_name}
                 LIMIT $limit
                 """,
                 {"doc_id": document_id, "limit": limit}
+            )
+        elif user_doc_ids:
+            nodes_result = await run_cypher(
+                """
+                MATCH (n)
+                WHERE n.document_ids IS NOT NULL AND NOT n:Document
+                  AND any(did IN $user_doc_ids WHERE did IN n.document_ids)
+                RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.document_ids AS document_ids
+                LIMIT $limit
+                """,
+                {"user_doc_ids": user_doc_ids, "limit": limit}
+            )
+
+            edges_result = await run_cypher(
+                """
+                MATCH (a)-[r]->(b)
+                WHERE a.document_ids IS NOT NULL AND b.document_ids IS NOT NULL
+                  AND NOT a:Document AND NOT b:Document
+                  AND any(did IN $user_doc_ids WHERE did IN a.document_ids)
+                  AND any(did IN $user_doc_ids WHERE did IN b.document_ids)
+                RETURN a.name AS source, b.name AS target, type(r) AS type, r.description AS description
+                LIMIT $limit
+                """,
+                {"user_doc_ids": user_doc_ids, "limit": limit}
             )
         else:
             nodes_result = await run_cypher(
@@ -514,17 +543,30 @@ Sheet名：{sheet_name}
 
         return {"nodes": nodes, "edges": edges}
 
-    async def query_graph(self, query: str) -> Dict[str, Any]:
-        search_result = await run_cypher(
-            """
-            MATCH (n)
-            WHERE (n.name CONTAINS $query OR n.value CONTAINS $query)
-              AND n.document_ids IS NOT NULL AND NOT n:Document
-            RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.context AS context
-            LIMIT 20
-            """,
-            {"query": query}
-        )
+    async def query_graph(self, query: str, user_doc_ids: List[str] = None) -> Dict[str, Any]:
+        if user_doc_ids:
+            search_result = await run_cypher(
+                """
+                MATCH (n)
+                WHERE (n.name CONTAINS $query OR n.value CONTAINS $query)
+                  AND n.document_ids IS NOT NULL AND NOT n:Document
+                  AND any(did IN $user_doc_ids WHERE did IN n.document_ids)
+                RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.context AS context
+                LIMIT 20
+                """,
+                {"query": query, "user_doc_ids": user_doc_ids}
+            )
+        else:
+            search_result = await run_cypher(
+                """
+                MATCH (n)
+                WHERE (n.name CONTAINS $query OR n.value CONTAINS $query)
+                  AND n.document_ids IS NOT NULL AND NOT n:Document
+                RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.context AS context
+                LIMIT 20
+                """,
+                {"query": query}
+            )
 
         related_entities = [
             {

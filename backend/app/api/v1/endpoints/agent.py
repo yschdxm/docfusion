@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.deps import get_current_user
 from app.db.postgres import get_db
+from app.models.user import User
 from app.services.llm_service import llm_service
 from app.core.config import get_settings
 from pydantic import BaseModel
@@ -46,7 +48,7 @@ class GenerateTitleRequest(BaseModel):
 @router.post("/chat", response_model=AgentChatResponse)
 async def agent_chat(
     request: AgentChatRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     智能体对话接口（兼容旧版本）
@@ -62,7 +64,7 @@ async def agent_chat(
 
 
 @router.get("/config")
-async def get_agent_config():
+async def get_agent_config(current_user: User = Depends(get_current_user)):
     """返回应用配置"""
     settings = get_settings()
     return {
@@ -72,7 +74,10 @@ async def get_agent_config():
 
 
 @router.post("/generate-title")
-async def generate_title(request: GenerateTitleRequest):
+async def generate_title(
+    request: GenerateTitleRequest,
+    current_user: User = Depends(get_current_user)
+):
     """轻量接口：根据用户消息生成对话标题"""
     try:
         prompt = f"请用10个字以内总结以下问题的标题，只返回标题内容，不要返回其他任何内容。\n问题：{request.message[:50]}"

@@ -12,10 +12,12 @@ from datetime import datetime
 import os
 import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select, update as sql_update, text
+from sqlalchemy import select, update as sql_update, text, or_
 from app.core.config import get_settings
+from app.core.deps import get_current_user
 from app.db.postgres import get_db, engine
 from app.models.document import Document, ExtractionTask
+from app.models.user import User
 from app.schemas.document import DocumentResponse, DocumentPreviewResponse, DocumentSaveRequest
 from app.services.preprocessing_service import preprocess_document
 from app.services.knowledge_graph_service import knowledge_graph_service
@@ -31,6 +33,24 @@ PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_ROOT, ".."))
 
 def _strip_trailing_slash(url: str) -> str:
     return url[:-1] if url.endswith("/") else url
+
+
+def _user_doc_filter(user_id: UUID):
+    """构建用户文档过滤条件，根据配置决定是否包含无主数据"""
+    if settings.INCLUDE_ORPHAN_DATA:
+        return or_(Document.user_id == user_id, Document.user_id.is_(None))
+    return Document.user_id == user_id
+
+
+async def _get_user_document(document_id: UUID, user_id: UUID, db: AsyncSession) -> Document:
+    """获取文档并确保属于当前用户（或为无主数据）"""
+    result = await db.execute(
+        select(Document).where(Document.id == document_id, _user_doc_filter(user_id))
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
 
 
 def _normalize_api_prefix(prefix: str) -> str:
@@ -192,7 +212,8 @@ async def auto_extract_document(
     doc_id: UUID,
     file_path: str,
     file_type: str,
-    original_filename: str
+    original_filename: str,
+    user_id: UUID = None
 ):
     """自动提取文档信息（后台任务）"""
     AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
@@ -201,6 +222,7 @@ async def auto_extract_document(
         task = ExtractionTask(
             task_type="entity_extraction",
             status="processing",
+            user_id=user_id,
             input_files=[str(doc_id)],
             config={"entity_types": "auto"},
             result={
@@ -307,7 +329,8 @@ async def upload_documents(
     files: List[UploadFile] = File(...),
     doc_category: str = "source",
     background_tasks: BackgroundTasks = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     uploaded_docs = []
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -325,6 +348,7 @@ async def upload_documents(
             await f.write(content)
 
         doc = Document(
+            user_id=current_user.id,
             filename=unique_filename,
             original_filename=file.filename,
             file_type=file_ext,
@@ -343,7 +367,8 @@ async def upload_documents(
                 doc.id,
                 file_path,
                 file_ext,
-                file.filename
+                file.filename,
+                current_user.id
             )
 
         uploaded_docs.append(doc)
@@ -357,9 +382,10 @@ async def list_documents(
     doc_category: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    query = select(Document)
+    query = select(Document).where(_user_doc_filter(current_user.id))
     if doc_category:
         query = query.where(Document.doc_category == doc_category)
     result = await db.execute(
@@ -431,13 +457,10 @@ async def list_documents(
 @router.get("/{document_id}/preview", response_model=DocumentPreviewResponse)
 async def preview_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
+    doc = await _get_user_document(document_id, current_user.id, db)
     return _get_document_preview(doc)
 
 
@@ -445,12 +468,10 @@ async def preview_document(
 async def get_onlyoffice_config(
     document_id: UUID,
     mode: str = "view",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     file_type = (doc.file_type or "").lower()
     if file_type not in ONLYOFFICE_FILE_TYPES:
@@ -496,8 +517,8 @@ async def get_onlyoffice_config(
             "lang": "zh-CN",
             "callbackUrl": f"{callback_base}{api_prefix}/documents/onlyoffice/callback/{doc.id}",
             "user": {
-                "id": "docfusion-user",
-                "name": "DocFusion User",
+                "id": str(current_user.id),
+                "name": current_user.username,
             },
         },
     }
@@ -581,12 +602,10 @@ async def onlyoffice_callback(
 @router.get("/{document_id}/inline")
 async def inline_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文件不存在")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -619,12 +638,10 @@ async def inline_document(
 @router.get("/{document_id}/raw")
 async def raw_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -641,12 +658,10 @@ async def raw_document(
 async def save_document_content(
     document_id: UUID,
     payload: DocumentSaveRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -681,12 +696,10 @@ async def save_document_content(
 @router.get("/{document_id}/download")
 async def download_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -702,12 +715,10 @@ async def download_document(
 @router.get("/{document_id}")
 async def get_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
     return doc
 
 
@@ -715,12 +726,10 @@ async def get_document(
 async def retry_extraction(
     document_id: UUID,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     if doc.doc_category != "source":
         raise HTTPException(status_code=400, detail="Only source documents can be extracted")
@@ -734,6 +743,7 @@ async def retry_extraction(
     task = ExtractionTask(
         task_type="entity_extraction",
         status="processing",
+        user_id=current_user.id,
         input_files=[doc_id_str],
         config={"entity_types": "auto"},
         result={
@@ -763,12 +773,10 @@ async def retry_extraction(
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_user_document(document_id, current_user.id, db)
 
     doc_id_str = str(document_id)
 

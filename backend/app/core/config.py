@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800
 
+    # 用户隔离
+    INCLUDE_ORPHAN_DATA: bool = True  # 是否允许查看无主文档（user_id为NULL的旧数据）
+
     class Config:
         # .env 文件在项目根目录，相对于 backend 目录
         env_file = "../.env"

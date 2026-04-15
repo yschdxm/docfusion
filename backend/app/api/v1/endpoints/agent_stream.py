@@ -8,7 +8,7 @@
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import asyncio
@@ -18,8 +18,10 @@ import json
 from app.agent.core.stream import AgentEvent, AgentEventType
 from app.agent.agents.general_agent import create_general_agent
 from app.agent.core.task_manager import task_manager
+from app.core.deps import get_current_user
 from app.db.postgres import async_session
-from app.models.document import Message
+from app.models.document import Message, Conversation
+from app.models.user import User
 from sqlalchemy import select
 
 
@@ -421,7 +423,10 @@ class AgentStreamRequest(BaseModel):
 
 
 @router.post("/stream")
-async def agent_stream(request: AgentStreamRequest):
+async def agent_stream(
+    request: AgentStreamRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
     流式Agent对话接口
 
@@ -471,6 +476,14 @@ async def agent_stream(request: AgentStreamRequest):
     if request.conversation_id:
         try:
             async with async_session() as db:
+                # 校验对话归属
+                conv_result = await db.execute(
+                    select(Conversation).where(Conversation.id == request.conversation_id)
+                )
+                conv = conv_result.scalar_one_or_none()
+                if conv and conv.user_id and conv.user_id != current_user.id:
+                    raise HTTPException(status_code=403, detail="无权访问该对话")
+
                 msg_result = await db.execute(
                     select(Message)
                     .where(Message.conversation_id == request.conversation_id)
@@ -745,7 +758,10 @@ async def _delayed_cleanup(task_id: str, delay: int = 600):
 
 
 @router.delete("/stream/{task_id}")
-async def cancel_agent_task(task_id: str):
+async def cancel_agent_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+):
     """彻底取消任务（用户主动停止）"""
     task = await task_manager.get_task(task_id)
     if not task:

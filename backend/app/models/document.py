@@ -7,8 +7,9 @@ from app.db.postgres import Base
 
 class Document(Base):
     __tablename__ = "documents"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_type = Column(String(20), nullable=False)  # docx, xlsx, md, txt
@@ -23,8 +24,9 @@ class Document(Base):
 
 class ExtractionTask(Base):
     __tablename__ = "extraction_tasks"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     task_type = Column(String(50), nullable=False)
     status = Column(String(20), default="pending")
     input_files = Column(JSON, default=[])
@@ -38,8 +40,9 @@ class ExtractionTask(Base):
 
 class TableFillTask(Base):
     __tablename__ = "table_fill_tasks"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     template_file_id = Column(UUID(as_uuid=True))
     source_file_ids = Column(JSON, default=[])
     user_instruction = Column(Text)
@@ -53,8 +56,9 @@ class TableFillTask(Base):
 class Conversation(Base):
     """对话会话表"""
     __tablename__ = "conversations"
-    
+
     id = Column(String(50), primary_key=True)  # chat-xxx 格式
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     title = Column(String(255), default="新对话")
     file_ids = Column(JSON, default=[])  # 选中的文档ID列表
     template_id = Column(String(50), nullable=True)  # 选中的模板ID
@@ -80,6 +84,7 @@ class DocumentExtraction(Base):
     __tablename__ = "document_extractions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     document_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     entities_count = Column(Integer, default=0)
     relations_count = Column(Integer, default=0)
@@ -93,6 +98,7 @@ class TemplateUsageEvent(Base):
     __tablename__ = 'template_usage_events'
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     template_id = Column(UUID(as_uuid=True), ForeignKey('documents.id'), nullable=False, index=True)
     template_name = Column(String(255), nullable=False)
     source_file_count = Column(Integer, default=0)

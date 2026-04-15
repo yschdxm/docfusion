@@ -7,6 +7,7 @@
  */
 
 import { fetchEventSource, EventSourceMessage } from '@microsoft/fetch-event-source'
+import { getAuthToken } from './auth'
 
 export interface AgentStreamRequest {
   message: string
@@ -118,7 +119,11 @@ class AgentStreamService {
     // 调用后端取消接口
     if (taskId) {
       try {
-        await fetch(`/api/v1/agent/stream/${taskId}`, { method: 'DELETE' })
+        const token = getAuthToken()
+        await fetch(`/api/v1/agent/stream/${taskId}`, {
+          method: 'DELETE',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        })
       } catch (e) {
         console.warn('[SSE] 取消后端任务失败:', e)
       }
@@ -276,7 +281,10 @@ class AgentStreamService {
     try {
       await fetchEventSource('/api/v1/agent/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getAuthToken() ? { 'Authorization': `Bearer ${getAuthToken()}` } : {}),
+        },
         body: JSON.stringify(requestBody),
         signal: state.abortController.signal,
 
