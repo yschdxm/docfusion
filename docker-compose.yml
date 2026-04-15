@@ -41,7 +41,6 @@ services:
       - ONLYOFFICE_ENABLED=true
       - ONLYOFFICE_SERVER_URL=http://onlyoffice:80
       - ONLYOFFICE_DOCUMENT_SERVER_URL=http://onlyoffice:80
-      - ONLYOFFICE_CLIENT_URL=${ONLYOFFICE_CLIENT_URL:-http://localhost:8088}
       - ONLYOFFICE_CALLBACK_BASE_URL=http://backend:8000
       - ONLYOFFICE_API_PREFIX=/api/v1
       - BACKEND_PUBLIC_URL=http://backend:8000

@@ -54,26 +54,22 @@ export function useDocumentPreview() {
     }
   }, [])
 
-  const ensureOnlyOfficeScript = useCallback(async (serverUrl: string): Promise<void> => {
+  const ensureOnlyOfficeScript = useCallback(async (): Promise<void> => {
     if (window.DocsAPI?.DocEditor) return
 
-    const normalized = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl
-    const scriptUrl = `${normalized}/web-apps/apps/api/documents/api.js`
-
-    if (loadedScriptRef.current && loadedScriptRef.current !== scriptUrl) {
-      const oldScript = document.querySelector(`script[src="${loadedScriptRef.current}"]`)
-      oldScript?.remove()
-      loadedScriptRef.current = null
-    }
+    // 使用相对路径加载 OnlyOffice 脚本，依赖 nginx 代理转发
+    const scriptUrl = '/web-apps/apps/api/documents/api.js'
 
     await new Promise<void>((resolve, reject) => {
-      let script = document.querySelector(`script[src="${scriptUrl}"]`) as HTMLScriptElement | null
-      if (!script) {
-        script = document.createElement('script')
-        script.src = scriptUrl
-        document.head.appendChild(script)
-        loadedScriptRef.current = scriptUrl
+      if (window.DocsAPI?.DocEditor) {
+        resolve()
+        return
       }
+
+      const script = document.createElement('script')
+      script.src = scriptUrl
+      document.head.appendChild(script)
+      loadedScriptRef.current = scriptUrl
 
       const startedAt = Date.now()
       const timer = window.setInterval(() => {
@@ -111,7 +107,7 @@ export function useDocumentPreview() {
           params: { mode: 'view' },
         })
 
-        await ensureOnlyOfficeScript(response.data.serverUrl)
+        await ensureOnlyOfficeScript()
 
         if (!window.DocsAPI?.DocEditor) {
           throw new Error('OnlyOffice 组件未正确加载')

@@ -205,26 +205,22 @@ export default function DocumentManager() {
     officeHost.innerHTML = ''
   }
 
-  const ensureOnlyOfficeScript = async (serverUrl: string) => {
+  const ensureOnlyOfficeScript = async () => {
     if (window.DocsAPI?.DocEditor) return
 
-    const normalized = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl
-    const scriptUrl = `${normalized}/web-apps/apps/api/documents/api.js`
-
-    if (loadedScriptRef.current && loadedScriptRef.current !== scriptUrl) {
-      const oldScript = document.querySelector(`script[src="${loadedScriptRef.current}"]`)
-      oldScript?.remove()
-      loadedScriptRef.current = null
-    }
+    // 使用相对路径，依赖 nginx 代理转发到 OnlyOffice 容器
+    const scriptUrl = '/web-apps/apps/api/documents/api.js'
 
     await new Promise<void>((resolve, reject) => {
-      let script = document.querySelector(`script[src="${scriptUrl}"]`) as HTMLScriptElement | null
-      if (!script) {
-        script = document.createElement('script')
-        script.src = scriptUrl
-        document.head.appendChild(script)
-        loadedScriptRef.current = scriptUrl
+      if (window.DocsAPI?.DocEditor) {
+        resolve()
+        return
       }
+
+      const script = document.createElement('script')
+      script.src = scriptUrl
+      document.head.appendChild(script)
+      loadedScriptRef.current = scriptUrl
 
       const startedAt = Date.now()
       const timer = window.setInterval(() => {
@@ -263,7 +259,7 @@ export default function DocumentManager() {
         params: { mode },
       })
 
-      await ensureOnlyOfficeScript(response.data.serverUrl)
+      await ensureOnlyOfficeScript()
 
       if (!window.DocsAPI?.DocEditor) {
         throw new Error('OnlyOffice 组件未正确加载')

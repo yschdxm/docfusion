@@ -66,7 +66,6 @@ class Settings(BaseSettings):
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"
     ONLYOFFICE_ENABLED: bool = False
     ONLYOFFICE_DOCUMENT_SERVER_URL: str = "http://localhost:8088"
-    ONLYOFFICE_CLIENT_URL: str = "http://localhost:8088"  # 浏览器访问 OnlyOffice 的地址（区别于 Docker 内部地址）
     ONLYOFFICE_CALLBACK_BASE_URL: str = "http://host.docker.internal:8000"
     ONLYOFFICE_API_PREFIX: str = "/api/v1"
     ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
