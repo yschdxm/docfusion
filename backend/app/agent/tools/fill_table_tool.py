@@ -719,7 +719,8 @@ fill_mode 详解（针对指定表格的操作）：
             file_type=file_type,
             doc_category="output",
             status="completed",
-            file_size=os.path.getsize(output_path)
+            file_size=os.path.getsize(output_path),
+            user_id=context.user_id
         )
         db.add(output_doc)
         await db.commit()

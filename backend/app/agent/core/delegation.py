@@ -130,6 +130,7 @@ class DelegateAgentTool(BaseTool):
 
         child_context = ToolContext(
             session_id=f"{context.session_id}_{self.name}_{timestamp}",
+            user_id=context.user_id,
             file_ids=params.get("file_ids", context.file_ids),
             template_id=params.get("template_id", context.template_id),
             conversation_history=recent_history,
@@ -169,6 +170,7 @@ class DelegateAgentTool(BaseTool):
                 conversation_history=recent_history,
                 stream_manager=child_stream,
                 step_tracker=StepTracker(),
+                user_id=child_context.user_id,
             )
 
             # 5. 等待桥接任务完成

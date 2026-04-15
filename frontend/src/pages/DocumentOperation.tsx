@@ -233,7 +233,6 @@ export default function DocumentOperation() {
           const file: PreviewFile = {
             id: result.output_file_id || filename,
             name: filename,
-            fileUrl: `${window.location.origin}${result.download_url}`,
             fileType: getFileType(filename),
             source: 'operated',
           }
@@ -348,7 +347,6 @@ export default function DocumentOperation() {
     const file: PreviewFile = {
       id: doc.id,
       name: doc.original_filename,
-      fileUrl: `${window.location.origin}/api/v1/documents/${doc.id}/download`,
       fileType: doc.file_type || getFileType(doc.original_filename),
       source: 'selected',
     }

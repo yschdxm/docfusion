@@ -502,7 +502,7 @@ async def agent_stream(
             logger.warning(f"[API /agent/stream] 加载对话历史失败: {e}")
 
     return StreamingResponse(
-        _new_task_stream(request, conversation_history),
+        _new_task_stream(request, conversation_history, user_id=str(current_user.id)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"}
     )
@@ -512,7 +512,7 @@ async def agent_stream(
 # 流式生成器
 # ============================================================
 
-async def _new_task_stream(request: AgentStreamRequest, conversation_history: list):
+async def _new_task_stream(request: AgentStreamRequest, conversation_history: list, user_id: str = None):
     """新任务的事件流：创建任务 → 发送 task_id → 运行 agent → 持久化 → 清理"""
     task = await task_manager.create_task(conversation_id=request.conversation_id)
     event_count = 0
@@ -543,7 +543,8 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
             file_ids=request.file_ids,
             template_id=request.template_id,
             conversation_history=conversation_history,
-            stream_manager=task.stream
+            stream_manager=task.stream,
+            user_id=user_id
         ):
             event_count += 1
             yield event

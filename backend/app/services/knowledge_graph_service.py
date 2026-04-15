@@ -479,7 +479,7 @@ Sheet名：{sheet_name}
                 """,
                 {"doc_id": document_id, "limit": limit}
             )
-        elif user_doc_ids:
+        elif user_doc_ids is not None:
             nodes_result = await run_cypher(
                 """
                 MATCH (n)
@@ -504,26 +504,8 @@ Sheet名：{sheet_name}
                 {"user_doc_ids": user_doc_ids, "limit": limit}
             )
         else:
-            nodes_result = await run_cypher(
-                """
-                MATCH (n)
-                WHERE n.document_ids IS NOT NULL AND NOT n:Document
-                RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.document_ids AS document_ids
-                LIMIT $limit
-                """,
-                {"limit": limit}
-            )
-
-            edges_result = await run_cypher(
-                """
-                MATCH (a)-[r]->(b)
-                WHERE a.document_ids IS NOT NULL AND b.document_ids IS NOT NULL
-                  AND NOT a:Document AND NOT b:Document
-                RETURN a.name AS source, b.name AS target, type(r) AS type, r.description AS description
-                LIMIT $limit
-                """,
-                {"limit": limit}
-            )
+            # 无过滤条件时不返回任何数据（安全兜底）
+            return {"nodes": [], "edges": []}
 
         nodes = [
             {
@@ -544,7 +526,7 @@ Sheet名：{sheet_name}
         return {"nodes": nodes, "edges": edges}
 
     async def query_graph(self, query: str, user_doc_ids: List[str] = None) -> Dict[str, Any]:
-        if user_doc_ids:
+        if user_doc_ids is not None:
             search_result = await run_cypher(
                 """
                 MATCH (n)
@@ -557,16 +539,8 @@ Sheet名：{sheet_name}
                 {"query": query, "user_doc_ids": user_doc_ids}
             )
         else:
-            search_result = await run_cypher(
-                """
-                MATCH (n)
-                WHERE (n.name CONTAINS $query OR n.value CONTAINS $query)
-                  AND n.document_ids IS NOT NULL AND NOT n:Document
-                RETURN n.name AS name, labels(n)[0] AS type, n.value AS value, n.context AS context
-                LIMIT 20
-                """,
-                {"query": query}
-            )
+            # 无过滤条件时不返回任何数据（安全兜底）
+            search_result = []
 
         related_entities = [
             {
@@ -614,9 +588,12 @@ Sheet名：{sheet_name}
 
         doc_filter = ""
         params = {"field": field_name}
-        if doc_ids:
+        if doc_ids is not None:
             doc_filter = "AND any(did IN $doc_ids WHERE did IN n.document_ids)"
             params["doc_ids"] = doc_ids
+        else:
+            # 无文档过滤时不查询（安全兜底）
+            return results
 
         field_result = await run_cypher(
             f"""
@@ -643,7 +620,7 @@ Sheet名：{sheet_name}
                     continue
                 entity_params = {"name": name}
                 entity_doc_filter = ""
-                if doc_ids:
+                if doc_ids is not None:
                     entity_doc_filter = "AND any(did IN $doc_ids WHERE did IN other.document_ids)"
                     entity_params["doc_ids"] = doc_ids
 

@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import api from '../services/api'
 
 export interface PreviewFile {
   id: string
   name: string
-  fileUrl: string
   fileType: string
   source: 'operated' | 'selected'
 }
@@ -17,11 +17,10 @@ export function getFileType(filename: string): string {
   return map[ext] || ext
 }
 
-function getDocumentType(fileType: string): string {
-  if (['doc', 'docx', 'pdf'].includes(fileType)) return 'word'
-  if (['xls', 'xlsx', 'csv'].includes(fileType)) return 'cell'
-  if (['ppt', 'pptx'].includes(fileType)) return 'slide'
-  return 'word'
+const OFFICE_EXTENSIONS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv']
+
+function isOfficeFile(fileType: string): boolean {
+  return OFFICE_EXTENSIONS.includes(fileType)
 }
 
 declare global {
@@ -34,102 +33,113 @@ declare global {
   }
 }
 
+interface OfficeConfigResponse {
+  config: Record<string, unknown>
+  serverUrl: string
+}
+
 export function useDocumentPreview() {
   const [isPanelOpen, setIsPanelOpen] = useState(false)
   const [previewFiles, setPreviewFiles] = useState<PreviewFile[]>([])
   const [currentFile, setCurrentFileState] = useState<PreviewFile | null>(null)
-  const [onlyofficeReady, setOnlyofficeReady] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
   const editorInstanceRef = useRef<{ destroyEditor?: () => void } | null>(null)
-  const scriptLoadAttempted = useRef(false)
+  const loadedScriptRef = useRef<string | null>(null)
 
-  // 加载 ONLYOFFICE 脚本（按需）
-  const loadScript = useCallback((): Promise<void> => {
-    if (window.DocsAPI) return Promise.resolve()
-
-    return new Promise((resolve, reject) => {
-      setIsLoading(true)
-      const script = document.createElement('script')
-      script.src = '/web-apps/apps/api/documents/api.js'
-      script.onload = () => {
-        setOnlyofficeReady(true)
-        setIsLoading(false)
-        resolve()
-      }
-      script.onerror = () => {
-        setIsLoading(false)
-        reject(new Error('无法连接到 ONLYOFFICE Document Server'))
-      }
-      document.head.appendChild(script)
-    })
-  }, [])
-
-  // 面板打开时加载脚本
-  useEffect(() => {
-    if (!isPanelOpen || scriptLoadAttempted.current) return
-    if (window.DocsAPI) {
-      setOnlyofficeReady(true)
-      return
-    }
-    scriptLoadAttempted.current = true
-    loadScript().catch(err => {
-      console.error('[DocumentPreview]', err.message)
-      scriptLoadAttempted.current = false // 允许重试
-    })
-  }, [isPanelOpen, loadScript])
-
-  // 创建/销毁编辑器
-  const createEditor = useCallback((file: PreviewFile) => {
-    if (!window.DocsAPI || !file) return
-
-    // 销毁旧实例
+  const destroyEditor = useCallback(() => {
     if (editorInstanceRef.current) {
       try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
       editorInstanceRef.current = null
     }
+  }, [])
 
-    const fileType = getFileType(file.name)
-    const documentType = getDocumentType(fileType)
+  const ensureOnlyOfficeScript = useCallback(async (serverUrl: string): Promise<void> => {
+    if (window.DocsAPI?.DocEditor) return
 
-    const config = {
-      document: {
-        fileType,
-        key: `${file.id}_${Date.now()}`,
-        title: file.name,
-        url: file.fileUrl,
-        permissions: { edit: false, download: true, print: true, copy: true },
-      },
-      documentType,
-      editorConfig: { mode: 'view' as const, lang: 'zh-CN' },
-      type: 'desktop' as const,
-      width: '100%',
-      height: '100%',
+    const normalized = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl
+    const scriptUrl = `${normalized}/web-apps/apps/api/documents/api.js`
+
+    if (loadedScriptRef.current && loadedScriptRef.current !== scriptUrl) {
+      const oldScript = document.querySelector(`script[src="${loadedScriptRef.current}"]`)
+      oldScript?.remove()
+      loadedScriptRef.current = null
     }
+
+    await new Promise<void>((resolve, reject) => {
+      let script = document.querySelector(`script[src="${scriptUrl}"]`) as HTMLScriptElement | null
+      if (!script) {
+        script = document.createElement('script')
+        script.src = scriptUrl
+        document.head.appendChild(script)
+        loadedScriptRef.current = scriptUrl
+      }
+
+      const startedAt = Date.now()
+      const timer = window.setInterval(() => {
+        if (window.DocsAPI?.DocEditor) {
+          window.clearInterval(timer)
+          resolve()
+          return
+        }
+        if (Date.now() - startedAt > 60000) {
+          window.clearInterval(timer)
+          reject(new Error('OnlyOffice 脚本加载超时'))
+        }
+      }, 200)
+
+      script.onerror = () => {
+        window.clearInterval(timer)
+        reject(new Error('OnlyOffice 脚本加载失败'))
+      }
+    })
+  }, [])
+
+  // 创建/销毁编辑器
+  const createEditor = useCallback(async (file: PreviewFile) => {
+    if (!file) return
+
+    destroyEditor()
+    setIsLoading(true)
 
     try {
-      editorInstanceRef.current = new window.DocsAPI.DocEditor('onlyoffice-preview', config)
+      const fileType = getFileType(file.name)
+
+      if (isOfficeFile(fileType)) {
+        // Office 文件：通过后端 office-config 获取配置
+        const response = await api.get<OfficeConfigResponse>(`/documents/${file.id}/office-config`, {
+          params: { mode: 'view' },
+        })
+
+        await ensureOnlyOfficeScript(response.data.serverUrl)
+
+        if (!window.DocsAPI?.DocEditor) {
+          throw new Error('OnlyOffice 组件未正确加载')
+        }
+
+        editorInstanceRef.current = new window.DocsAPI.DocEditor('onlyoffice-preview', response.data.config)
+      }
+      // 非 Office 文件（txt, md, pdf 等）暂不在此 hook 中处理
     } catch (err) {
-      console.error('[DocumentPreview] 编辑器创建失败:', err)
+      console.error('[DocumentPreview] 预览失败:', err)
+    } finally {
+      setIsLoading(false)
     }
-  }, [])
+  }, [destroyEditor, ensureOnlyOfficeScript])
 
   // currentFile 变化时重建编辑器
   useEffect(() => {
-    if (!currentFile || !onlyofficeReady || !isPanelOpen) return
+    if (!currentFile || !isPanelOpen) return
     const timer = setTimeout(() => createEditor(currentFile), 50)
     return () => clearTimeout(timer)
-  }, [currentFile, onlyofficeReady, isPanelOpen, createEditor])
+  }, [currentFile, isPanelOpen, createEditor])
 
   // 组件卸载时清理
   useEffect(() => {
     return () => {
-      if (editorInstanceRef.current) {
-        try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
-        editorInstanceRef.current = null
-      }
+      destroyEditor()
     }
-  }, [])
+  }, [destroyEditor])
 
   const togglePanel = useCallback(() => {
     setIsPanelOpen(prev => !prev)
@@ -152,13 +162,10 @@ export function useDocumentPreview() {
   }, [])
 
   const clearPreview = useCallback(() => {
-    if (editorInstanceRef.current) {
-      try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
-      editorInstanceRef.current = null
-    }
+    destroyEditor()
     setPreviewFiles([])
     setCurrentFileState(null)
-  }, [])
+  }, [destroyEditor])
 
   return {
     isPanelOpen,

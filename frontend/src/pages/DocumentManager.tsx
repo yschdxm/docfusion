@@ -436,8 +436,7 @@ export default function DocumentManager() {
   }
 
   const handleDownload = async (doc: DocumentInfo) => {
-    const downloadUrl =
-      doc.doc_category === 'output' ? `/table-fill/download/${doc.id}` : `/documents/${doc.id}/download`
+    const downloadUrl = `/documents/${doc.id}/download`
 
     try {
       const response = await api.get(downloadUrl, { responseType: 'blob' })

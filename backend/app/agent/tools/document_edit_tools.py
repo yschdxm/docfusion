@@ -43,7 +43,7 @@ async def _get_doc_path(file_id: str) -> Optional[str]:
     return None
 
 
-async def _register_output_file(output_path: str, file_type: str) -> Dict[str, str]:
+async def _register_output_file(output_path: str, file_type: str, user_id: Optional[str] = None) -> Dict[str, str]:
     """将输出文件注册到数据库，返回 output_file_id、output_filename 和 download_url"""
     output_filename = os.path.basename(output_path)
     async with async_session() as db:
@@ -55,6 +55,7 @@ async def _register_output_file(output_path: str, file_type: str) -> Dict[str, s
             doc_category="output",
             status="completed",
             file_size=os.path.getsize(output_path),
+            user_id=user_id,
         )
         db.add(output_doc)
         await db.commit()
@@ -325,7 +326,7 @@ class ReplaceTextTool(BaseTool):
         paragraph["text"] = before.replace(old_text, new_text) if old_text else new_text
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -387,7 +388,7 @@ class RewriteParagraphTool(BaseTool):
         paragraph["text"] = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -450,7 +451,7 @@ class InsertAfterTool(BaseTool):
         _reindex_paragraphs(structure["paragraphs"])
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -514,7 +515,7 @@ class HeadingPromoteTool(BaseTool):
         after = f"[{paragraph['style']}] {paragraph['text']}"
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -585,7 +586,7 @@ class ListFormatTool(BaseTool):
             changes.append(_make_change_record("list_format", index, before, paragraph["text"], params.get("reason", "")))
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -657,7 +658,7 @@ class ParagraphSplitTool(BaseTool):
         _reindex_paragraphs(paragraphs)
 
         output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type)
+        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -732,7 +733,7 @@ class SetTextStyleTool(BaseTool):
         output_path = os.path.join(settings.UPLOAD_DIR, "output", output_filename)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         doc.save(output_path)
-        reg = await _register_output_file(output_path, "docx")
+        reg = await _register_output_file(output_path, "docx", user_id=context.user_id)
 
         return ToolResult(
             success=True,
@@ -788,7 +789,7 @@ class ConvertTool(BaseTool):
         structure = _build_editable_structure(parsed_data, file_type)
 
         output_file = _generate_output(structure, target_format, parsed_data)
-        reg = await _register_output_file(output_file, target_format)
+        reg = await _register_output_file(output_file, target_format, user_id=context.user_id)
 
         return ToolResult(
             success=True,

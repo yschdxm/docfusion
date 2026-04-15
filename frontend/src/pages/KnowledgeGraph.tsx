@@ -28,6 +28,29 @@ interface QueryResult {
   relatedEntities: Node[]
 }
 
+/** 字符串哈希 → 色相，同类类型名始终同色 */
+function hashStr(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  return Math.abs(h)
+}
+
+function typeColor(type: string): string {
+  const hue = hashStr(type) % 360
+  return `hsl(${hue}, 65%, 60%)`
+}
+
+function typeBadgeStyle(type: string): React.CSSProperties {
+  const hue = hashStr(type) % 360
+  return {
+    backgroundColor: `hsl(${hue}, 80%, 95%)`,
+    borderColor: `hsl(${hue}, 60%, 80%)`,
+    color: `hsl(${hue}, 55%, 35%)`,
+  }
+}
+
 const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const networkRef = useRef<Network | null>(null)
@@ -41,16 +64,6 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
     }
 
     if (nodes.length === 0) return
-
-    const typeColors: Record<string, string> = {
-      PERSON: '#6aa2fd',
-      LOCATION: '#5beb90',
-      ORGANIZATION: '#d09dff',
-      DATE: '#fea566',
-      NUMBER: '#5ed8ed',
-      TABLE_DATA: '#fa81be',
-      CUSTOM: '#f5ce58',
-    }
 
     const uniqueNodes: Node[] = []
     const seenNodeIds = new Set<string>()
@@ -66,8 +79,8 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
         id: node.id,
         label: node.name,
         color: {
-          background: typeColors[node.type] || '#64748b',
-          border: typeColors[node.type] || '#64748b',
+          background: typeColor(node.type),
+          border: typeColor(node.type),
           highlight: { background: '#165dff', border: '#165dff' },
         },
         font: { color: '#f8fafc', size: 12 },
@@ -199,16 +212,6 @@ export default function KnowledgeGraph() {
 
   const entityTypes = Array.from(new Set(allNodes.map((n) => n.type)))
 
-  const typeColors: Record<string, string> = {
-    PERSON: 'bg-blue-50 border border-blue-200 text-blue-700',
-    LOCATION: 'bg-emerald-50 border border-emerald-200 text-emerald-700',
-    ORGANIZATION: 'bg-violet-50 border border-violet-200 text-violet-700',
-    DATE: 'bg-amber-50 border border-amber-200 text-amber-700',
-    NUMBER: 'bg-cyan-50 border border-cyan-200 text-cyan-700',
-    TABLE_DATA: 'bg-rose-50 border border-rose-200 text-rose-700',
-    CUSTOM: 'bg-slate-100 border border-slate-200 text-slate-700',
-  }
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -332,7 +335,7 @@ export default function KnowledgeGraph() {
                 {queryResult.relatedEntities.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {queryResult.relatedEntities.map((entity, index) => (
-                      <span key={index} className={`px-3 py-1 rounded-full text-xs ${typeColors[entity.type] || 'bg-gray-500/20 text-gray-500'}`}>
+                      <span key={index} className="px-3 py-1 rounded-full text-xs border" style={typeBadgeStyle(entity.type)}>
                         {entity.name}
                       </span>
                     ))}
@@ -363,7 +366,7 @@ export default function KnowledgeGraph() {
                   {filteredNodes.map((node) => (
                     <div key={node.id} className="p-3 rounded-lg bg-slate-50 border border-slate-200 hover:border-primary-200 transition-colors">
                       <div className="flex items-center gap-2 mb-2">
-                        <span className={`px-2 py-0.5 rounded text-xs ${typeColors[node.type] || 'bg-gray-500/20 text-gray-500'}`}>{node.type}</span>
+                        <span className="px-2 py-0.5 rounded text-xs border" style={typeBadgeStyle(node.type)}>{node.type}</span>
                       </div>
                       <p className="text-slate-900 font-medium">{node.name}</p>
                       {node.value && <p className="text-sm text-slate-500 mt-1 truncate">{node.value}</p>}
