@@ -1,11 +1,13 @@
 import logging
 import os
+import ipaddress
 
 from app.core.logging import setup_logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from contextlib import asynccontextmanager
 
 from app.core.config import get_settings
@@ -41,14 +43,42 @@ app = FastAPI(
 )
 
 # 信任的主机名，防止 Host 头攻击
-# 支持环境变量 ALLOWED_HOSTS，格式: host1,host2,host3
-allowed_hosts_str = os.getenv("ALLOWED_HOSTS", "*")
-if allowed_hosts_str == "*":
-    allowed_hosts = ["*"]
+# 支持环境变量 ALLOWED_HOSTS，格式: host1,192.168.2.0/24,172.16.0.0/12
+# 支持精确主机名和 CIDR 网段
+_allowed_hosts_raw = os.getenv("ALLOWED_HOSTS", "*")
+if _allowed_hosts_raw == "*":
+    _allowed_hosts = ["*"]
+    _allowed_networks = []
 else:
-    allowed_hosts = [host.strip() for host in allowed_hosts_str.split(",")]
+    _allowed_hosts = []
+    _allowed_networks = []
+    for item in [h.strip() for h in _allowed_hosts_raw.split(",")]:
+        if "/" in item:
+            _allowed_networks.append(ipaddress.ip_network(item, strict=False))
+        else:
+            _allowed_hosts.append(item)
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+class TrustedHostMiddleware(BaseHTTPMiddleware):
+    """支持 CIDR 网段的 Host 白名单中间件"""
+
+    async def dispatch(self, request: Request, call_next):
+        if "*" in (_allowed_hosts if not _allowed_networks else ["*"]):
+            return await call_next(request)
+        host = request.headers.get("host", "").split(":")[0]
+        if host in _allowed_hosts:
+            return await call_next(request)
+        try:
+            ip = ipaddress.ip_address(host)
+            if any(ip in net for net in _allowed_networks):
+                return await call_next(request)
+        except ValueError:
+            pass
+        logger.warning("Rejected request from untrusted host: %s", host)
+        return Response(status_code=400, content="Invalid host header")
+
+
+app.add_middleware(TrustedHostMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
