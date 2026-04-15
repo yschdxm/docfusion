@@ -524,7 +524,7 @@ async def get_onlyoffice_config(
     }
 
     return {
-        "serverUrl": server_url,
+        "serverUrl": _strip_trailing_slash(settings.ONLYOFFICE_CLIENT_URL),
         "config": config,
     }
 
