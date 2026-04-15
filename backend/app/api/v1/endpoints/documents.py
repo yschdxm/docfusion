@@ -1,7 +1,12 @@
 import logging
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import FileResponse
-from typing import List, Optional
+import time
+import hmac
+import hashlib
+import html
+import httpx
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
+from fastapi.responses import FileResponse, HTMLResponse
+from typing import Any, List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 import os
@@ -11,13 +16,176 @@ from sqlalchemy import select, update as sql_update, text
 from app.core.config import get_settings
 from app.db.postgres import get_db, engine
 from app.models.document import Document, ExtractionTask
-from app.schemas.document import DocumentResponse
+from app.schemas.document import DocumentResponse, DocumentPreviewResponse, DocumentSaveRequest
 from app.services.preprocessing_service import preprocess_document
 from app.services.knowledge_graph_service import knowledge_graph_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter()
+TEXT_PREVIEW_LIMIT = 20000
+ONLYOFFICE_FILE_TYPES = {"doc", "docx", "xls", "xlsx", "ppt", "pptx"}
+BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
+PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_ROOT, ".."))
+
+
+def _strip_trailing_slash(url: str) -> str:
+    return url[:-1] if url.endswith("/") else url
+
+
+def _normalize_api_prefix(prefix: str) -> str:
+    normalized = (prefix or "").strip()
+    if not normalized or normalized == "/":
+        return ""
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized.rstrip("/")
+
+
+def _get_file_media_type(file_type: str) -> str:
+    media_types = {
+        "pdf": "application/pdf",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls": "application/vnd.ms-excel",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt": "application/vnd.ms-powerpoint",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "txt": "text/plain; charset=utf-8",
+        "md": "text/markdown; charset=utf-8",
+    }
+    return media_types.get(file_type.lower(), "application/octet-stream")
+
+
+def _resolve_document_path(file_path: str | None) -> str | None:
+    if not file_path:
+        return None
+
+    normalized = os.path.normpath(file_path)
+    candidates: list[str] = []
+
+    if os.path.isabs(normalized):
+        candidates.append(normalized)
+    else:
+        trimmed = normalized.lstrip(".\\/")
+        candidates.extend(
+            [
+                os.path.abspath(normalized),
+                os.path.abspath(os.path.join(BACKEND_ROOT, normalized)),
+                os.path.abspath(os.path.join(BACKEND_ROOT, trimmed)),
+                os.path.abspath(os.path.join(PROJECT_ROOT, normalized)),
+                os.path.abspath(os.path.join(PROJECT_ROOT, trimmed)),
+            ]
+        )
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.exists(candidate):
+            return candidate
+
+    return candidates[0] if candidates else None
+
+
+def _build_onlyoffice_document_key(doc: Document) -> str:
+    updated = int(doc.updated_at.timestamp()) if doc.updated_at else int(datetime.utcnow().timestamp())
+    return f"{doc.id}-{doc.file_size or 0}-{updated}"
+
+
+def _onlyoffice_signing_secret() -> str:
+    return (settings.ONLYOFFICE_PUBLIC_SIGNING_SECRET or settings.SECRET_KEY or "docfusion-onlyoffice-secret").strip()
+
+
+def _build_onlyoffice_raw_token(document_id: UUID, expires: int) -> str:
+    msg = f"{document_id}:{expires}".encode("utf-8")
+    return hmac.new(_onlyoffice_signing_secret().encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _verify_onlyoffice_raw_token(document_id: UUID, expires: int, token: str) -> bool:
+    if not token:
+        return False
+    if expires < int(time.time()):
+        return False
+    expected = _build_onlyoffice_raw_token(document_id, expires)
+    return hmac.compare_digest(expected, token)
+
+
+def _build_sheet_markdown(sheets: List[dict]) -> str:
+    sections: List[str] = []
+    for sheet in sheets:
+        sections.append(f"# {sheet.get('name', 'Sheet')}")
+        rows = sheet.get("data") or []
+        for row in rows[:50]:
+            sections.append(" | ".join(str(cell or "") for cell in row))
+        if len(rows) > 50:
+            sections.append(f"... ({len(rows) - 50} more rows)")
+        sections.append("")
+    return "\n".join(sections).strip()
+
+
+def _truncate_text(content: str, limit: int = TEXT_PREVIEW_LIMIT) -> tuple[str, bool]:
+    if len(content) <= limit:
+        return content, False
+    return content[:limit], True
+
+
+def _get_document_preview(doc: Document) -> DocumentPreviewResponse:
+    from app.services.document_processor.md_parser import MdParser
+    from app.services.document_processor.txt_parser import TxtParser
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    file_type = (doc.file_type or "").lower()
+
+    if file_type == "pdf":
+        return DocumentPreviewResponse(
+            file_name=doc.original_filename,
+            file_type=file_type,
+            preview_type="pdf",
+            can_edit=False,
+        )
+
+    if file_type == "txt":
+        parsed = TxtParser.parse(resolved_path)
+        content, truncated = _truncate_text(parsed.get("full_text", ""))
+        return DocumentPreviewResponse(
+            file_name=doc.original_filename,
+            file_type=file_type,
+            preview_type="text",
+            content=content,
+            truncated=truncated,
+            can_edit=True,
+        )
+
+    if file_type == "md":
+        parsed = MdParser.parse(resolved_path)
+        content, truncated = _truncate_text(parsed.get("full_text", ""))
+        return DocumentPreviewResponse(
+            file_name=doc.original_filename,
+            file_type=file_type,
+            preview_type="markdown",
+            content=content,
+            html_content=parsed.get("html", ""),
+            truncated=truncated,
+            can_edit=True,
+        )
+
+    # docx / xlsx / ppt 等 Office 文件统一走 OnlyOffice
+    if file_type in ONLYOFFICE_FILE_TYPES:
+        if not settings.ONLYOFFICE_ENABLED:
+            raise HTTPException(status_code=503, detail="OnlyOffice 服务未启用，无法预览 Office 文件")
+        return DocumentPreviewResponse(
+            file_name=doc.original_filename,
+            file_type=file_type,
+            preview_type="onlyoffice",
+            can_edit=False,
+        )
+
+    raise HTTPException(status_code=400, detail=f"不支持预览此文件类型: {file_type}")
 
 
 async def auto_extract_document(
@@ -260,8 +428,8 @@ async def list_documents(
     return doc_list
 
 
-@router.get("/{document_id}")
-async def get_document(
+@router.get("/{document_id}/preview", response_model=DocumentPreviewResponse)
+async def preview_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db)
 ):
@@ -269,7 +437,245 @@ async def get_document(
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return doc
+
+    return _get_document_preview(doc)
+
+
+@router.get("/{document_id}/office-config")
+async def get_onlyoffice_config(
+    document_id: UUID,
+    mode: str = "view",
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_type = (doc.file_type or "").lower()
+    if file_type not in ONLYOFFICE_FILE_TYPES:
+        raise HTTPException(status_code=400, detail="Current file type is not supported by OnlyOffice")
+
+    if not settings.ONLYOFFICE_ENABLED:
+        raise HTTPException(status_code=400, detail="OnlyOffice is not enabled")
+
+    server_url = _strip_trailing_slash(settings.ONLYOFFICE_DOCUMENT_SERVER_URL)
+    callback_base = _strip_trailing_slash(settings.ONLYOFFICE_CALLBACK_BASE_URL)
+    api_prefix = _normalize_api_prefix(settings.ONLYOFFICE_API_PREFIX)
+    editor_mode = "edit" if mode.lower() == "edit" else "view"
+
+    document_type = "word"
+    if file_type in {"xls", "xlsx"}:
+        document_type = "cell"
+    elif file_type in {"ppt", "pptx"}:
+        document_type = "slide"
+
+    ttl_seconds = max(60, int(settings.ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS or 900))
+    expires = int(time.time()) + ttl_seconds
+    token = _build_onlyoffice_raw_token(doc.id, expires)
+    public_raw_url = f"{callback_base}{api_prefix}/documents/onlyoffice/raw-public/{doc.id}?expires={expires}&token={token}"
+
+    config = {
+        "documentType": document_type,
+        "type": "desktop",
+        "document": {
+            "title": doc.original_filename,
+            "url": public_raw_url,
+            "fileType": file_type,
+            "key": _build_onlyoffice_document_key(doc),
+            "permissions": {
+                "edit": True,
+                "download": True,
+                "print": True,
+                "copy": True,
+                "comment": True,
+            },
+        },
+        "editorConfig": {
+            "mode": editor_mode,
+            "lang": "zh-CN",
+            "callbackUrl": f"{callback_base}{api_prefix}/documents/onlyoffice/callback/{doc.id}",
+            "user": {
+                "id": "docfusion-user",
+                "name": "DocFusion User",
+            },
+        },
+    }
+
+    return {
+        "serverUrl": server_url,
+        "config": config,
+    }
+
+
+@router.get("/onlyoffice/raw-public/{document_id}")
+async def raw_public_document(
+    document_id: UUID,
+    expires: int,
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    if not _verify_onlyoffice_raw_token(document_id, expires, token):
+        raise HTTPException(status_code=403, detail="Invalid or expired token")
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FileResponse(
+        resolved_path,
+        filename=doc.original_filename,
+        media_type=_get_file_media_type((doc.file_type or "").lower())
+    )
+
+
+@router.post("/onlyoffice/callback/{document_id}")
+async def onlyoffice_callback(
+    document_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        return {"error": 1}
+
+    try:
+        payload: dict[str, Any] = await request.json()
+    except Exception:
+        payload = {}
+    status = payload.get("status")
+    if status not in {2, 6}:
+        return {"error": 0}
+
+    download_url = payload.get("url")
+    if not isinstance(download_url, str) or not download_url:
+        return {"error": 0}
+
+    if not doc.file_path:
+        return {"error": 1}
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.get(download_url)
+            response.raise_for_status()
+
+        async with aiofiles.open(doc.file_path, "wb") as output_file:
+            await output_file.write(response.content)
+
+        doc.file_size = len(response.content)
+        doc.status = "updated"
+        await db.commit()
+        return {"error": 0}
+    except Exception as exc:
+        logger.error("OnlyOffice callback error for %s: %s", document_id, exc)
+        await db.rollback()
+        return {"error": 1}
+
+
+@router.get("/{document_id}/inline")
+async def inline_document(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    file_type = (doc.file_type or "").lower()
+    if file_type == "pdf":
+        return FileResponse(resolved_path, media_type="application/pdf")
+
+    if file_type == "md":
+        from app.services.document_processor.md_parser import MdParser
+        parsed = MdParser.parse(resolved_path)
+        return HTMLResponse(parsed.get("html", ""))
+
+    if file_type == "txt":
+        preview = _get_document_preview(doc)
+        escaped = html.escape(preview.content)
+        return HTMLResponse(
+            "<!doctype html><html><head><meta charset='utf-8' />"
+            f"<title>{html.escape(doc.original_filename)}</title>"
+            "<style>body{margin:0;padding:24px;background:#0f172a;color:#e2e8f0;"
+            "font-family:Consolas,'Microsoft YaHei',sans-serif;line-height:1.7}"
+            "pre{white-space:pre-wrap;word-break:break-word}</style></head>"
+            f"<body><pre>{escaped}</pre></body></html>"
+        )
+
+    raise HTTPException(status_code=400, detail=f"不支持内联预览此文件类型: {file_type}")
+
+
+@router.get("/{document_id}/raw")
+async def raw_document(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FileResponse(
+        resolved_path,
+        filename=doc.original_filename,
+        media_type=_get_file_media_type((doc.file_type or "").lower())
+    )
+
+
+@router.post("/{document_id}/save")
+async def save_document_content(
+    document_id: UUID,
+    payload: DocumentSaveRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    file_type = (doc.file_type or "").lower()
+    if file_type == "txt":
+        from app.services.document_processor.txt_parser import TxtParser
+        TxtParser.write(payload.content, resolved_path)
+    elif file_type == "md":
+        from app.services.document_processor.md_parser import MdParser
+        MdParser.write(payload.content, resolved_path)
+    else:
+        raise HTTPException(status_code=400, detail="Only txt and md files support direct editing")
+
+    doc.file_size = len(payload.content.encode("utf-8"))
+    doc.status = "updated"
+    await db.commit()
+    await db.refresh(doc)
+
+    return {
+        "message": "Document saved successfully",
+        "document": {
+            "id": str(doc.id),
+            "file_size": doc.file_size,
+            "status": doc.status,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    }
 
 
 @router.get("/{document_id}/download")
@@ -282,14 +688,27 @@ async def download_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if not os.path.exists(doc.file_path):
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(
-        doc.file_path,
+        resolved_path,
         filename=doc.original_filename,
-        media_type="application/octet-stream"
+        media_type=_get_file_media_type((doc.file_type or "").lower())
     )
+
+
+@router.get("/{document_id}")
+async def get_document(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
 
 
 @router.post("/{document_id}/retry-extraction")

@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # ONLYOFFICE
     ONLYOFFICE_SERVER_URL: str = "http://localhost:8088"
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"
+    ONLYOFFICE_ENABLED: bool = False
+    ONLYOFFICE_DOCUMENT_SERVER_URL: str = "http://localhost:8088"
+    ONLYOFFICE_CALLBACK_BASE_URL: str = "http://host.docker.internal:8000"
+    ONLYOFFICE_API_PREFIX: str = "/api/v1"
+    ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
+    ONLYOFFICE_PUBLIC_SIGNING_SECRET: Optional[str] = None
 
     # File Storage
     UPLOAD_DIR: str = "./uploads"

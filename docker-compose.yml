@@ -38,7 +38,11 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
       # ONLYOFFICE 配置
-      - ONLYOFFICE_SERVER_URL=http://onlyoffice:8088
+      - ONLYOFFICE_ENABLED=true
+      - ONLYOFFICE_SERVER_URL=http://onlyoffice:80
+      - ONLYOFFICE_DOCUMENT_SERVER_URL=http://192.168.2.191:8088
+      - ONLYOFFICE_CALLBACK_BASE_URL=http://backend:8000
+      - ONLYOFFICE_API_PREFIX=/api/v1
       - BACKEND_PUBLIC_URL=http://backend:8000
       # 日志级别配置
       - LOG_LEVEL=${LOG_LEVEL}

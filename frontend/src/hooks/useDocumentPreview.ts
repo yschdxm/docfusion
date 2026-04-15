@@ -26,7 +26,11 @@ function getDocumentType(fileType: string): string {
 
 declare global {
   interface Window {
-    DocsAPI?: { DocEditor: new (el: string, config: unknown) => { destroyEditor: () => void } }
+    DocsAPI?: {
+      DocEditor: new (elementId: string, config: Record<string, unknown>) => {
+        destroyEditor?: () => void
+      }
+    }
   }
 }
 
@@ -37,7 +41,7 @@ export function useDocumentPreview() {
   const [onlyofficeReady, setOnlyofficeReady] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
-  const editorInstanceRef = useRef<{ destroyEditor: () => void } | null>(null)
+  const editorInstanceRef = useRef<{ destroyEditor?: () => void } | null>(null)
   const scriptLoadAttempted = useRef(false)
 
   // 加载 ONLYOFFICE 脚本（按需）
@@ -81,7 +85,7 @@ export function useDocumentPreview() {
 
     // 销毁旧实例
     if (editorInstanceRef.current) {
-      try { editorInstanceRef.current.destroyEditor() } catch { /* ignore */ }
+      try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
       editorInstanceRef.current = null
     }
 
@@ -121,7 +125,7 @@ export function useDocumentPreview() {
   useEffect(() => {
     return () => {
       if (editorInstanceRef.current) {
-        try { editorInstanceRef.current.destroyEditor() } catch { /* ignore */ }
+        try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
         editorInstanceRef.current = null
       }
     }
@@ -149,7 +153,7 @@ export function useDocumentPreview() {
 
   const clearPreview = useCallback(() => {
     if (editorInstanceRef.current) {
-      try { editorInstanceRef.current.destroyEditor() } catch { /* ignore */ }
+      try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
       editorInstanceRef.current = null
     }
     setPreviewFiles([])

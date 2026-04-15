@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text, Integer
+from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text, Integer, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.postgres import Base
 
@@ -87,3 +87,14 @@ class DocumentExtraction(Base):
     xlsx_schema = Column(JSON, default=[])  # 存储 xlsx 表结构信息
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TemplateUsageEvent(Base):
+    __tablename__ = 'template_usage_events'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id = Column(UUID(as_uuid=True), ForeignKey('documents.id'), nullable=False, index=True)
+    template_name = Column(String(255), nullable=False)
+    source_file_count = Column(Integer, default=0)
+    output_file_id = Column(UUID(as_uuid=True), nullable=True)
+    used_at = Column(DateTime, default=datetime.utcnow, index=True)
