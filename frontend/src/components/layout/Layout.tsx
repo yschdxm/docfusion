@@ -3,7 +3,6 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import Sidebar from './Sidebar'
 import Header from './Header'
-import ChatFloatWindow from '../ChatFloatWindow'
 import { useDocumentStore } from '../../stores/documentStore'
 import { useI18n } from '../../hooks/useI18n'
 import { PREFERENCES_CHANGED_EVENT, getStoredPreferences } from '../../services/preferences'
@@ -140,7 +139,6 @@ export default function Layout() {
           </div>
         </main>
       </div>
-      <ChatFloatWindow />
     </div>
   )
 }
