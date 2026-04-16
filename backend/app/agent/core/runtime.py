@@ -291,12 +291,14 @@ class AgentRuntime:
         self,
         registry: ToolRegistry,
         max_iterations: int = 30,
-        max_tool_retries: int = 3
+        max_tool_retries: int = 3,
+        system_prompt: Optional[str] = None
     ):
         self.registry = registry
         self.executor = ToolExecutor(registry)
         self.max_iterations = max_iterations
         self.max_tool_retries = max_tool_retries
+        self.system_prompt = system_prompt or SYSTEM_PROMPT_TEMPLATE
         logger.info(f"[AgentRuntime] 初始化 | max_iterations={max_iterations}, max_tool_retries={max_tool_retries}")
 
     async def run(
@@ -306,11 +308,13 @@ class AgentRuntime:
         template_id: Optional[str] = None,
         conversation_history: List[Dict[str, str]] = None,
         stream_manager: Optional[StreamManager] = None,
-        step_tracker: Optional[StepTracker] = None
+        step_tracker: Optional[StepTracker] = None,
+        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """运行Agent（非流式）"""
         context = ToolContext(
             session_id=f"session_{datetime.utcnow().timestamp()}",
+            user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
             conversation_history=conversation_history or []
@@ -346,18 +350,26 @@ class AgentRuntime:
         file_ids: List[str],
         template_id: Optional[str] = None,
         conversation_history: List[Dict[str, str]] = None,
-        cancel_event: Optional[asyncio.Event] = None
+        cancel_event: Optional[asyncio.Event] = None,
+        on_stream_created=None,
+        stream_manager: Optional['StreamManager'] = None,
+        user_id: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
         Args:
             cancel_event: 取消事件，当设置时任务会被取消
+            on_stream_created: 回调函数，接收创建的StreamManager
+            stream_manager: 外部传入的StreamManager（用于断线重连场景）
         """
-        stream = StreamManager()
+        stream = stream_manager or StreamManager()
+        if on_stream_created:
+            on_stream_created(stream)
         tracker = StepTracker()
 
         context = ToolContext(
             session_id=f"session_{datetime.utcnow().timestamp()}",
+            user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
             conversation_history=conversation_history or []
@@ -388,11 +400,21 @@ class AgentRuntime:
                     break
         except Exception as e:
             logger.error(f"[AgentRuntime.run_stream] 流输出异常: {e}")
+            if stream_manager:
+                # 外部stream_manager（重连场景）：客户端断连不取消执行任务
+                # 任务继续运行，等待前端重连
+                logger.info("[AgentRuntime.run_stream] 客户端断连，任务继续运行")
+                return
             raise
 
         logger.info(f"[AgentRuntime.run_stream] 流式输出结束 | 共{event_count}个事件")
 
-        # 如果任务仍在运行，取消它
+        if stream_manager:
+            # 外部stream_manager（重连场景）：流正常结束，不取消执行任务
+            # 任务可能仍在运行（子Agent委派中），让它自然完成
+            return
+
+        # 内部stream_manager（首次连接场景）：如果任务仍在运行，取消它
         if not task.done():
             logger.info("[AgentRuntime.run_stream] 取消执行task")
             task.cancel()
@@ -452,7 +474,7 @@ class AgentRuntime:
 
         # 构建用户上下文信息（选择的文件）
         user_context = await self._build_user_context(context)
-        system_content = SYSTEM_PROMPT_TEMPLATE + user_context
+        system_content = self.system_prompt + user_context
 
         messages = [{"role": "system", "content": system_content}]
         messages.extend(context.conversation_history)
@@ -462,12 +484,16 @@ class AgentRuntime:
 
         final_result = None
         total_tool_calls = 0
+        delegation_called = False  # 限制每次用户消息只能委派一次子Agent
 
         for iteration in range(self.max_iterations):
             # 检查是否被取消
             if cancel_event and cancel_event.is_set():
                 logger.info("[AgentRuntime._execute_loop] 检测到取消信号，终止执行")
                 raise asyncio.CancelledError("任务被取消")
+            if stream.is_closed():
+                logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，终止执行")
+                return {"success": False, "error": "任务已取消", "steps": tracker.to_dict()}
 
             logger.info(f"[AgentRuntime._execute_loop] ===== 迭代 {iteration + 1}/{self.max_iterations} =====")
 
@@ -498,7 +524,7 @@ class AgentRuntime:
                 llm_stream = await llm_service.chat_completion(
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=64000,  # 使用模型的最大输出长度 64K
+                    max_tokens=65536,  # 使用模型的最大输出长度 64K
                     enable_thinking=True,
                     stream=True,
                     tools=openai_tools,
@@ -508,6 +534,11 @@ class AgentRuntime:
                 has_emitted_content = False
 
                 async for chunk in llm_stream:
+                    # 检测客户端是否已断开
+                    if stream.is_closed():
+                        logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止LLM消费")
+                        break
+
                     # 处理思考内容
                     if chunk.get("reasoning_content"):
                         # 如果之前已经开始输出内容，现在又出现思考，说明是交替模式
@@ -564,6 +595,11 @@ class AgentRuntime:
                 await stream.emit_error(f"LLM调用失败: {e}")
                 return {"success": False, "error": str(e), "steps": tracker.to_dict()}
 
+            # 检测客户端是否已断开（LLM循环后）
+            if stream.is_closed():
+                logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止执行循环")
+                return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+
             # 更新思考内容
             tracker.update_thinking(step.id, full_reasoning)
             # 如果还没有发送thinking_end（没有content的情况），在这里发送
@@ -606,7 +642,7 @@ class AgentRuntime:
                     elif is_after_tool_result:
                         # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
                         # 但只有在 finish_reason 正常（stop 或 tool_calls）时才认为是完成
-                        logger.info(f"[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
+                        logger.info("[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
                         await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
@@ -654,6 +690,23 @@ class AgentRuntime:
                     tool_args = {}
                 total_tool_calls += 1
 
+                # 检查委派工具调用限制：每次用户消息只能委派一次子Agent
+                is_delegation_tool = tool_name in ("delegate_fill_table", "delegate_document_edit")
+                if is_delegation_tool and delegation_called:
+                    logger.warning(f"[AgentRuntime._execute_loop] 跳过重复委派调用: {tool_name}（本次消息已委派过）")
+                    # 注入提示，告诉LLM不要重复委派，直接汇报结果
+                    messages.append({
+                        "role": "assistant",
+                        "content": full_content if full_content else None,
+                        "tool_calls": [tool_call]
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": "该子Agent已经执行过了，不要重复调用。请直接根据之前的执行结果向用户汇报。"
+                    })
+                    continue
+
                 logger.info(f"[AgentRuntime._execute_loop] 执行工具: {tool_name}")
 
                 # 创建工具调用步骤
@@ -668,6 +721,11 @@ class AgentRuntime:
                 await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
                 await stream.emit_tool_call(tool_name, tool_args)
 
+                # 执行工具前检查是否已关闭
+                if stream.is_closed():
+                    logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止工具执行")
+                    return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+
                 # 执行工具
                 logger.info(f"[AgentRuntime._execute_loop] 调用executor.execute: {tool_name}")
                 tool_start = datetime.utcnow()
@@ -678,6 +736,10 @@ class AgentRuntime:
                     max_retries=self.max_tool_retries
                 )
                 tool_time = (datetime.utcnow() - tool_start).total_seconds()
+
+                # 标记委派工具已调用
+                if is_delegation_tool:
+                    delegation_called = True
 
                 # 记录结果
                 if result.success:

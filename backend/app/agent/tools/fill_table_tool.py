@@ -219,6 +219,16 @@ fill_mode 详解（针对指定表格的操作）：
             fill_mode = params.get("fill_mode", "overwrite")
             target_table_index = params.get("target_table_index")
 
+            # UUID校验（仅在需要时校验）
+            if template_id:
+                uuid_error = BaseTool.validate_uuid(template_id, "template_id")
+                if uuid_error:
+                    return ToolResult(success=False, error=uuid_error)
+            if output_doc_id:
+                uuid_error = BaseTool.validate_uuid(output_doc_id, "output_doc_id")
+                if uuid_error:
+                    return ToolResult(success=False, error=uuid_error)
+
             # source_query 模式：自动查询数据并填充
             if source_query and not data:
                 # 检查是否已确认（LLM 已审核过数据摘要）
@@ -287,6 +297,25 @@ fill_mode 详解（针对指定表格的操作）：
         if not template_id:
             return ToolResult(success=False, error="source_query 模式下必须提供 template_id")
 
+        # 检查源文档类型：source_query 自动模式仅适用于 xlsx 源文档
+        if sq_doc_ids:
+            async with async_session() as db:
+                source_result = await db.execute(
+                    select(Document.file_type).where(Document.id.in_(sq_doc_ids))
+                )
+                source_types = {row[0] for row in source_result.fetchall()}
+                non_xlsx = source_types - {"xlsx"}
+                if non_xlsx:
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"source_query 自动模式仅适用于xlsx源文档。"
+                            f"当前源文档包含非xlsx格式: {', '.join(non_xlsx)}。"
+                            f"对于非xlsx文档，请先使用 extract_from_documents 或 rag_search 提取数据，"
+                            f"再通过 data 参数传入 fill_table。"
+                        )
+                    )
+
         # 1. 获取模板表头
         async with async_session() as db:
             result = await db.execute(
@@ -309,11 +338,11 @@ fill_mode 详解（针对指定表格的操作）：
 
         if fetch_all:
             # 获取全部数据（自动分批）
+            headers_str = "，".join(template_headers)
             augmented_query = (
                 f"{sq_query}\n\n"
-                f"重要：返回结果的列名必须与模板表头精确匹配。"
-                f"模板表头为：{template_headers}\n"
-                f"请只 SELECT 与模板表头匹配的列。"
+                f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
+                f"请使用 AS 将列名重命名为与模板表头一致。"
                 f"请返回所有匹配的数据，不要限制行数。"
             )
             source_records = await self._fetch_all_data(
@@ -321,11 +350,11 @@ fill_mode 详解（针对指定表格的操作）：
             )
         else:
             # 限制查询行数
+            headers_str = "，".join(template_headers)
             augmented_query = (
                 f"{sq_query}\n\n"
-                f"重要：返回结果的列名必须与模板表头精确匹配。"
-                f"模板表头为：{template_headers}\n"
-                f"请只 SELECT 与模板表头匹配的列。"
+                f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
+                f"请使用 AS 将列名重命名为与模板表头一致。"
                 f"请确保返回不超过 {sq_max_rows} 行数据。"
             )
             query_result = await sql_service.generate_and_execute(
@@ -346,6 +375,18 @@ fill_mode 详解（针对指定表格的操作）：
                 data={"filled_rows": 0, "total_rows": 0, "message": "查询未返回数据"},
                 metadata={"source_query": sq_query}
             )
+
+        # 2.5 用 AI 建立模板表头到源数据列名的映射（参照旧架构 table_filling_service.py）
+        if source_records:
+            source_columns = list(source_records[0].keys())
+            from app.services.llm_service import llm_service
+            header_mapping = await llm_service.map_columns(template_headers, source_columns)
+            if header_mapping:
+                logger.info(f"[FillTableTool] AI列名映射: {header_mapping}")
+                source_records = [
+                    {header_mapping.get(k, k): v for k, v in record.items()}
+                    for record in source_records
+                ]
 
         # 3. 缓存数据供确认阶段使用
         cache_key = f"fill_table_cache_{template_id}_{hash(sq_query)}_{target_table_index or 0}"
@@ -411,16 +452,16 @@ fill_mode 详解（针对指定表格的操作）：
                 logger.info(f"[FillTableTool][source_query-confirmed] 从类缓存获取 {len(source_records)} 行数据")
             else:
                 # 缓存未命中，重新查询
-                logger.warning(f"[FillTableTool][source_query-confirmed] 缓存未命中，重新查询数据")
+                logger.warning("[FillTableTool][source_query-confirmed] 缓存未命中，重新查询数据")
                 from app.services.sql_query_service import sql_query_service as sql_service
 
                 if fetch_all:
                     # 获取全部数据
+                    headers_str = "，".join(template_headers)
                     augmented_query = (
                         f"{sq_query}\n\n"
-                        f"重要：返回结果的列名必须与模板表头精确匹配。"
-                        f"模板表头为：{template_headers}\n"
-                        f"请只 SELECT 与模板表头匹配的列。"
+                        f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
+                        f"请使用 AS 将列名重命名为与模板表头一致。"
                         f"请返回所有匹配的数据，不要限制行数。"
                     )
                     source_records = await self._fetch_all_data(
@@ -428,11 +469,11 @@ fill_mode 详解（针对指定表格的操作）：
                     )
                 else:
                     # 限制查询行数
+                    headers_str = "，".join(template_headers)
                     augmented_query = (
                         f"{sq_query}\n\n"
-                        f"重要：返回结果的列名必须与模板表头精确匹配。"
-                        f"模板表头为：{template_headers}\n"
-                        f"请只 SELECT 与模板表头匹配的列。"
+                        f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
+                        f"请使用 AS 将列名重命名为与模板表头一致。"
                         f"请确保返回不超过 {sq_max_rows} 行数据。"
                     )
                     query_result = await sql_service.generate_and_execute(
@@ -447,9 +488,24 @@ fill_mode 详解（针对指定表格的操作）：
         if not source_records:
             return ToolResult(success=True, data={"filled_rows": 0, "total_rows": 0, "message": "查询未返回数据"})
 
+        # 2.5 用 AI 建立模板表头到源数据列名的映射（参照旧架构 table_filling_service.py）
+        if source_records:
+            source_columns = list(source_records[0].keys())
+            from app.services.llm_service import llm_service
+            header_mapping = await llm_service.map_columns(template_headers, source_columns)
+            if header_mapping:
+                logger.info(f"[FillTableTool][confirmed] AI列名映射: {header_mapping}")
+                source_records = [
+                    {header_mapping.get(k, k): v for k, v in record.items()}
+                    for record in source_records
+                ]
+
         # 3. 填入
-        data = source_records[:sq_max_rows]
-        logger.info(f"[FillTableTool][source_query-confirmed] 填入 {len(data)} 行数据")
+        if fetch_all:
+            data = source_records  # fetch_all 模式不截断
+        else:
+            data = source_records[:sq_max_rows]
+        logger.info(f"[FillTableTool][source_query-confirmed] 填入 {len(data)} 行数据 (fetch_all={fetch_all}, total={len(source_records)})")
 
         if output_doc_id:
             async with async_session() as db:
@@ -509,7 +565,7 @@ fill_mode 详解（针对指定表格的操作）：
 
         # 末尾5行
         if total > 10:
-            lines.append(f"\n=== 末尾 5 行 ===")
+            lines.append("\n=== 末尾 5 行 ===")
             for i, record in enumerate(records[-5:], start=total-4):
                 lines.append(f"行{i+1}: {json.dumps(record, ensure_ascii=False)}")
 
@@ -663,7 +719,8 @@ fill_mode 详解（针对指定表格的操作）：
             file_type=file_type,
             doc_category="output",
             status="completed",
-            file_size=os.path.getsize(output_path)
+            file_size=os.path.getsize(output_path),
+            user_id=context.user_id
         )
         db.add(output_doc)
         await db.commit()
@@ -776,7 +833,7 @@ fill_mode 详解（针对指定表格的操作）：
             for row_data in data:
                 row_values = []
                 for header in headers:
-                    value = row_data.get(header, "")
+                    value = self._get_value_for_header(row_data, header)
                     row_values.append(value)
                 ws.append(row_values)
 
@@ -788,6 +845,24 @@ fill_mode 详解（针对指定表格的操作）：
         except Exception as e:
             print(f"填写Excel失败: {e}")
             return False
+
+    def _get_value_for_header(self, row_data: Dict, header: str) -> str:
+        """智能列名匹配：精确匹配 → 大小写不敏感匹配 → 包含匹配"""
+        # 1. 精确匹配
+        if header in row_data and row_data[header] is not None:
+            return str(row_data[header])
+        # 2. 去空格+大小写不敏感匹配
+        header_lower = header.strip().lower()
+        for key, value in row_data.items():
+            if value is not None and key.strip().lower() == header_lower:
+                return str(value)
+        # 3. 包含匹配（header 包含 key 或 key 包含 header）
+        for key, value in row_data.items():
+            if value is not None:
+                key_clean = key.strip().lower()
+                if header_lower in key_clean or key_clean in header_lower:
+                    return str(value)
+        return ""
 
     def _is_empty_row(self, row) -> bool:
         """检查表格行是否为空（所有单元格都为空或只有空白字符）"""
@@ -866,7 +941,7 @@ fill_mode 详解（针对指定表格的操作）：
                         row_data = data[data_index]
                         for i, header in enumerate(headers):
                             if i < len(row.cells):
-                                value = row_data.get(header, "")
+                                value = self._get_value_for_header(row_data, header)
                                 if value is None:
                                     value = ""
                                 row.cells[i].text = str(value)
@@ -886,12 +961,12 @@ fill_mode 详解（针对指定表格的操作）：
                         row = target_table.add_row()
                         for i, header in enumerate(headers):
                             if i < len(row.cells):
-                                value = row_data.get(header, "")
+                                value = self._get_value_for_header(row_data, header)
                                 if value is None:
                                     value = ""
                                 row.cells[i].text = str(value)
                         filled_count += 1
-                        logger.info(f"[FillTableTool] 添加新行")
+                        logger.info("[FillTableTool] 添加新行")
 
                 # 如果空行多于数据行，删除多余的空行
                 if len(empty_rows) > len(data):
@@ -913,7 +988,7 @@ fill_mode 详解（针对指定表格的操作）：
                         row_data = data[data_index]
                         for i, header in enumerate(headers):
                             if i < len(row.cells):
-                                value = row_data.get(header, "")
+                                value = self._get_value_for_header(row_data, header)
                                 if value is None:
                                     value = ""
                                 row.cells[i].text = str(value)
@@ -927,12 +1002,12 @@ fill_mode 详解（针对指定表格的操作）：
                         row = target_table.add_row()
                         for i, header in enumerate(headers):
                             if i < len(row.cells):
-                                value = row_data.get(header, "")
+                                value = self._get_value_for_header(row_data, header)
                                 if value is None:
                                     value = ""
                                 row.cells[i].text = str(value)
                         filled_count += 1
-                        logger.info(f"[FillTableTool] 追加新行")
+                        logger.info("[FillTableTool] 追加新行")
 
                 logger.info(f"[FillTableTool] 追加完成, 总共填写 {filled_count} 行")
 

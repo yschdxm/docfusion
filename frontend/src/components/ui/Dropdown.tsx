@@ -43,11 +43,11 @@ export default function Dropdown({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center gap-2 px-4 py-3 bg-white/5 border border-white/10 rounded-xl
-                  hover:bg-white/10 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-4 py-3 bg-white border border-slate-200 rounded-lg
+                  hover:bg-slate-50 transition-colors text-left"
       >
         {icon && <span className="shrink-0">{icon}</span>}
-        <span className="text-sm text-white truncate flex-1">
+        <span className="text-sm text-slate-700 truncate flex-1">
           {selectedOption?.label || placeholder}
         </span>
         <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
@@ -65,7 +65,7 @@ export default function Dropdown({
                 }}
                 className={`dropdown-item ${value === option.value ? 'dropdown-item-active' : ''}`}
               >
-                <span className="text-sm text-white truncate">{option.label}</span>
+                <span className="text-sm text-slate-700 truncate">{option.label}</span>
               </div>
             ))
           ) : (

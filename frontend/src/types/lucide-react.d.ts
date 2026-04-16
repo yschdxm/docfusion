@@ -423,4 +423,26 @@ declare module 'lucide-react' {
   export const NavigationIcon: Icon
   export const CompassIcon: Icon
   export const Orientaion: Icon
+
+  // --- icons added for fro layout merge ---
+  export const CircleHelp: Icon
+  export const Keyboard: Icon
+  export const Languages: Icon
+  export const Palette: Icon
+  export const NotebookPen: Icon
+  export const Building2: Icon
+  export const CheckCircle2: Icon
+  export const BadgeCheck: Icon
+  export const KeyRound: Icon
+  export const Save: Icon
+  export const UserRound: Icon
+  export const ChartNoAxesColumnIncreasing: Icon
+  export const CalendarDays: Icon
+  export const ClipboardList: Icon
+  export const FileOutput: Icon
+  export const Undo2: Icon
+  export const Edit3: Icon
+  export const Square: Icon
+  export const SquareCheck: Icon
+  export const Minus: Icon
 }

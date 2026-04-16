@@ -83,12 +83,12 @@ class AgentEvent(BaseModel):
         """转换为SSE格式"""
         # 将step_id和timestamp包含在data中，以便前端使用
         data = {
-            "event_type": self.event_type,
+            "event_type": self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type,
             "step_id": self.step_id,
             "timestamp": self.timestamp,
             **self.data
         }
-        return f"event: {self.event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        return f"event: {self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -104,7 +104,9 @@ class StreamManager:
     def __init__(self):
         self._event_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
         self._is_closed = False
+        self._is_cancelled = False
         self._current_step_id: Optional[str] = None
+        self._event_history: list[str] = []  # 已格式化的 SSE 字符串缓存（用于断线重连回放）
 
     async def emit(self, event: AgentEvent) -> None:
         """发送一个事件"""
@@ -113,6 +115,8 @@ class StreamManager:
             return
 
         await self._event_queue.put(event)
+        # 同时写入历史，确保断线期间事件不丢失（即使没有消费者）
+        self._event_history.append(event.to_sse_format())
         logger.debug(f"[StreamManager] 发送事件: {event.event_type} | step_id={event.step_id}")
 
         # 记录重要事件到INFO级别
@@ -361,10 +365,10 @@ class StreamManager:
 
         while True:
             try:
-                # 使用timeout避免永久阻塞
+                # 使用25秒超时，超时则发送keepalive心跳防止代理断连
                 event = await asyncio.wait_for(
                     self._event_queue.get(),
-                    timeout=300.0  # 5分钟超时
+                    timeout=25.0
                 )
 
                 if event is None:  # 结束标记
@@ -373,6 +377,7 @@ class StreamManager:
 
                 event_count += 1
                 sse_data = event.to_sse_format()
+                # _event_history 已在 emit() 中写入，此处不重复
 
                 # 每10个事件记录一次日志
                 if event_count % 10 == 0:
@@ -381,12 +386,26 @@ class StreamManager:
                 yield sse_data
 
             except asyncio.TimeoutError:
-                logger.warning("[StreamManager] 流超时，关闭连接")
-                break
+                # 超时 = 没有新事件，发送SSE注释行保持连接
+                yield ": keepalive\n\n"
             except Exception as e:
                 logger.error(f"[StreamManager] 流异常: {e}")
                 break
 
+    def get_history(self) -> list[str]:
+        """获取所有已发送的 SSE 事件（用于断线重连回放）"""
+        return list(self._event_history)
+
     def is_closed(self) -> bool:
         """检查流是否已关闭"""
         return self._is_closed
+
+    def is_cancelled(self) -> bool:
+        """检查是否被取消（客户端断开）"""
+        return self._is_cancelled
+
+    async def cancel(self) -> None:
+        """标记为已取消（客户端断开时调用）"""
+        self._is_cancelled = True
+        logger.info("[StreamManager] 流已被标记为取消")
+        await self.close()

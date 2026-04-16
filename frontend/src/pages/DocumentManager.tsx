@@ -1,10 +1,37 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { FileText, Table, FolderOpen, Trash2, Download, Search, Plus, File, Filter, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
+import {
+  CheckCircle,
+  Download,
+  Edit3,
+  Eye,
+  File,
+  FileText,
+  Filter,
+  FolderOpen,
+  Plus,
+  RefreshCw,
+  Search,
+  Table,
+  Trash2,
+  Undo2,
+  X,
+} from 'lucide-react'
 import toast from 'react-hot-toast'
-import { useDocumentStore } from '../stores/documentStore'
 import Dropdown from '../components/ui/Dropdown'
 import api from '../services/api'
+import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
+import { useI18n } from '../hooks/useI18n'
+
+declare global {
+  interface Window {
+    DocsAPI?: {
+      DocEditor: new (elementId: string, config: Record<string, unknown>) => {
+        destroyEditor?: () => void
+      }
+    }
+  }
+}
 
 type CategoryFilter = 'all' | 'source' | 'template' | 'output'
 
@@ -17,24 +44,138 @@ interface ExtractionStatus {
   entities_count: number
 }
 
+interface PreviewSheet {
+  name: string
+  data: string[][]
+  rows: number
+  cols: number
+}
+
+interface PreviewPayload {
+  file_name: string
+  file_type: string
+  preview_type: 'text' | 'markdown' | 'spreadsheet' | 'pdf' | 'onlyoffice'
+  content: string
+  html_content?: string | null
+  truncated: boolean
+  can_edit: boolean
+  sheets?: PreviewSheet[] | null
+}
+
+interface OfficeConfigResponse {
+  serverUrl: string
+  config: Record<string, unknown>
+}
+
+const categoryConfig = {
+  source: { icon: FileText, color: 'text-blue-600', bg: 'bg-blue-100' },
+  template: { icon: Table, color: 'text-emerald-600', bg: 'bg-emerald-100' },
+  output: { icon: FolderOpen, color: 'text-amber-600', bg: 'bg-amber-100' },
+}
+
+function formatFileSize(size?: number) {
+  if (!size) return null
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function parseDownloadFilename(contentDisposition?: string, fallbackName?: string) {
+  if (!contentDisposition) return fallbackName ?? 'download'
+
+  const utf8Match = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+
+  const filenameMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i)
+  const parsed = filenameMatch?.[1] ?? filenameMatch?.[2]
+  return parsed?.trim() || fallbackName || 'download'
+}
+
+function triggerFileDownload(blob: Blob, filename: string) {
+  const objectUrl = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(objectUrl)
+}
+
 export default function DocumentManager() {
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const { documents, fetchDocuments, addDocuments, deleteDocument } = useDocumentStore()
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+  const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
+  const [previewData, setPreviewData] = useState<PreviewPayload | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [officeMode, setOfficeMode] = useState<'view' | 'edit'>('view')
+  const [officeLoading, setOfficeLoading] = useState(false)
+  const [officeError, setOfficeError] = useState('')
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pendingDeleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const isMountedRef = useRef(true)
+  const officeEditorRef = useRef<{ destroyEditor?: () => void } | null>(null)
+  const loadedScriptRef = useRef<string | null>(null)
+  const officeContainerRef = useRef<HTMLDivElement | null>(null)
+  // 独立于 React DOM 的容器节点
+  const [officeHost] = useState(() => {
+    const el = document.createElement('div')
+    el.id = 'onlyoffice-editor'
+    el.style.width = '100%'
+    el.style.height = '100%'
+    return el
+  })
+  const notifyBell = (title: string, message: string) => {
+    window.dispatchEvent(
+      new CustomEvent('app-notify', {
+        detail: { title, message },
+      })
+    )
+  }
+
+  const clearPendingDeleteTimer = (key: string) => {
+    const timer = pendingDeleteTimersRef.current[key]
+    if (!timer) return
+    clearTimeout(timer)
+    delete pendingDeleteTimersRef.current[key]
+  }
 
   useEffect(() => {
     isMountedRef.current = true
     fetchDocuments()
     startPolling()
-    
+
     return () => {
       isMountedRef.current = false
       stopPolling()
+      destroyOnlyOfficeEditor()
     }
   }, [fetchDocuments])
+
+  useEffect(() => {
+    if (previewDoc && previewData?.preview_type === 'onlyoffice') {
+      void mountOnlyOffice(officeMode)
+    }
+
+    return () => {
+      if (previewData?.preview_type === 'onlyoffice') {
+        destroyOnlyOfficeEditor()
+      }
+    }
+  }, [previewDoc, previewData, officeMode])
 
   const startPolling = useCallback(() => {
     if (pollingRef.current) return
@@ -52,21 +193,143 @@ export default function DocumentManager() {
     }
   }, [])
 
+  const destroyOnlyOfficeEditor = () => {
+    if (officeEditorRef.current?.destroyEditor) {
+      officeEditorRef.current.destroyEditor()
+    }
+    officeEditorRef.current = null
+    // 从 React DOM 树中移除独立容器
+    if (officeHost.parentNode) {
+      officeHost.parentNode.removeChild(officeHost)
+    }
+    officeHost.innerHTML = ''
+  }
+
+  const ensureOnlyOfficeScript = async () => {
+    if (window.DocsAPI?.DocEditor) return
+
+    // 使用相对路径，依赖 nginx 代理转发到 OnlyOffice 容器
+    const scriptUrl = '/web-apps/apps/api/documents/api.js'
+
+    await new Promise<void>((resolve, reject) => {
+      if (window.DocsAPI?.DocEditor) {
+        resolve()
+        return
+      }
+
+      const script = document.createElement('script')
+      script.src = scriptUrl
+      document.head.appendChild(script)
+      loadedScriptRef.current = scriptUrl
+
+      const startedAt = Date.now()
+      const timer = window.setInterval(() => {
+        if (window.DocsAPI?.DocEditor) {
+          window.clearInterval(timer)
+          resolve()
+          return
+        }
+
+        if (Date.now() - startedAt > 60000) {
+          window.clearInterval(timer)
+          reject(new Error('OnlyOffice 脚本加载超时，请检查文档服务是否启动'))
+        }
+      }, 200)
+
+      script.onerror = () => {
+        window.clearInterval(timer)
+        reject(new Error('OnlyOffice 脚本加载失败，请检查文档服务地址是否可访问'))
+      }
+    })
+  }
+
+  const mountOnlyOffice = async (mode: 'view' | 'edit') => {
+    if (!previewDoc || !officeContainerRef.current) return
+
+    setOfficeLoading(true)
+    setOfficeError('')
+    destroyOnlyOfficeEditor()
+
+    // 将独立的 OnlyOffice 容器挂到 ref 位置
+    officeContainerRef.current.innerHTML = ''
+    officeContainerRef.current.appendChild(officeHost)
+
+    try {
+      const response = await api.get<OfficeConfigResponse>(`/documents/${previewDoc.id}/office-config`, {
+        params: { mode },
+      })
+
+      await ensureOnlyOfficeScript()
+
+      if (!window.DocsAPI?.DocEditor) {
+        throw new Error('OnlyOffice 组件未正确加载')
+      }
+
+      officeEditorRef.current = new window.DocsAPI.DocEditor('onlyoffice-editor', response.data.config)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'OnlyOffice 加载失败'
+      setOfficeError(message)
+    } finally {
+      setOfficeLoading(false)
+    }
+  }
+
+  const closePreview = () => {
+    destroyOnlyOfficeEditor()
+    setPreviewDoc(null)
+    setPreviewData(null)
+    setPreviewLoading(false)
+    setEditorOpen(false)
+    setEditContent('')
+    setSaving(false)
+    setOfficeMode('view')
+    setOfficeLoading(false)
+    setOfficeError('')
+  }
+
+  const openPreview = async (doc: DocumentInfo, editMode = false) => {
+    setPreviewDoc(doc)
+    setPreviewLoading(true)
+    setPreviewData(null)
+    setEditorOpen(false)
+    setOfficeMode('view')
+    setOfficeError('')
+
+    try {
+      const response = await api.get<PreviewPayload>(`/documents/${doc.id}/preview`)
+      setPreviewData(response.data)
+      setEditContent(response.data.content ?? '')
+      setEditorOpen(editMode && response.data.can_edit)
+      if (response.data.preview_type === 'onlyoffice') {
+        setOfficeMode(editMode ? 'edit' : 'view')
+      }
+    } catch (error) {
+      toast.error(tr('文档预览加载失败', 'Failed to load preview', 'プレビューの読み込みに失敗しました'))
+      setPreviewDoc(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   const onSourceDrop = async (acceptedFiles: File[]) => {
     try {
       await addDocuments(acceptedFiles, 'source')
-      toast.success(`成功上传 ${acceptedFiles.length} 个源文档，正在自动提取信息...`)
+      const message = tr(`已上传 ${acceptedFiles.length} 个源文档，正在自动提取信息`, `Uploaded ${acceptedFiles.length} source docs, extraction started`, `${acceptedFiles.length} 件のソース文書をアップロードし、抽出を開始しました`)
+      toast.success(message)
+      notifyBell(tr('上传成功', 'Upload succeeded', 'アップロード成功'), message)
     } catch (error) {
-      toast.error('上传失败')
+      toast.error(tr('上传失败', 'Upload failed', 'アップロードに失敗しました'))
     }
   }
 
   const onTemplateDrop = async (acceptedFiles: File[]) => {
     try {
       await addDocuments(acceptedFiles, 'template')
-      toast.success(`成功上传 ${acceptedFiles.length} 个模板`)
+      const message = tr(`已上传 ${acceptedFiles.length} 个模板`, `Uploaded ${acceptedFiles.length} templates`, `${acceptedFiles.length} 件のテンプレートをアップロードしました`)
+      toast.success(message)
+      notifyBell(tr('上传成功', 'Upload succeeded', 'アップロード成功'), message)
     } catch (error) {
-      toast.error('上传失败')
+      toast.error(tr('上传失败', 'Upload failed', 'アップロードに失敗しました'))
     }
   }
 
@@ -90,381 +353,523 @@ export default function DocumentManager() {
       },
     })
 
-  const filteredDocs = documents.filter(doc => {
+  const filteredDocs = documents.filter((doc) => {
     const matchFilter = filter === 'all' || doc.doc_category === filter
     const matchSearch = doc.original_filename.toLowerCase().includes(searchTerm.toLowerCase())
     return matchFilter && matchSearch
   })
 
-  const sourceDocs = documents.filter(d => d.doc_category === 'source')
-  const templateDocs = documents.filter(d => d.doc_category === 'template')
-  const outputDocs = documents.filter(d => d.doc_category === 'output')
+  const sourceDocs = documents.filter((d) => d.doc_category === 'source')
+  const templateDocs = documents.filter((d) => d.doc_category === 'template')
+  const outputDocs = documents.filter((d) => d.doc_category === 'output')
 
   const handleDelete = async (docId: string, docName: string) => {
-    if (!confirm(`确定要删除 "${docName}" 及其相关数据吗？`)) return
-    
-    try {
-      await deleteDocument(docId)
-      setSelectedDocs(prev => prev.filter(id => id !== docId))
-      toast.success('删除成功')
-    } catch (error) {
-      toast.error('删除失败')
-    }
+    if (!confirm(tr(`确认删除 "${docName}" 吗？`, `Delete "${docName}"?`, `「${docName}」を削除しますか？`))) return
+
+    const timerKey = `single-${docId}`
+    clearPendingDeleteTimer(timerKey)
+
+    const timer = setTimeout(async () => {
+      try {
+        await deleteDocument(docId)
+        setSelectedDocs((prev) => prev.filter((id) => id !== docId))
+        if (previewDoc?.id === docId) {
+          closePreview()
+        }
+        const message = tr('删除成功', 'Deleted', '削除しました')
+        toast.success(message)
+        notifyBell(tr('删除成功', 'Delete succeeded', '削除成功'), `${docName} · ${message}`)
+      } catch (error) {
+        toast.error(tr('删除失败', 'Delete failed', '削除に失敗しました'))
+      } finally {
+        clearPendingDeleteTimer(timerKey)
+      }
+    }, 4000)
+    pendingDeleteTimersRef.current[timerKey] = timer
+
+    toast.custom(
+      (t) => (
+        <div className="glass flex items-center gap-3 px-3 py-2 text-sm text-slate-700">
+          <span>{tr(`“${docName}” 将在 4 秒后删除`, `"${docName}" will be deleted in 4s`, `「${docName}」は4秒後に削除されます`)}</span>
+          <button
+            className="btn-secondary px-2 py-1 text-xs"
+            onClick={() => {
+              clearPendingDeleteTimer(timerKey)
+              toast.dismiss(t.id)
+            }}
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+            {tr('撤销', 'Undo', '元に戻す')}
+          </button>
+        </div>
+      ),
+      { duration: 4000 }
+    )
   }
 
   const handleBatchDelete = async () => {
     if (selectedDocs.length === 0) {
-      toast.error('请选择要删除的文档')
+      toast.error(tr('请先选择要删除的文档', 'Select documents to delete first', '先に削除対象の文書を選択してください'))
       return
     }
-    if (!confirm(`确定要删除选中的 ${selectedDocs.length} 个文档吗？`)) return
+    if (!confirm(tr(`确认删除选中的 ${selectedDocs.length} 个文档吗？`, `Delete ${selectedDocs.length} selected documents?`, `選択した ${selectedDocs.length} 件の文書を削除しますか？`))) return
 
     try {
-      for (const docId of selectedDocs) {
+      const deleting = [...selectedDocs]
+      for (const docId of deleting) {
         await deleteDocument(docId)
       }
+      if (previewDoc && deleting.includes(previewDoc.id)) {
+        closePreview()
+      }
       setSelectedDocs([])
-      toast.success('批量删除成功')
+      const message = tr('批量删除成功', 'Batch delete completed', '一括削除が完了しました')
+      toast.success(message)
+      notifyBell(tr('删除成功', 'Delete succeeded', '削除成功'), `${deleting.length} ${tr('个文档已删除', 'documents deleted', '件の文書を削除しました')}`)
     } catch (error) {
-      toast.error('批量删除失败')
+      toast.error(tr('批量删除失败', 'Batch delete failed', '一括削除に失敗しました'))
+    }
+  }
+
+  const handleDownload = async (doc: DocumentInfo) => {
+    const downloadUrl = `/documents/${doc.id}/download`
+
+    try {
+      const response = await api.get(downloadUrl, { responseType: 'blob' })
+      const contentDisposition = response.headers['content-disposition'] as string | undefined
+      const filename = parseDownloadFilename(contentDisposition, doc.original_filename)
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: response.headers['content-type'] || 'application/octet-stream' })
+
+      triggerFileDownload(blob, filename)
+
+      const message = tr('下载已开始', 'Download started', 'ダウンロードを開始しました')
+      toast.success(message)
+      notifyBell(tr('下载成功', 'Download succeeded', 'ダウンロード成功'), `${filename} · ${message}`)
+    } catch (error) {
+      toast.error(tr('下载失败', 'Download failed', 'ダウンロードに失敗しました'))
     }
   }
 
   const handleRetryExtraction = async (docId: string, docName: string) => {
     try {
       await api.post(`/documents/${docId}/retry-extraction`)
-      toast.success(`正在重新提取 "${docName}" 的信息`)
-      // 延迟刷新，等待后端创建任务
+      toast.success(tr(`已重新开始提取 "${docName}"`, `Extraction restarted for "${docName}"`, `「${docName}」の抽出を再開しました`))
       setTimeout(() => {
         fetchDocuments()
       }, 300)
     } catch (error) {
-      toast.error('重试失败')
+      toast.error(tr('重试失败', 'Retry failed', '再試行に失敗しました'))
+    }
+  }
+
+  const handleSave = async () => {
+    if (!previewDoc || !previewData?.can_edit) return
+
+    setSaving(true)
+    try {
+      await api.post(`/documents/${previewDoc.id}/save`, { content: editContent })
+      setPreviewData({
+        ...previewData,
+        content: editContent,
+        html_content: null,
+        truncated: false,
+      })
+      setEditorOpen(false)
+      await fetchDocuments()
+      toast.success(tr('保存成功', 'Saved', '保存しました'))
+    } catch (error) {
+      toast.error(tr('保存失败', 'Save failed', '保存に失敗しました'))
+    } finally {
+      setSaving(false)
     }
   }
 
   const toggleSelect = (docId: string) => {
-    setSelectedDocs(prev => 
-      prev.includes(docId) 
-        ? prev.filter(id => id !== docId)
-        : [...prev, docId]
-    )
+    setSelectedDocs((prev) => (prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]))
   }
 
   const toggleSelectAll = () => {
     if (selectedDocs.length === filteredDocs.length) {
       setSelectedDocs([])
     } else {
-      setSelectedDocs(filteredDocs.map(d => d.id))
+      setSelectedDocs(filteredDocs.map((d) => d.id))
     }
   }
 
-  const categoryConfig = {
-    source: { icon: FileText, color: 'text-blue-400', bg: 'bg-blue-500/20', label: '源文档' },
-    template: { icon: Table, color: 'text-green-400', bg: 'bg-green-500/20', label: '模板' },
-    output: { icon: FolderOpen, color: 'text-orange-400', bg: 'bg-orange-500/20', label: '输出' },
-  }
-
-  const renderExtractionStatus = (doc: any) => {
+  const renderExtractionStatus = (doc: DocumentInfo) => {
     if (doc.doc_category !== 'source') return null
-    
+
     const status = doc.extraction_status as ExtractionStatus | null
-    
     if (!status) {
-      return (
-        <span className="text-xs text-slate-500">待提取</span>
-      )
+      return <span className="status-badge status-pending">{tr('待提取', 'Pending extraction', '抽出待ち')}</span>
     }
-    
+
     if (status.status === 'processing') {
-      const progressNum = parseInt(status.progress) || 0
+      const progressNum = parseInt(status.progress, 10) || 0
       return (
-        <div className="flex items-center gap-2">
-          <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-blue-500 rounded-full transition-all duration-300"
-              style={{ width: `${progressNum}%` }}
-            />
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="status-badge status-processing">{tr('处理中', 'Processing', '処理中')}</span>
+            <span className="text-xs text-blue-700">{progressNum}%</span>
           </div>
-          <span className="text-xs text-blue-400">{progressNum}%</span>
+          <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${progressNum}%` }} />
+          </div>
         </div>
       )
     }
-    
+
     if (status.status === 'completed') {
       return (
-        <div className="flex items-center gap-1">
-          <CheckCircle className="w-3.5 h-3.5 text-green-400" />
-          <span className="text-xs text-green-400">已完成</span>
+        <div className="flex items-center gap-1.5">
+          <span className="status-badge status-completed">{tr('已完成', 'Completed', '完了')}</span>
+          <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />
         </div>
       )
     }
-    
+
     if (status.status === 'failed') {
-      const errorMsg = status.error || '提取失败'
-      const shortError = errorMsg.length > 40 ? errorMsg.substring(0, 40) + '...' : errorMsg
+      const errorMsg = status.error || tr('提取失败', 'Extraction failed', '抽出に失敗しました')
+      const shortError = errorMsg.length > 30 ? `${errorMsg.slice(0, 30)}...` : errorMsg
       return (
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1" title={errorMsg}>
-            <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-            <span className="text-xs text-red-400">{shortError}</span>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2" title={errorMsg}>
+            <span className="status-badge status-failed">{tr('失败', 'Failed', '失敗')}</span>
+            <span className="text-xs text-rose-700">{shortError}</span>
           </div>
           <button
             onClick={(e) => {
               e.stopPropagation()
               handleRetryExtraction(doc.id, doc.original_filename)
             }}
-            className="text-xs text-blue-400 hover:text-blue-300 underline shrink-0"
+            className="text-xs text-blue-700 hover:text-blue-800"
           >
-            重试
+            {tr('重新提取', 'Retry extraction', '再抽出')}
           </button>
         </div>
       )
     }
-    
+
     return null
+  }
+
+  const renderPreviewContent = () => {
+    if (previewLoading) {
+      return <div className="flex h-full items-center justify-center text-slate-400">{tr('正在加载预览...', 'Loading preview...', 'プレビューを読み込み中...')}</div>
+    }
+
+    if (!previewData) {
+      return <div className="flex h-full items-center justify-center text-slate-500">{tr('暂无预览内容', 'No preview content', 'プレビューはありません')}</div>
+    }
+
+    if (previewData.preview_type === 'onlyoffice') {
+      return (
+        <div className="h-[68vh] overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          {officeLoading && <div className="p-4 text-sm text-slate-500">正在加载 OnlyOffice...</div>}
+          {officeError && <div className="border-b border-red-100 bg-red-50 p-4 text-sm text-red-600">{officeError}</div>}
+          {/* 空的 ref 容器，mountOnlyOffice 会将独立的 officeHost 挂入 */}
+          <div ref={officeContainerRef} className="h-full w-full" />
+        </div>
+      )
+    }
+
+    if (editorOpen && previewData.can_edit) {
+      return (
+        <textarea
+          value={editContent}
+          onChange={(e) => setEditContent(e.target.value)}
+          spellCheck={false}
+          className="h-full min-h-[420px] w-full rounded-2xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-7 text-slate-800 outline-none"
+        />
+      )
+    }
+
+    if (previewData.preview_type === 'pdf') {
+      return (
+        <iframe
+          title="document-preview"
+          src={`/api/v1/documents/${previewDoc?.id}/inline`}
+          className="h-[68vh] w-full rounded-2xl border border-slate-200 bg-white"
+        />
+      )
+    }
+
+    if (previewData.preview_type === 'spreadsheet') {
+      return (
+        <div className="space-y-5">
+          {previewData.sheets?.map((sheet) => (
+            <div key={sheet.name} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+              <div className="border-b border-slate-200 px-4 py-3">
+                <div className="text-sm font-medium text-slate-900">{sheet.name}</div>
+                <div className="text-xs text-slate-400">
+                  {sheet.rows} 行 · {sheet.cols} 列
+                </div>
+              </div>
+              <div className="max-h-72 overflow-auto scrollbar-thin">
+                <table className="min-w-full text-left text-xs">
+                  <tbody>
+                    {sheet.data.slice(0, 20).map((row, rowIndex) => (
+                      <tr key={`${sheet.name}-${rowIndex}`} className="border-b border-slate-100">
+                        {row.map((cell, colIndex) => (
+                          <td key={`${sheet.name}-${rowIndex}-${colIndex}`} className="px-3 py-1.5 text-slate-700">
+                            {cell || '-'}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          <pre className="whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-600">
+            {previewData.content}
+          </pre>
+        </div>
+      )
+    }
+
+    if (previewData.preview_type === 'markdown' && previewData.html_content) {
+      return (
+        <div className="space-y-4">
+          <div
+            className="prose max-w-none rounded-2xl border border-slate-200 bg-slate-50 p-5 prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-code:text-blue-300"
+            dangerouslySetInnerHTML={{ __html: previewData.html_content }}
+          />
+          <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <summary className="cursor-pointer text-sm text-slate-600">查看原始 Markdown</summary>
+            <pre className="mt-4 whitespace-pre-wrap text-xs leading-6 text-slate-600">{previewData.content}</pre>
+          </details>
+        </div>
+      )
+    }
+
+    return (
+      <pre className="min-h-[420px] whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
+        {previewData.content}
+      </pre>
+    )
   }
 
   return (
     <div className="space-y-6">
-      {/* 上传区域 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* 源文档上传 */}
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div className="glass p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
-              <FileText className="w-5 h-5 text-blue-400" />
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/20">
+              <FileText className="h-5 w-5 text-blue-400" />
             </div>
             <div>
-              <h3 className="font-medium text-white">上传源文档</h3>
-              <p className="text-xs text-slate-400">支持 docx, xlsx, md, txt</p>
+              <h3 className="font-medium text-slate-900">{tr('上传源文档', 'Upload Source Docs', 'ソース文書をアップロード')}</h3>
+              <p className="text-xs text-slate-400">{tr('支持 docx、xlsx、md、txt', 'Supports docx, xlsx, md, txt', 'docx/xlsx/md/txt 対応')}</p>
             </div>
           </div>
-          <div
-            {...getSourceRootProps()}
-            className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}
-          >
+          <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
             <input {...getSourceInputProps()} />
             <div className="flex items-center justify-center gap-2">
-              <Plus className="w-5 h-5 text-slate-400" />
-              <span className="text-slate-400">点击或拖拽上传源文档</span>
+              <Plus className="h-5 w-5 text-slate-400" />
+              <span className="text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
             </div>
           </div>
         </div>
 
-        {/* 模板上传 */}
         <div className="glass p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
-              <Table className="w-5 h-5 text-green-400" />
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-500/20">
+              <Table className="h-5 w-5 text-green-400" />
             </div>
             <div>
-              <h3 className="font-medium text-white">上传模板</h3>
-              <p className="text-xs text-slate-400">支持 docx, xlsx</p>
+              <h3 className="font-medium text-slate-900">{tr('上传模板', 'Upload Templates', 'テンプレートをアップロード')}</h3>
+              <p className="text-xs text-slate-400">{tr('支持 docx、xlsx', 'Supports docx, xlsx', 'docx/xlsx 対応')}</p>
             </div>
           </div>
-          <div
-            {...getTemplateRootProps()}
-            className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}
-          >
+          <div {...getTemplateRootProps()} className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}>
             <input {...getTemplateInputProps()} />
             <div className="flex items-center justify-center gap-2">
-              <Plus className="w-5 h-5 text-slate-400" />
-              <span className="text-slate-400">点击或拖拽上传模板</span>
+              <Plus className="h-5 w-5 text-slate-400" />
+              <span className="text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 统计卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div 
-          className={`glass p-4 cursor-pointer transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`}
-          onClick={() => setFilter('all')}
-        >
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`} onClick={() => setFilter('all')}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary-500/20 flex items-center justify-center">
-              <File className="w-5 h-5 text-primary-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-500/20">
+              <File className="h-5 w-5 text-primary-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{documents.length}</p>
-              <p className="text-xs text-slate-400">全部文档</p>
+              <p className="text-2xl font-bold text-slate-900">{documents.length}</p>
+              <p className="text-xs text-slate-400">{tr('全部文档', 'All Docs', '全ドキュメント')}</p>
             </div>
           </div>
         </div>
 
-        <div 
-          className={`glass p-4 cursor-pointer transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`}
-          onClick={() => setFilter('source')}
-        >
+        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => setFilter('source')}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
-              <FileText className="w-5 h-5 text-blue-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/20">
+              <FileText className="h-5 w-5 text-blue-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{sourceDocs.length}</p>
-              <p className="text-xs text-slate-400">源文档</p>
+              <p className="text-2xl font-bold text-slate-900">{sourceDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('源文档', 'Source Docs', 'ソース文書')}</p>
             </div>
           </div>
         </div>
 
-        <div 
-          className={`glass p-4 cursor-pointer transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`}
-          onClick={() => setFilter('template')}
-        >
+        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`} onClick={() => setFilter('template')}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
-              <Table className="w-5 h-5 text-green-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/20">
+              <Table className="h-5 w-5 text-green-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{templateDocs.length}</p>
-              <p className="text-xs text-slate-400">模板</p>
+              <p className="text-2xl font-bold text-slate-900">{templateDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('模板', 'Templates', 'テンプレート')}</p>
             </div>
           </div>
         </div>
 
-        <div 
-          className={`glass p-4 cursor-pointer transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`}
-          onClick={() => setFilter('output')}
-        >
+        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`} onClick={() => setFilter('output')}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-orange-500/20 flex items-center justify-center">
-              <FolderOpen className="w-5 h-5 text-orange-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/20">
+              <FolderOpen className="h-5 w-5 text-orange-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{outputDocs.length}</p>
-              <p className="text-xs text-slate-400">输出文件</p>
+              <p className="text-2xl font-bold text-slate-900">{outputDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('输出文件', 'Output Files', '出力ファイル')}</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 工具栏 */}
       <div className="glass p-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="搜索文档..."
-                className="input pl-10 w-64"
+                placeholder={tr('搜索文档...', 'Search documents...', 'ドキュメントを検索...')}
+                className="input w-64 pl-10"
               />
             </div>
-            
+
             <Dropdown
               value={filter}
               onChange={(v) => setFilter(v as CategoryFilter)}
               options={[
-                { value: 'all', label: '全部' },
-                { value: 'source', label: '源文档' },
-                { value: 'template', label: '模板' },
-                { value: 'output', label: '输出' },
+                { value: 'all', label: tr('全部', 'All', 'すべて') },
+                { value: 'source', label: tr('源文档', 'Source Docs', 'ソース文書') },
+                { value: 'template', label: tr('模板', 'Templates', 'テンプレート') },
+                { value: 'output', label: tr('输出', 'Output', '出力') },
               ]}
-              icon={<Filter className="w-4 h-4 text-slate-400" />}
+              icon={<Filter className="h-4 w-4 text-slate-400" />}
               className="w-40"
             />
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => fetchDocuments()}
-              className="btn-secondary flex items-center gap-2"
-              title="刷新"
-            >
-              <RefreshCw className="w-4 h-4" />
+            <button onClick={() => fetchDocuments()} className="btn-secondary flex items-center gap-2" title={tr('刷新', 'Refresh', '更新')}>
+              <RefreshCw className="h-4 w-4" />
             </button>
             {selectedDocs.length > 0 && (
-              <button
-                onClick={handleBatchDelete}
-                className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300"
-              >
-                <Trash2 className="w-4 h-4" />
-                删除选中 ({selectedDocs.length})
+              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300">
+                <Trash2 className="h-4 w-4" />
+                {tr('删除选中', 'Delete Selected', '選択を削除')} ({selectedDocs.length})
               </button>
             )}
           </div>
         </div>
       </div>
 
-      {/* 文档列表 */}
       <div className="glass overflow-hidden">
-        <div className="p-4 border-b border-white/10">
-          <label className="flex items-center gap-3 cursor-pointer">
+        <div className="border-b border-slate-200 px-4 py-3">
+          <label className="flex cursor-pointer items-center gap-3">
             <input
               type="checkbox"
               checked={selectedDocs.length === filteredDocs.length && filteredDocs.length > 0}
               onChange={toggleSelectAll}
-              className="w-4 h-4 rounded border-white/20 bg-white/10 text-primary-500"
+              className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
             />
-            <span className="text-sm text-slate-400">
-              全选 ({filteredDocs.length} 个文档)
-            </span>
+            <span className="text-sm text-slate-400">{tr('全选', 'Select all', 'すべて選択')} ({filteredDocs.length} {tr('个文档', 'docs', '件')})</span>
           </label>
         </div>
 
-        <div className="max-h-[500px] overflow-y-auto scrollbar-thin">
+        <div className="max-h-[560px] overflow-y-auto scrollbar-thin">
           {filteredDocs.length > 0 ? (
             filteredDocs.map((doc) => {
               const config = categoryConfig[doc.doc_category as keyof typeof categoryConfig] || categoryConfig.source
               const Icon = config.icon
-              
               return (
                 <div
                   key={doc.id}
-                  className={`flex items-center gap-4 p-4 border-b border-white/5 hover:bg-white/5 transition-colors
-                    ${selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''}`}
+                  className={`flex items-center gap-3 border-b border-slate-100 px-4 py-3 transition-colors hover:bg-slate-50 ${
+                    selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''
+                  }`}
                 >
                   <input
                     type="checkbox"
                     checked={selectedDocs.includes(doc.id)}
                     onChange={() => toggleSelect(doc.id)}
-                    className="w-4 h-4 rounded border-white/20 bg-white/10 text-primary-500"
+                    className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
                   />
-                  
-                  <div className={`w-10 h-10 rounded-lg ${config.bg} flex items-center justify-center shrink-0`}>
-                    <Icon className={`w-5 h-5 ${config.color}`} />
+
+                  <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${config.bg}`}>
+                    <Icon className={`h-4 w-4 ${config.color}`} />
                   </div>
-                  
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white font-medium truncate">{doc.original_filename}</p>
-                    <div className="flex items-center gap-3 mt-1">
-                      <span className={`text-xs px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
-                        {config.label}
+
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-900">{doc.original_filename}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span className={`rounded px-2 py-0.5 text-xs ${config.bg} ${config.color}`}>
+                        {doc.doc_category === 'source'
+                          ? tr('源文档', 'Source', 'ソース')
+                          : doc.doc_category === 'template'
+                            ? tr('模板', 'Template', 'テンプレート')
+                            : tr('输出', 'Output', '出力')}
                       </span>
                       <span className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</span>
-                      {doc.file_size && (
-                        <span className="text-xs text-slate-500">
-                          {(doc.file_size / 1024).toFixed(1)} KB
-                        </span>
-                      )}
-                      <span className="text-xs text-slate-500">
-                        {new Date(doc.created_at).toLocaleDateString()}
-                      </span>
+                      {formatFileSize(doc.file_size) && <span className="text-xs text-slate-500">{formatFileSize(doc.file_size)}</span>}
+                      <span className="text-xs text-slate-500">{new Date(doc.created_at).toLocaleDateString('zh-CN')}</span>
                     </div>
                   </div>
-                  
-                  {doc.doc_category === 'source' && (
-                    <div className="w-256 shrink-0">
-                      {renderExtractionStatus(doc)}
-                    </div>
-                  )}
-                  
+
+                  {doc.doc_category === 'source' && <div className="w-56 shrink-0">{renderExtractionStatus(doc)}</div>}
+
                   <div className="flex items-center gap-2">
-                    <a
-                      href={`/api/v1/documents/${doc.id}/download`}
-                      className="p-2 rounded-lg hover:bg-blue-500/20 text-slate-400 hover:text-blue-400 transition-colors"
-                      download
+                    <button
+                      onClick={() => openPreview(doc)}
+                      aria-label={tr('预览文档', 'Preview document', '文書をプレビュー')}
+                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                      title="预览"
                     >
-                      <Download className="w-4 h-4" />
-                    </a>
+                      <Eye className="h-4 w-4" />
+                    </button>
+                    {(doc.file_type === 'txt' || doc.file_type === 'md') && (
+                      <button
+                        onClick={() => openPreview(doc, true)}
+                        aria-label={tr('编辑文档', 'Edit document', '文書を編集')}
+                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
+                        title="编辑"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
+                      <Download className="h-4 w-4" />
+                    </button>
                     <button
                       onClick={() => handleDelete(doc.id, doc.original_filename)}
-                      className="p-2 rounded-lg hover:bg-red-500/20 text-slate-400 hover:text-red-400 transition-colors"
+                      aria-label={tr('删除文档', 'Delete document', '文書を削除')}
+                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
                 </div>
@@ -472,14 +877,69 @@ export default function DocumentManager() {
             })
           ) : (
             <div className="p-12 text-center">
-              <FileText className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-              <p className="text-slate-400">
-                {searchTerm ? '未找到匹配的文档' : '暂无文档'}
-              </p>
+              <FileText className="mx-auto mb-4 h-16 w-16 text-slate-600" />
+              <p className="text-slate-400">{searchTerm ? tr('没有匹配的文档', 'No matching documents', '一致する文書がありません') : tr('暂无文档', 'No documents', '文書がありません')}</p>
             </div>
           )}
         </div>
       </div>
+
+      {previewDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4 py-6 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" aria-labelledby="document-preview-title" className="glass-dark flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px]">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div className="min-w-0">
+                <h3 id="document-preview-title" className="truncate text-lg font-semibold text-slate-900">{previewDoc.original_filename}</h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  {previewDoc.file_type.toUpperCase()} · {previewDoc.doc_category === 'source' ? tr('源文档', 'Source', 'ソース') : previewDoc.doc_category === 'template' ? tr('模板', 'Template', 'テンプレート') : tr('输出', 'Output', '出力')}
+                  {previewData?.truncated ? tr(' · 当前为截断预览', ' · Truncated preview', ' · 省略プレビュー') : ''}
+                  {previewData?.preview_type === 'onlyoffice' ? ' · OnlyOffice' : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                {previewData?.preview_type === 'onlyoffice' && (
+                  <button
+                    onClick={() => setOfficeMode((current) => (current === 'edit' ? 'view' : 'edit'))}
+                    className="btn-secondary flex items-center gap-2 px-4 py-2"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                    {officeMode === 'edit' ? tr('切到只读', 'Switch to read-only', '閲覧モードに切替') : tr('进入编辑', 'Edit mode', '編集モードへ')}
+                  </button>
+                )}
+                {previewData?.can_edit && (
+                  <button
+                    onClick={() => {
+                      setEditorOpen((current) => !current)
+                      setEditContent(previewData.content)
+                    }}
+                    className="btn-secondary flex items-center gap-2 px-4 py-2"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                    {editorOpen ? tr('返回预览', 'Back to preview', 'プレビューへ戻る') : tr('编辑', 'Edit', '編集')}
+                  </button>
+                )}
+                {editorOpen && previewData?.can_edit && (
+                  <button onClick={handleSave} className="btn-primary flex items-center gap-2 px-4 py-2" disabled={saving}>
+                    <CheckCircle className="h-4 w-4" />
+                    {saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')}
+                  </button>
+                )}
+                <button onClick={closePreview} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-6 scrollbar-thin">{renderPreviewContent()}</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+
+
+
+
+
+
+

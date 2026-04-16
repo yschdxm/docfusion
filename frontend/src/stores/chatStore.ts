@@ -116,6 +116,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const conv = response.data
 
       let messages: Message[] = conv.messages.map((msg: any) => ({
+        id: msg.id,
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp || Date.now(),
@@ -337,9 +338,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setActiveSession: (sessionId) => {
     set({ activeSessionId: sessionId })
-    if (sessionId) {
-      get().loadSessionMessages(sessionId)
-    }
   },
 
   deleteSession: async (sessionId) => {

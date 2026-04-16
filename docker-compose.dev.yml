@@ -32,7 +32,18 @@ services:
       - "6334:6334"
       - "6336:6336"
 
+  onlyoffice:
+    image: docker.1ms.run/onlyoffice/documentserver:latest
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    environment:
+      - JWT_ENABLED=false
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+
 volumes:
   postgres_data:
   neo4j_data:
   qdrant_data:
+  onlyoffice_data:

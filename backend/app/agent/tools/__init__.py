@@ -10,6 +10,14 @@
 - fill_table: 表格填写
 - get_table_structure: 获取表格结构
 - extract_from_documents: 文档信息提取
+- replace_text: 文本替换
+- rewrite_paragraph: LLM重写段落
+- insert_after: 段落后插入
+- heading_promote: 标题级别调整
+- list_format: 列表格式化
+- paragraph_split: 段落拆分
+- set_text_style: 字体样式设置
+- convert: 格式转换
 """
 
 from .rag_tool import RAGTool
@@ -20,6 +28,16 @@ from .list_docs_tool import ListDocumentsTool
 from .fill_table_tool import FillTableTool
 from .get_table_structure_tool import GetTableStructureTool
 from .extract_from_docs_tool import ExtractFromDocsTool
+from .document_edit_tools import (
+    ReplaceTextTool,
+    RewriteParagraphTool,
+    InsertAfterTool,
+    HeadingPromoteTool,
+    ListFormatTool,
+    ParagraphSplitTool,
+    SetTextStyleTool,
+    ConvertTool,
+)
 
 __all__ = [
     "RAGTool",
@@ -30,4 +48,12 @@ __all__ = [
     "FillTableTool",
     "GetTableStructureTool",
     "ExtractFromDocsTool",
+    "ReplaceTextTool",
+    "RewriteParagraphTool",
+    "InsertAfterTool",
+    "HeadingPromoteTool",
+    "ListFormatTool",
+    "ParagraphSplitTool",
+    "SetTextStyleTool",
+    "ConvertTool",
 ]

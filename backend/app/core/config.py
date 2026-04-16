@@ -61,9 +61,22 @@ class Settings(BaseSettings):
     SSL_VERIFY_MIMO: bool = True  # MiMO模型SSL验证
     SSL_VERIFY_GITEE_AI: bool = True  # Gitee AI（嵌入和重排模型）SSL验证
 
+    # ONLYOFFICE
+    ONLYOFFICE_SERVER_URL: str = "http://localhost:8088"
+    BACKEND_PUBLIC_URL: str = "http://localhost:8000"
+    ONLYOFFICE_ENABLED: bool = False
+    ONLYOFFICE_DOCUMENT_SERVER_URL: str = "http://localhost:8088"
+    ONLYOFFICE_CALLBACK_BASE_URL: str = "http://host.docker.internal:8000"
+    ONLYOFFICE_API_PREFIX: str = "/api/v1"
+    ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
+    ONLYOFFICE_PUBLIC_SIGNING_SECRET: Optional[str] = None
+
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800
+
+    # 用户隔离
+    INCLUDE_ORPHAN_DATA: bool = True  # 是否允许查看无主文档（user_id为NULL的旧数据）
 
     class Config:
         # .env 文件在项目根目录，相对于 backend 目录
