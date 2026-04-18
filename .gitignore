@@ -47,3 +47,4 @@ temp
 logs
 .ruff_cache
 *.bak
+*.mermaid
