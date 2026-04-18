@@ -8,6 +8,7 @@ from .query_prompt import (
 )
 from .sql_prompt import SQL_GENERATION_PROMPT
 from .neo4j_prompt import NEO4J_QUERY_PROMPT, NEO4J_RETRY_PROMPT, NEO4J_EXTRACT_PROMPT
+from .rewrite_prompt import REWRITE_PROMPT
 
 __all__ = [
     "NER_PROMPT",
@@ -20,4 +21,5 @@ __all__ = [
     "NEO4J_QUERY_PROMPT",
     "NEO4J_RETRY_PROMPT",
     "NEO4J_EXTRACT_PROMPT",
+    "REWRITE_PROMPT",
 ]

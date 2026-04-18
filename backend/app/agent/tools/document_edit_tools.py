@@ -1,7 +1,8 @@
 """
 文档编辑工具集
 
-从dev-op分支的document_agent.py迁移而来，将每个编辑操作封装为独立的BaseTool。
+将每个编辑操作封装为独立的BaseTool。
+采用"复制原始文件 → 在副本上原地修改 → 保存"的方式，保留原始排版格式。
 支持：文本替换、段落重写、段落插入、标题调整、列表格式化、段落拆分、样式设置、格式转换。
 """
 
@@ -9,6 +10,7 @@ import csv
 import logging
 import os
 import re
+import shutil
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -25,9 +27,18 @@ from app.services.llm_service import llm_service
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+CONVERT_RULES = {
+    "docx": {"md", "txt"},
+    "md": {"docx", "txt"},
+    "txt": {"md", "docx"},
+    "xlsx": {"csv"},
+}
 
-async def _get_doc_path(file_id: str) -> Optional[str]:
-    """通过数据库查询文档文件路径"""
+
+# ──────────────────────────── 公共辅助函数 ────────────────────────────
+
+async def _get_doc_info(file_id: str) -> Optional[Dict[str, Any]]:
+    """通过数据库查询文档信息，返回 {file_path, file_type, original_filename, doc_id, is_output}"""
     try:
         doc_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
     except ValueError:
@@ -39,7 +50,13 @@ async def _get_doc_path(file_id: str) -> Optional[str]:
         )
         doc = result.scalar_one_or_none()
         if doc and doc.file_path and os.path.exists(doc.file_path):
-            return doc.file_path
+            return {
+                "file_path": doc.file_path,
+                "file_type": doc.file_type,
+                "original_filename": doc.original_filename or os.path.basename(doc.file_path),
+                "doc_id": str(doc.id),
+                "is_output": (doc.doc_category == "output"),
+            }
     return None
 
 
@@ -67,186 +84,88 @@ async def _register_output_file(output_path: str, file_type: str, user_id: Optio
         }
 
 
-HEADING_STYLE_KEYWORDS = ("heading", "标题", "title", "subtitle")
-FONT_NAME_KEYWORDS = (
-    "宋体",
-    "黑体",
-    "仿宋",
-    "楷体",
-    "微软雅黑",
-    "times new roman",
-    "arial",
-)
-FONT_SIZE_ALIASES = {
-    "初号": 42.0,
-    "小初": 36.0,
-    "一号": 26.0,
-    "小一": 24.0,
-    "二号": 22.0,
-    "小二": 18.0,
-    "三号": 16.0,
-    "小三": 15.0,
-    "四号": 14.0,
-    "小四": 12.0,
-    "五号": 10.5,
-    "小五": 9.0,
-    "六号": 7.5,
-    "小六": 6.5,
-}
-
-CONVERT_RULES = {
-    "docx": {"md", "txt"},
-    "md": {"docx", "txt"},
-    "txt": {"md", "docx"},
-    "xlsx": {"csv"},
-}
-
-
-def _get_parser(file_type: str):
-    """获取文档解析器"""
-    parsers = {
-        "docx": DocxParser(),
-        "xlsx": XlsxParser(),
-        "md": MdParser(),
-        "txt": TxtParser(),
-    }
-    return parsers.get(file_type)
-
-
-def _is_heading_style(style_name: str) -> bool:
-    normalized = (style_name or "").strip().lower()
-    if not normalized:
-        return False
-    return any(keyword in normalized for keyword in HEADING_STYLE_KEYWORDS)
-
-
-def _build_editable_structure(parsed_data: Dict[str, Any], file_type: str) -> Dict[str, Any]:
-    """构建可编辑的文档结构"""
-    paragraphs: List[Dict[str, Any]] = []
-
-    if file_type == "docx":
-        docx_paragraphs = parsed_data.get("paragraphs", [])
-        body_candidates = []
-        for paragraph in docx_paragraphs:
-            text = (paragraph.get("text") or "").strip()
-            if not text:
-                continue
-            style_name = paragraph.get("style") or "Normal"
-            item = {
-                "index": len(body_candidates),
-                "text": text,
-                "style": style_name,
-                "source_paragraph_index": paragraph.get("source_index"),
-            }
-            if not _is_heading_style(style_name):
-                body_candidates.append(item)
-        if body_candidates:
-            for index, paragraph in enumerate(body_candidates):
-                paragraph["index"] = index
-                paragraphs.append(paragraph)
-        else:
-            for paragraph in docx_paragraphs:
-                text = (paragraph.get("text") or "").strip()
-                if not text:
-                    continue
-                paragraphs.append(
-                    {
-                        "index": len(paragraphs),
-                        "text": text,
-                        "style": paragraph.get("style") or "Normal",
-                        "source_paragraph_index": paragraph.get("source_index"),
-                    }
-                )
-    elif file_type == "md":
-        for raw_line in parsed_data.get("full_text", "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            style = "Normal"
-            text = line
-            heading_match = re.match(r"^(#{1,6})\s+(.*)$", line)
-            if heading_match:
-                style = f"Heading {len(heading_match.group(1))}"
-                text = heading_match.group(2).strip()
-            paragraphs.append({"index": len(paragraphs), "text": text, "style": style})
-    elif file_type == "txt":
-        for line in parsed_data.get("paragraphs", []):
-            text = line.strip()
-            if text:
-                paragraphs.append({"index": len(paragraphs), "text": text, "style": "Normal"})
-    elif file_type == "xlsx":
-        for sheet_idx, sheet in enumerate(parsed_data.get("sheets", [])):
-            paragraphs.append(
-                {
-                    "index": len(paragraphs),
-                    "text": f"Sheet {sheet.get('name', sheet_idx)} with {sheet.get('rows', 0)} rows and {sheet.get('cols', 0)} cols",
-                    "style": "SheetSummary",
-                }
-            )
-
-    tables = []
-    if file_type == "docx":
-        for table_index, rows in enumerate(parsed_data.get("tables", [])):
-            tables.append({"table_index": table_index, "rows": rows})
-    elif file_type == "xlsx":
-        for table_index, sheet in enumerate(parsed_data.get("sheets", [])):
-            tables.append({"table_index": table_index, "rows": sheet.get("data", [])})
-
-    return {"file_type": file_type, "paragraphs": paragraphs, "tables": tables}
-
-
-def _generate_output(document: Dict[str, Any], output_format: str, original_data: Dict[str, Any]) -> str:
-    """生成输出文件"""
-    output_filename = f"output_{uuid4().hex}.{output_format}"
-    output_path = os.path.join(settings.UPLOAD_DIR, "output", output_filename)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    if output_format == "docx":
-        DocxParser.write(
-            _render_text(document, "docx"),
-            output_path,
-            {"paragraphs": document.get("paragraphs", []), "tables": original_data.get("tables", [])},
+async def _update_output_file_size(file_path: str):
+    """更新已注册输出文件的大小"""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Document).where(Document.file_path == file_path)
         )
-    elif output_format == "md":
-        MdParser.write(_render_text(document, "md"), output_path)
-    elif output_format == "txt":
-        TxtParser.write(_render_text(document, "txt"), output_path)
-    elif output_format == "csv":
-        _write_csv(original_data, output_path)
-    elif output_format == "xlsx" and original_data.get("tables"):
-        XlsxParser.write(original_data["tables"][0], output_path)
-
-    return output_path
+        doc = result.scalar_one_or_none()
+        if doc:
+            doc.file_size = os.path.getsize(file_path)
+            await db.commit()
 
 
-def _render_text(document: Dict[str, Any], output_format: str) -> str:
-    lines = []
-    for paragraph in document.get("paragraphs", []):
-        text = paragraph.get("text", "")
-        style = paragraph.get("style", "Normal")
-        if output_format == "md" and style.startswith("Heading "):
-            level = int(style.split()[-1])
-            lines.append(f"{'#' * level} {_strip_heading_prefix(text)}")
-        else:
-            lines.append(text)
-    separator = "\n\n" if output_format in {"md", "docx"} else "\n"
-    return separator.join(lines)
+def _copy_and_open_docx(file_path: str, original_filename: str) -> tuple:
+    """复制 docx 文件到 outputs 目录，用 python-docx 打开副本。"""
+    from docx import Document as DocxDocument
+    from pathlib import Path
+
+    output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+    output_path = str(output_dir / output_filename)
+    shutil.copy2(file_path, output_path)
+    doc = DocxDocument(output_path)
+    return doc, output_path
 
 
-def _write_csv(original_data: Dict[str, Any], output_path: str) -> None:
-    rows = []
-    sheets = original_data.get("sheets", [])
-    if sheets:
-        rows = sheets[0].get("data", [])
-    with open(output_path, "w", encoding="utf-8-sig", newline="") as csv_file:
-        writer = csv.writer(csv_file)
-        for row in rows:
-            writer.writerow(row)
+async def _resolve_edit_target(doc_info: Dict[str, Any], output_file_id: Optional[str]) -> tuple:
+    """解析编辑目标：首次编辑复制副本，后续编辑在已有输出文件上操作。
+
+    Returns:
+        (source_file_path, original_filename, is_new_copy)
+        - source_file_path: 应该读取/打开的文件路径
+        - original_filename: 用于生成新输出文件名
+        - is_new_copy: True=需要注册DB, False=原地修改已有文件
+    """
+    # 有 output_file_id → 在已有输出文件上操作
+    if output_file_id:
+        output_info = await _get_doc_info(output_file_id)
+        if output_info:
+            return output_info["file_path"], doc_info["original_filename"], False
+
+    # 文件本身是输出文件
+    if doc_info.get("is_output"):
+        return doc_info["file_path"], doc_info["original_filename"], False
+
+    # 首次编辑 → 需要复制
+    return doc_info["file_path"], doc_info["original_filename"], True
 
 
-def _reindex_paragraphs(paragraphs: List[Dict[str, Any]]) -> None:
-    for index, paragraph in enumerate(paragraphs):
-        paragraph["index"] = index
+# ──────────────────────────── 文本处理辅助 ────────────────────────────
+
+def _find_paragraph_by_index(doc, index: int):
+    """获取 doc.paragraphs 中第 index 个非空段落。"""
+    editable = [p for p in doc.paragraphs if p.text.strip()]
+    if 0 <= index < len(editable):
+        return editable[index]
+    return None
+
+
+def _get_editable_paragraphs(doc) -> list:
+    """获取所有非空段落列表。"""
+    return [p for p in doc.paragraphs if p.text.strip()]
+
+
+def _set_paragraph_text(paragraph, new_text: str):
+    """设置段落文本，保留第一个 run 的格式。"""
+    if paragraph.runs:
+        paragraph.runs[0].text = new_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+    else:
+        paragraph.text = new_text
+
+
+def _make_change_record(op_name: str, index: int, before: str, after: str, reason: str) -> Dict[str, Any]:
+    return {
+        "op": op_name,
+        "paragraph_index": index,
+        "before": before[:300],
+        "after": after[:300],
+        "reason": reason,
+    }
 
 
 def _strip_heading_prefix(text: str) -> str:
@@ -265,18 +184,21 @@ def _split_paragraph(text: str, separator: Optional[str]) -> List[str]:
     return parts or [text]
 
 
-def _make_change_record(op_name: str, index: int, before: str, after: str, reason: str) -> Dict[str, Any]:
-    return {
-        "op": op_name,
-        "paragraph_index": index,
-        "before": before[:300],
-        "after": after[:300],
-        "reason": reason,
+def _get_parser(file_type: str):
+    """获取文档解析器"""
+    parsers = {
+        "docx": DocxParser(),
+        "xlsx": XlsxParser(),
+        "md": MdParser(),
+        "txt": TxtParser(),
     }
+    return parsers.get(file_type)
 
+
+# ──────────────────────────── 文档编辑工具 ────────────────────────────
 
 class ReplaceTextTool(BaseTool):
-    """文本替换工具 - 替换文档中的指定文本"""
+    """文本替换工具"""
 
     @property
     def name(self) -> str:
@@ -284,14 +206,14 @@ class ReplaceTextTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "替换文档中的指定文本。需要提供文档ID、目标段落索引、要替换的原文本和新文本。"
+        return "替换文档中的指定文本。需要提供文档ID、目标段落索引、要替换的原文本和新文本。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始）"},
                 "old_text": {"type": "string", "description": "要替换的原文本"},
                 "new_text": {"type": "string", "description": "替换后的新文本"},
@@ -301,47 +223,69 @@ class ReplaceTextTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        # 获取文档路径
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
+        file_type = doc_info["file_type"]
         paragraph_index = params["paragraph_index"]
-        paragraphs = structure.get("paragraphs", [])
-        if not (0 <= paragraph_index < len(paragraphs)):
-            return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围（共 {len(paragraphs)} 段）")
-
-        paragraph = paragraphs[paragraph_index]
         old_text = params["old_text"]
         new_text = params["new_text"]
-        before = paragraph["text"]
-        paragraph["text"] = before.replace(old_text, new_text) if old_text else new_text
+        output_file_id = params.get("output_file_id")
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            paragraph = _find_paragraph_by_index(doc, paragraph_index)
+            if not paragraph:
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = paragraph.text
+            _set_paragraph_text(paragraph, before.replace(old_text, new_text) if old_text else new_text)
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            if not (0 <= paragraph_index < len(lines)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = lines[paragraph_index]
+            lines[paragraph_index] = before.replace(old_text, new_text) if old_text else new_text
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
+        after_text = lines[paragraph_index] if file_type != "docx" else paragraph.text
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段中的 '{old_text}' 替换为 '{new_text}'",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
-                "changes": [_make_change_record("replace_text", paragraph_index, before, paragraph["text"], params.get("reason", ""))],
+                "changes": [_make_change_record("replace_text", paragraph_index, before, after_text, params.get("reason", ""))],
             },
         )
 
 
-
 class RewriteParagraphTool(BaseTool):
-    """LLM重写段落工具 - 使用LLM重写指定段落"""
+    """LLM重写段落工具"""
 
     @property
     def name(self) -> str:
@@ -349,14 +293,14 @@ class RewriteParagraphTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "使用LLM重写指定段落。需要提供文档ID、目标段落索引和重写指令。"
+        return "使用LLM重写指定段落。需要提供文档ID、目标段落索引和重写指令。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始）"},
                 "rewrite_instruction": {"type": "string", "description": "重写指令"},
                 "reason": {"type": "string", "description": "重写原因（可选）"},
@@ -365,45 +309,69 @@ class RewriteParagraphTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
+        file_type = doc_info["file_type"]
         paragraph_index = params["paragraph_index"]
-        paragraphs = structure.get("paragraphs", [])
-        if not (0 <= paragraph_index < len(paragraphs)):
-            return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
-
-        paragraph = paragraphs[paragraph_index]
-        before = paragraph["text"]
         rewrite_instruction = params.get("rewrite_instruction", "请重写此段落。")
-        paragraph["text"] = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
+        output_file_id = params.get("output_file_id")
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            paragraph = _find_paragraph_by_index(doc, paragraph_index)
+            if not paragraph:
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = paragraph.text
+            new_text = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
+            _set_paragraph_text(paragraph, new_text)
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            if not (0 <= paragraph_index < len(lines)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = lines[paragraph_index]
+            new_text = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
+            lines[paragraph_index] = new_text
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已重写第 {paragraph_index + 1} 段",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
-                "changes": [_make_change_record("rewrite_paragraph", paragraph_index, before, paragraph["text"], params.get("reason", ""))],
+                "changes": [_make_change_record("rewrite_paragraph", paragraph_index, before, new_text, params.get("reason", ""))],
             },
         )
 
 
-
 class InsertAfterTool(BaseTool):
-    """段落后插入工具 - 在指定段落后插入新内容"""
+    """段落后插入工具"""
 
     @property
     def name(self) -> str:
@@ -411,14 +379,14 @@ class InsertAfterTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "在指定段落后插入新内容。需要提供文档ID、目标段落索引和要插入的文本。"
+        return "在指定段落后插入新内容。需要提供文档ID、目标段落索引和要插入的文本。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始）"},
                 "text": {"type": "string", "description": "要插入的文本"},
                 "style": {"type": "string", "description": "段落样式（可选，默认Normal）"},
@@ -428,45 +396,75 @@ class InsertAfterTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
-        paragraph_index = params["paragraph_index"]
         insert_text = params.get("text", "").strip()
         if not insert_text:
             return ToolResult(success=False, error="插入文本不能为空")
 
+        file_type = doc_info["file_type"]
+        paragraph_index = params["paragraph_index"]
         style = params.get("style", "Normal")
-        insert_at = paragraph_index + 1
-        structure["paragraphs"].insert(insert_at, {"index": insert_at, "text": insert_text, "style": style})
-        _reindex_paragraphs(structure["paragraphs"])
+        output_file_id = params.get("output_file_id")
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            editable = _get_editable_paragraphs(doc)
+            if not (0 <= paragraph_index < len(editable)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            target_para = editable[paragraph_index]
+            new_para = target_para.insert_paragraph_after(insert_text)
+            if style and style != "Normal":
+                try:
+                    new_para.style = style
+                except (KeyError, ValueError):
+                    pass
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            if not (0 <= paragraph_index < len(lines)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            lines.insert(paragraph_index + 1, insert_text)
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已在第 {paragraph_index + 1} 段后插入新内容",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
-                "changes": [_make_change_record("insert_after", insert_at, "", insert_text, params.get("reason", ""))],
+                "changes": [_make_change_record("insert_after", paragraph_index + 1, "", insert_text, params.get("reason", ""))],
             },
         )
 
 
-
 class HeadingPromoteTool(BaseTool):
-    """标题级别调整工具 - 升级或降级标题"""
+    """标题级别调整工具"""
 
     @property
     def name(self) -> str:
@@ -474,14 +472,14 @@ class HeadingPromoteTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "调整标题级别。需要提供文档ID、目标段落索引和目标级别（1-6）。"
+        return "调整标题级别。需要提供文档ID、目标段落索引和目标级别（1-6）。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始）"},
                 "level": {"type": "integer", "description": "目标标题级别（1-6）"},
                 "reason": {"type": "string", "description": "调整原因（可选）"},
@@ -490,47 +488,70 @@ class HeadingPromoteTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
+        file_type = doc_info["file_type"]
         paragraph_index = params["paragraph_index"]
-        paragraphs = structure.get("paragraphs", [])
-        if not (0 <= paragraph_index < len(paragraphs)):
-            return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
-
-        paragraph = paragraphs[paragraph_index]
-        before = f"[{paragraph['style']}] {paragraph['text']}"
         level = max(1, min(6, int(params.get("level", 1))))
-        paragraph["style"] = f"Heading {level}"
-        paragraph["text"] = _strip_heading_prefix(paragraph["text"])
-        after = f"[{paragraph['style']}] {paragraph['text']}"
+        output_file_id = params.get("output_file_id")
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            paragraph = _find_paragraph_by_index(doc, paragraph_index)
+            if not paragraph:
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
+            paragraph.style = f"Heading {level}"
+            after = f"[{paragraph.style.name}] {paragraph.text}"
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            if not (0 <= paragraph_index < len(lines)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = lines[paragraph_index]
+            clean = _strip_heading_prefix(before)
+            lines[paragraph_index] = f"{'#' * level} {clean}"
+            after = lines[paragraph_index]
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段调整为 Heading {level}",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
                 "changes": [_make_change_record("heading_promote", paragraph_index, before, after, params.get("reason", ""))],
             },
         )
 
 
-
 class ListFormatTool(BaseTool):
-    """列表格式化工具 - 将文本转换为列表格式"""
+    """列表格式化工具"""
 
     @property
     def name(self) -> str:
@@ -538,14 +559,14 @@ class ListFormatTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "将指定段落转换为列表格式。需要提供文档ID、段落索引列表和列表类型（bullet/number）。"
+        return "将指定段落转换为列表格式。需要提供文档ID、段落索引列表和列表类型（bullet/number）。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_indexes": {"type": "array", "items": {"type": "integer"}, "description": "段落索引列表"},
                 "list_type": {"type": "string", "enum": ["bullet", "number"], "description": "列表类型"},
                 "reason": {"type": "string", "description": "格式化原因（可选）"},
@@ -554,54 +575,89 @@ class ListFormatTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
-        paragraphs = structure.get("paragraphs", [])
+        file_type = doc_info["file_type"]
         indexes = params.get("paragraph_indexes", [])
         list_type = params.get("list_type", "bullet")
+        output_file_id = params.get("output_file_id")
         changes = []
 
-        for position, index in enumerate(indexes, start=1):
-            if not (0 <= index < len(paragraphs)):
-                continue
-            paragraph = paragraphs[index]
-            before = paragraph["text"]
-            clean_text = _strip_list_prefix(before)
-            if list_type == "number":
-                paragraph["text"] = f"{position}. {clean_text}"
-                paragraph["style"] = "List Number"
-            else:
-                paragraph["text"] = f"- {clean_text}"
-                paragraph["style"] = "List Bullet"
-            changes.append(_make_change_record("list_format", index, before, paragraph["text"], params.get("reason", "")))
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            editable = _get_editable_paragraphs(doc)
+            for position, index in enumerate(indexes, start=1):
+                if not (0 <= index < len(editable)):
+                    continue
+                paragraph = editable[index]
+                before = paragraph.text
+                clean_text = _strip_list_prefix(before)
+                if list_type == "number":
+                    _set_paragraph_text(paragraph, f"{position}. {clean_text}")
+                    try:
+                        paragraph.style = "List Number"
+                    except (KeyError, ValueError):
+                        pass
+                else:
+                    _set_paragraph_text(paragraph, f"- {clean_text}")
+                    try:
+                        paragraph.style = "List Bullet"
+                    except (KeyError, ValueError):
+                        pass
+                changes.append(_make_change_record("list_format", index, before, paragraph.text, params.get("reason", "")))
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            for position, index in enumerate(indexes, start=1):
+                if not (0 <= index < len(lines)):
+                    continue
+                before = lines[index]
+                clean_text = _strip_list_prefix(before)
+                if list_type == "number":
+                    lines[index] = f"{position}. {clean_text}"
+                else:
+                    lines[index] = f"- {clean_text}"
+                changes.append(_make_change_record("list_format", index, before, lines[index], params.get("reason", "")))
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将 {len(changes)} 个段落格式化为{'有序' if list_type == 'number' else '无序'}列表",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
                 "changes": changes,
             },
         )
 
 
-
 class ParagraphSplitTool(BaseTool):
-    """段落拆分工具 - 将长段落拆分为多个段落"""
+    """段落拆分工具"""
 
     @property
     def name(self) -> str:
@@ -609,14 +665,14 @@ class ParagraphSplitTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "将指定段落拆分为多个段落。需要提供文档ID、目标段落索引和可选的分隔符。"
+        return "将指定段落拆分为多个段落。需要提供文档ID、目标段落索引和可选的分隔符。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始）"},
                 "separator": {"type": "string", "description": "分隔符（可选，默认按句号拆分）"},
                 "reason": {"type": "string", "description": "拆分原因（可选）"},
@@ -625,55 +681,94 @@ class ParagraphSplitTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        parser = _get_parser(file_type)
-        if not parser:
-            return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
-
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
-
+        file_type = doc_info["file_type"]
         paragraph_index = params["paragraph_index"]
-        paragraphs = structure.get("paragraphs", [])
-        if not (0 <= paragraph_index < len(paragraphs)):
-            return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
-
-        paragraph = paragraphs[paragraph_index]
         separator = params.get("separator")
-        parts = _split_paragraph(paragraph["text"], separator)
-        if len(parts) <= 1:
-            return ToolResult(success=True, data={"message": "段落无法拆分（未找到分隔点）"})
+        output_file_id = params.get("output_file_id")
 
-        before = paragraph["text"]
-        paragraph["text"] = parts[0]
-        for offset, part in enumerate(parts[1:], start=1):
-            paragraphs.insert(
-                paragraph_index + offset,
-                {"index": paragraph_index + offset, "text": part, "style": paragraph["style"]},
-            )
-        _reindex_paragraphs(paragraphs)
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
 
-        output_file = _generate_output(structure, file_type, parsed_data)
-        reg = await _register_output_file(output_file, file_type, user_id=context.user_id)
+        if file_type == "docx":
+            if is_new:
+                doc, output_path = _copy_and_open_docx(source_path, original_filename)
+            else:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(source_path)
+                output_path = source_path
+
+            editable = _get_editable_paragraphs(doc)
+            if not (0 <= paragraph_index < len(editable)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+
+            paragraph = editable[paragraph_index]
+            before = paragraph.text
+            parts = _split_paragraph(before, separator)
+            if len(parts) <= 1:
+                return ToolResult(success=True, data={"message": "段落无法拆分（未找到分隔点）"})
+
+            style = paragraph.style
+            _set_paragraph_text(paragraph, parts[0])
+            current_para = paragraph
+            for part in parts[1:]:
+                new_para = current_para.insert_paragraph_after(part)
+                try:
+                    new_para.style = style
+                except (KeyError, ValueError):
+                    pass
+                if paragraph.runs:
+                    ref_run = paragraph.runs[0]
+                    for run in new_para.runs:
+                        run.font.name = ref_run.font.name
+                        run.font.size = ref_run.font.size
+                        run.font.bold = ref_run.font.bold
+                        run.font.italic = ref_run.font.italic
+                current_para = new_para
+            doc.save(output_path)
+        else:
+            with open(source_path, "r", encoding="utf-8") as f:
+                lines = [line.rstrip("\n") for line in f.readlines()]
+
+            if not (0 <= paragraph_index < len(lines)):
+                return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
+            before = lines[paragraph_index]
+            parts = _split_paragraph(before, separator)
+            if len(parts) <= 1:
+                return ToolResult(success=True, data={"message": "段落无法拆分（未找到分隔点）"})
+            lines[paragraph_index] = parts[0]
+            for offset, part in enumerate(parts[1:], start=1):
+                lines.insert(paragraph_index + offset, part)
+
+            if is_new:
+                from pathlib import Path
+                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+                output_dir.mkdir(exist_ok=True)
+                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
+                output_path = str(output_dir / output_filename)
+            else:
+                output_path = source_path
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        reg = await _finish_edit(output_path, file_type, is_new, context)
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将第 {paragraph_index + 1} 段拆分为 {len(parts)} 个段落",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
                 "changes": [_make_change_record("paragraph_split", paragraph_index, before, "\n".join(parts), params.get("reason", ""))],
             },
         )
 
 
-
 class SetTextStyleTool(BaseTool):
-    """字体样式设置工具 - 设置文本的字体、大小等样式"""
+    """字体样式设置工具"""
 
     @property
     def name(self) -> str:
@@ -681,14 +776,14 @@ class SetTextStyleTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "设置指定段落的字体样式。需要提供文档ID、段落索引和字体名称或大小。仅支持docx文件。"
+        return "设置指定段落的字体样式。仅支持docx文件。首次编辑使用原始文档ID，后续编辑使用上一步返回的output_file_id。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "file_id": {"type": "string", "description": "文档ID"},
+                "file_id": {"type": "string", "description": "文档ID（首次用原始ID，后续用上次返回的output_file_id）"},
                 "paragraph_indexes": {"type": "array", "items": {"type": "integer"}, "description": "段落索引列表"},
                 "font_name": {"type": "string", "description": "字体名称（可选）"},
                 "font_size_pt": {"type": "number", "description": "字体大小（pt，可选）"},
@@ -698,28 +793,34 @@ class SetTextStyleTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        from docx import Document as DocxDocument
         from docx.shared import Pt
 
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
-
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
-        if file_type != "docx":
+        if doc_info["file_type"] != "docx":
             return ToolResult(success=False, error="字体样式设置仅支持docx文件")
 
-        doc = DocxDocument(doc_path)
-        all_paragraphs = list(doc.paragraphs)
+        output_file_id = params.get("output_file_id")
+        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+
+        if is_new:
+            doc, output_path = _copy_and_open_docx(source_path, original_filename)
+        else:
+            from docx import Document as DocxDocument
+            doc = DocxDocument(source_path)
+            output_path = source_path
+
+        editable = _get_editable_paragraphs(doc)
         source_indexes = params.get("paragraph_indexes", [])
         font_name = params.get("font_name", "")
         font_size_pt = params.get("font_size_pt")
         changes = []
 
         for index in source_indexes:
-            if not (0 <= index < len(all_paragraphs)):
+            if not (0 <= index < len(editable)):
                 continue
-            paragraph = all_paragraphs[index]
+            paragraph = editable[index]
             before = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
             for run in paragraph.runs:
                 if font_name:
@@ -729,11 +830,8 @@ class SetTextStyleTool(BaseTool):
             after = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
             changes.append(_make_change_record("set_text_style", index, before, after, params.get("reason", "")))
 
-        output_filename = f"output_{uuid4().hex}.docx"
-        output_path = os.path.join(settings.UPLOAD_DIR, "output", output_filename)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         doc.save(output_path)
-        reg = await _register_output_file(output_path, "docx", user_id=context.user_id)
+        reg = await _finish_edit(output_path, "docx", is_new, context)
 
         return ToolResult(
             success=True,
@@ -746,9 +844,8 @@ class SetTextStyleTool(BaseTool):
         )
 
 
-
 class ConvertTool(BaseTool):
-    """格式转换工具 - 文档格式转换（docx<->md, xlsx<->csv）"""
+    """格式转换工具"""
 
     @property
     def name(self) -> str:
@@ -771,11 +868,11 @@ class ConvertTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        doc_path = await _get_doc_path(params["file_id"])
-        if not doc_path:
+        doc_info = await _get_doc_info(params["file_id"])
+        if not doc_info:
             return ToolResult(success=False, error=f"文档 {params['file_id']} 不存在")
 
-        file_type = doc_path.rsplit(".", 1)[-1].lower()
+        file_type = doc_info["file_type"]
         target_format = params.get("target_format", "").lower()
 
         if target_format not in CONVERT_RULES.get(file_type, set()):
@@ -785,19 +882,70 @@ class ConvertTool(BaseTool):
         if not parser:
             return ToolResult(success=False, error=f"不支持的文件类型: {file_type}")
 
-        parsed_data = parser.parse(doc_path)
-        structure = _build_editable_structure(parsed_data, file_type)
+        parsed_data = parser.parse(doc_info["file_path"])
 
-        output_file = _generate_output(structure, target_format, parsed_data)
-        reg = await _register_output_file(output_file, target_format, user_id=context.user_id)
+        from pathlib import Path
+        output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+        output_dir.mkdir(exist_ok=True)
+        base_name = f"edited_{uuid4().hex[:8]}_{doc_info['original_filename']}".rsplit(".", 1)[0]
+        output_filename = f"{base_name}.{target_format}"
+        output_path = str(output_dir / output_filename)
+
+        if target_format == "docx":
+            content = parsed_data.get("full_text", "")
+            DocxParser.write(content, output_path, {
+                "paragraphs": parsed_data.get("paragraphs", []),
+                "tables": parsed_data.get("tables", []),
+            })
+        elif target_format == "md":
+            MdParser.write(parsed_data.get("full_text", ""), output_path)
+        elif target_format == "txt":
+            TxtParser.write(parsed_data.get("full_text", ""), output_path)
+        elif target_format == "csv":
+            rows = []
+            sheets = parsed_data.get("sheets", [])
+            if sheets:
+                rows = sheets[0].get("data", [])
+            with open(output_path, "w", encoding="utf-8-sig", newline="") as csv_file:
+                writer = csv.writer(csv_file)
+                for row in rows:
+                    writer.writerow(row)
+
+        reg = await _register_output_file(output_path, target_format, user_id=getattr(context, "user_id", None))
 
         return ToolResult(
             success=True,
             data={
                 "message": f"已将文档从 {file_type} 转换为 {target_format}",
-                "output_file": output_file,
+                "output_file": output_path,
                 **reg,
                 "output_format": target_format,
             },
         )
 
+
+# ──────────────────────────── 工具共用的完成处理 ────────────────────────────
+
+async def _finish_edit(output_path: str, file_type: str, is_new_copy: bool, context) -> Dict[str, str]:
+    """编辑完成后处理：注册DB或更新大小。"""
+    if is_new_copy:
+        return await _register_output_file(output_path, file_type, user_id=getattr(context, "user_id", None))
+    else:
+        await _update_output_file_size(output_path)
+        # 通过文件路径查找已有的 output_file_id
+        output_file_id = await _get_file_id_by_path(output_path)
+        return {
+            "output_file_id": output_file_id,
+            "output_filename": os.path.basename(output_path),
+            "download_url": f"/api/v1/documents/{output_file_id}/download",
+        }
+
+
+async def _get_file_id_by_path(file_path: str) -> str:
+    """通过文件路径查询数据库中的文档ID"""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Document.id).where(Document.file_path == file_path)
+        )
+        doc_id = result.scalar_one_or_none()
+        return str(doc_id) if doc_id else ""

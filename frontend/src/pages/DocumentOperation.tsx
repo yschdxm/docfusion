@@ -14,6 +14,54 @@ import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
 import { useI18n } from '../hooks/useI18n'
 
+// 自定义 Markdown 链接组件：对 API 下载链接使用带 token 的请求
+function DownloadLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  const isDownloadLink = href && (
+    href.includes('/documents/') && href.includes('/download')
+  )
+
+  const handleClick = async (e: React.MouseEvent) => {
+    if (!isDownloadLink || !href) return
+    e.preventDefault()
+    try {
+      const response = await api.get(href.replace(/^\/api\/v1/, ''), { responseType: 'blob' })
+      const contentDisposition = response.headers['content-disposition'] as string | undefined
+      let filename = 'download'
+      if (contentDisposition) {
+        // RFC 5987: filename*=UTF-8''%E8%A7%86%E9%A2%91%E7%A8%BF.docx
+        const rfc5987Match = contentDisposition.match(/filename\*=(?:UTF-8'')(.+)/i)
+        if (rfc5987Match) {
+          filename = decodeURIComponent(rfc5987Match[1])
+        } else {
+          // 普通格式: filename="edited_xxx.docx"
+          const plainMatch = contentDisposition.match(/filename="?([^";\s]+)"?/)
+          if (plainMatch) filename = plainMatch[1]
+        }
+      }
+      const blob = response.data instanceof Blob
+        ? response.data
+        : new Blob([response.data], { type: response.headers['content-type'] || 'application/octet-stream' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch {
+      toast.error('下载失败')
+    }
+  }
+
+  if (isDownloadLink) {
+    return <a href={href} onClick={handleClick} className="text-blue-600 hover:text-blue-800 underline cursor-pointer">{children}</a>
+  }
+  return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+}
+
+const markdownComponents = { a: DownloadLink }
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -828,7 +876,7 @@ export default function DocumentOperation() {
                 <div className={`max-w-[80%] p-4 rounded-2xl ${message.role === 'user' ? 'bg-primary-500/15 text-slate-900' : 'bg-slate-50 text-slate-700'}`}>
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                         {message.content}
                       </ReactMarkdown>
                     </div>
@@ -876,7 +924,7 @@ export default function DocumentOperation() {
           <div className="flex justify-start">
             <div className="max-w-[80%] p-4 rounded-2xl bg-slate-50 text-slate-700">
               <div className="prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {streamingContent}
                 </ReactMarkdown>
               </div>

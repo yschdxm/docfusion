@@ -23,6 +23,7 @@ from app.services.prompts import (
     ROW_FILL_PROMPT,
     BATCH_EXTRACT_PROMPT,
     FILL_SATISFACTION_PROMPT,
+    REWRITE_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -1017,6 +1018,21 @@ class LLMService:
             return []
 
     # ──────────────────────────── 文档操作 ────────────────────────────
+
+    async def rewrite_paragraph_text(self, original_text: str, rewrite_instruction: str) -> str:
+        """使用LLM重写段落文本"""
+        prompt = REWRITE_PROMPT.format(
+            original_text=original_text,
+            rewrite_instruction=rewrite_instruction,
+        )
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.chat_completion(
+            messages,
+            temperature=0.3,
+            max_tokens=65536,
+            enable_thinking=False,
+        )
+        return response.strip()
 
     async def document_operation(
         self,
