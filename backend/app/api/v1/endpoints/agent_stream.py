@@ -547,9 +547,8 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
             user_id=user_id
         ):
             event_count += 1
-            yield event
 
-            # 后端统一持久化：处理每个 SSE 事件
+            # 后端统一持久化：在 yield 之前处理消息保存，防止用户断开连接导致消息丢失
             if request.conversation_id:
                 try:
                     event_info = _parse_sse_event(event)
@@ -582,6 +581,8 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
                                 logger.info(f"[Persist] completed skipped (duplicate): {msg[:80]}")
                 except Exception as e:
                     logger.warning(f"[Persist] 事件处理异常: {e}", exc_info=True)
+
+            yield event
 
         logger.info(f"[API /agent/stream] 任务流结束 | task_id={task.task_id} | 共发送 {event_count} 个事件")
 
