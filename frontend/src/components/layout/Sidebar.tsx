@@ -2,10 +2,46 @@
 import { LayoutDashboard, FolderOpen, FileText, Network, NotebookPen } from 'lucide-react'
 import { useI18n } from '../../hooks/useI18n'
 import { sidebarI18n } from '../../services/i18n'
+import { useState, useEffect } from 'react'
+import api from '../../services/api'
+import Dropdown from '../ui/Dropdown'
 
 export default function Sidebar() {
   const { language } = useI18n()
   const t = sidebarI18n[language]
+  const [currentProvider, setCurrentProvider] = useState<string>('deepseek')
+
+  // 获取当前模型配置
+  useEffect(() => {
+    const fetchModelConfig = async () => {
+      try {
+        const { data } = await api.get('/agent/model')
+        setCurrentProvider(data.provider)
+      } catch (error) {
+        console.error('获取模型配置失败:', error)
+      }
+    }
+    fetchModelConfig()
+  }, [])
+
+  // 切换模型
+  const handleModelSwitch = async (provider: string) => {
+    if (provider === currentProvider) return
+
+    try {
+      const { data } = await api.post('/agent/model/switch', { provider })
+      if (data.success) {
+        setCurrentProvider(provider)
+      }
+    } catch (error) {
+      console.error('切换模型失败:', error)
+    }
+  }
+
+  const modelOptions = [
+    { value: 'mimo', label: 'MiMO v2 Flash' },
+    { value: 'deepseek', label: 'DeepSeek V4 Flash' },
+  ]
 
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: t.dashboard },
@@ -65,7 +101,13 @@ export default function Sidebar() {
       <div className="border-t border-slate-200/80 px-4 py-4">
         <div className="rounded-xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff,#f6f9ff)] px-4 py-3">
           <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Engine</p>
-          <p className="mt-1 text-sm font-semibold text-[var(--theme-primary)]">MiMO v2 Flash</p>
+          <Dropdown
+            value={currentProvider}
+            onChange={handleModelSwitch}
+            options={modelOptions}
+            className="mt-1"
+            dropup={true}
+          />
         </div>
       </div>
     </aside>

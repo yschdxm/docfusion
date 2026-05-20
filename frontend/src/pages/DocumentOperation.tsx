@@ -40,7 +40,7 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
       }
       const blob = response.data instanceof Blob
         ? response.data
-        : new Blob([response.data], { type: response.headers['content-type'] || 'application/octet-stream' })
+        : new Blob([response.data], { type: (response.headers['content-type'] as string) || 'application/octet-stream' })
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

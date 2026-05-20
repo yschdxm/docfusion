@@ -441,7 +441,7 @@ export default function DocumentManager() {
       const blob =
         response.data instanceof Blob
           ? response.data
-          : new Blob([response.data], { type: response.headers['content-type'] || 'application/octet-stream' })
+          : new Blob([response.data], { type: (response.headers['content-type'] as string) || 'application/octet-stream' })
 
       triggerFileDownload(blob, filename)
 
