@@ -698,6 +698,7 @@ class AgentRuntime:
                     messages.append({
                         "role": "assistant",
                         "content": full_content if full_content else None,
+                        "reasoning_content": full_reasoning,
                         "tool_calls": [tool_call]
                     })
                     messages.append({
@@ -764,6 +765,7 @@ class AgentRuntime:
                 messages.append({
                     "role": "assistant",
                     "content": full_content if full_content else None,
+                    "reasoning_content": full_reasoning,
                     "tool_calls": [tool_call]
                 })
                 messages.append({
