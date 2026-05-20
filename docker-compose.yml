@@ -9,6 +9,14 @@ services:
     restart: unless-stopped
     expose:
       - "8000"
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 12G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
     volumes:
       - uploads:/app/uploads
     environment:
@@ -23,6 +31,9 @@ services:
       - GITEE_AI_API_KEY=${GITEE_AI_API_KEY}
       - MIMO_BASE_URL=${MIMO_BASE_URL}
       - MIMO_MODEL=${MIMO_MODEL}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL}
       - GITEE_AI_BASE_URL=${GITEE_AI_BASE_URL}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - RERANK_MODEL=${RERANK_MODEL}

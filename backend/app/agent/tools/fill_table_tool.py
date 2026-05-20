@@ -268,7 +268,7 @@ fill_mode 详解（针对指定表格的操作）：
                 else:
                     # 首次填写，基于模板创建新文件
                     return await self._create_new_file(
-                        db, template_id, data, fill_mode, target_table_index, logger
+                        db, template_id, data, fill_mode, target_table_index, logger, context
                     )
 
         except Exception as e:
@@ -515,7 +515,7 @@ fill_mode 详解（针对指定表格的操作）：
         else:
             async with async_session() as db:
                 return await self._create_new_file(
-                    db, template_id, data, fill_mode, target_table_index, logger
+                    db, template_id, data, fill_mode, target_table_index, logger, context
                 )
 
     def _build_data_summary(self, records: List[Dict], template_headers: List[str]) -> str:
@@ -665,7 +665,7 @@ fill_mode 详解（针对指定表格的操作）：
         return []
 
     async def _create_new_file(
-        self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger
+        self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
     ) -> ToolResult:
         """基于模板创建新输出文件"""
         # 查询模板文档

@@ -90,3 +90,26 @@ async def generate_title(
     except Exception as e:
         logger.error(f"生成标题失败: {e}")
         return {"title": "新对话"}
+
+
+class SwitchModelRequest(BaseModel):
+    provider: str  # "mimo" 或 "deepseek"
+
+
+@router.get("/model")
+async def get_model_config(current_user: User = Depends(get_current_user)):
+    """获取当前模型配置"""
+    return llm_service.get_model_info()
+
+
+@router.post("/model/switch")
+async def switch_model(
+    request: SwitchModelRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """切换模型提供商"""
+    try:
+        result = llm_service.switch_model(request.provider)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}

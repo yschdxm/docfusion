@@ -42,8 +42,15 @@ function typeColor(type: string): string {
   return `hsl(${hue}, 65%, 60%)`
 }
 
-function typeBadgeStyle(type: string): React.CSSProperties {
+function typeBadgeStyle(type: string, dark = false): React.CSSProperties {
   const hue = hashStr(type) % 360
+  if (dark) {
+    return {
+      backgroundColor: `hsl(${hue}, 40%, 20%)`,
+      borderColor: `hsl(${hue}, 50%, 40%)`,
+      color: `hsl(${hue}, 60%, 75%)`,
+    }
+  }
   return {
     backgroundColor: `hsl(${hue}, 80%, 95%)`,
     borderColor: `hsl(${hue}, 60%, 80%)`,
@@ -65,6 +72,8 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
 
     if (nodes.length === 0) return
 
+    const isDark = document.documentElement.getAttribute('data-theme') === 'night-mode'
+
     const uniqueNodes: Node[] = []
     const seenNodeIds = new Set<string>()
     for (const node of nodes) {
@@ -83,7 +92,7 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
           border: typeColor(node.type),
           highlight: { background: '#165dff', border: '#165dff' },
         },
-        font: { color: '#f8fafc', size: 12 },
+        font: { color: isDark ? '#e2e8f0' : '#1e293b', size: 12 },
         shape: 'dot',
         size: 20,
       }))
@@ -95,8 +104,8 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
         from: edge.source,
         to: edge.target,
         label: edge.type,
-        color: { color: '#94a3b8', highlight: '#165dff' },
-        font: { color: '#64748b', size: 10, strokeWidth: 0 },
+        color: { color: isDark ? '#475569' : '#94a3b8', highlight: '#165dff' },
+        font: { color: isDark ? '#94a3b8' : '#64748b', size: 10, strokeWidth: 0 },
         arrows: { to: { enabled: true, scaleFactor: 0.5 } },
         smooth: { enabled: true, type: 'continuous', roundness: 0.5 },
       }))
@@ -146,6 +155,15 @@ export default function KnowledgeGraph() {
   const [isQuerying, setIsQuerying] = useState(false)
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all')
+  const [isDark, setIsDark] = useState(document.documentElement.getAttribute('data-theme') === 'night-mode')
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
 
@@ -335,7 +353,7 @@ export default function KnowledgeGraph() {
                 {queryResult.relatedEntities.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {queryResult.relatedEntities.map((entity, index) => (
-                      <span key={index} className="px-3 py-1 rounded-full text-xs border" style={typeBadgeStyle(entity.type)}>
+                      <span key={index} className="px-3 py-1 rounded-full text-xs border" style={typeBadgeStyle(entity.type, isDark)}>
                         {entity.name}
                       </span>
                     ))}
@@ -366,7 +384,7 @@ export default function KnowledgeGraph() {
                   {filteredNodes.map((node) => (
                     <div key={node.id} className="p-3 rounded-lg bg-slate-50 border border-slate-200 hover:border-primary-200 transition-colors">
                       <div className="flex items-center gap-2 mb-2">
-                        <span className="px-2 py-0.5 rounded text-xs border" style={typeBadgeStyle(node.type)}>{node.type}</span>
+                        <span className="px-2 py-0.5 rounded text-xs border" style={typeBadgeStyle(node.type, isDark)}>{node.type}</span>
                       </div>
                       <p className="text-slate-900 font-medium">{node.name}</p>
                       {node.value && <p className="text-sm text-slate-500 mt-1 truncate">{node.value}</p>}

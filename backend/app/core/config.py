@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     MIMO_BASE_URL: str = "https://api.xiaomimimo.com/v1"
     MIMO_MODEL: str = "mimo-v2-flash"
 
+    # DeepSeek API
+    DEEPSEEK_API_KEY: Optional[str] = None
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+
     # LLM 流控配置
     LLM_RPM: int = 100  # 每分钟最大请求数
     LLM_TPM: int = 10_000_000  # 每分钟最大 token 数 (10M)

@@ -23,6 +23,7 @@ from app.services.prompts import (
     ROW_FILL_PROMPT,
     BATCH_EXTRACT_PROMPT,
     FILL_SATISFACTION_PROMPT,
+    REWRITE_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,11 @@ class LLMService:
     }
 
     def __init__(self):
-        self.api_key = settings.MIMO_API_KEY
-        self.base_url = settings.MIMO_BASE_URL
-        self.model = settings.MIMO_MODEL
-        self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_MIMO
+        self.current_provider = "deepseek"  # 当前模型提供商
+        self.api_key = settings.DEEPSEEK_API_KEY
+        self.base_url = settings.DEEPSEEK_BASE_URL
+        self.model = settings.DEEPSEEK_MODEL
+        self.ssl_verify = settings.SSL_VERIFY
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -56,9 +58,56 @@ class LLMService:
         self.error_logger = llm_error_logger
 
         logger.info(
-            "LLMService初始化: model=%s, base_url=%s, ssl_verify=%s, max_retries=%d",
-            self.model, self.base_url, self.ssl_verify, self.max_retries
+            "LLMService初始化: provider=%s, model=%s, base_url=%s, ssl_verify=%s, max_retries=%d",
+            self.current_provider, self.model, self.base_url, self.ssl_verify, self.max_retries
         )
+
+    def switch_model(self, provider: str) -> Dict[str, str]:
+        """切换模型提供商
+
+        Args:
+            provider: 模型提供商名称 ("mimo" 或 "deepseek")
+
+        Returns:
+            包含当前模型信息的字典
+        """
+        if provider == "deepseek":
+            if not settings.DEEPSEEK_API_KEY:
+                raise ValueError("DeepSeek API Key 未配置")
+            self.current_provider = "deepseek"
+            self.api_key = settings.DEEPSEEK_API_KEY
+            self.base_url = settings.DEEPSEEK_BASE_URL
+            self.model = settings.DEEPSEEK_MODEL
+        elif provider == "mimo":
+            self.current_provider = "mimo"
+            self.api_key = settings.MIMO_API_KEY
+            self.base_url = settings.MIMO_BASE_URL
+            self.model = settings.MIMO_MODEL
+        else:
+            raise ValueError(f"不支持的模型提供商: {provider}")
+
+        # 更新 headers
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        logger.info("LLMService切换模型: provider=%s, model=%s, base_url=%s",
+                     self.current_provider, self.model, self.base_url)
+
+        return {
+            "provider": self.current_provider,
+            "model": self.model,
+            "base_url": self.base_url
+        }
+
+    def get_model_info(self) -> Dict[str, str]:
+        """获取当前模型信息"""
+        return {
+            "provider": self.current_provider,
+            "model": self.model,
+            "base_url": self.base_url
+        }
 
     @staticmethod
     def _extract_json(text: str) -> Any:
@@ -1017,6 +1066,21 @@ class LLMService:
             return []
 
     # ──────────────────────────── 文档操作 ────────────────────────────
+
+    async def rewrite_paragraph_text(self, original_text: str, rewrite_instruction: str) -> str:
+        """使用LLM重写段落文本"""
+        prompt = REWRITE_PROMPT.format(
+            original_text=original_text,
+            rewrite_instruction=rewrite_instruction,
+        )
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.chat_completion(
+            messages,
+            temperature=0.3,
+            max_tokens=65536,
+            enable_thinking=False,
+        )
+        return response.strip()
 
     async def document_operation(
         self,
