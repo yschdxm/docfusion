@@ -45,11 +45,15 @@ class Settings(BaseSettings):
     MIMO_API_KEY: Optional[str] = None
     MIMO_BASE_URL: str = "https://api.xiaomimimo.com/v1"
     MIMO_MODEL: str = "mimo-v2-flash"
+    MIMO_MAX_CONTEXT_TOKENS: int = 128000   # 128K
+    MIMO_MAX_OUTPUT_TOKENS: int = 65536     # 64K
 
     # DeepSeek API
     DEEPSEEK_API_KEY: Optional[str] = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_MAX_CONTEXT_TOKENS: int = 1000000  # 1M
+    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 393216    # 384K
 
     # LLM 流控配置
     LLM_RPM: int = 100  # 每分钟最大请求数

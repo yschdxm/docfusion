@@ -67,6 +67,9 @@ class AgentEventType(str, Enum):
     FAILED = "failed"                      # 任务失败
     CANCELLED = "cancelled"                # 任务取消
 
+    # 统计事件
+    STATS_UPDATE = "stats_update"          # 任务统计更新
+
 
 class AgentEvent(BaseModel):
     """Agent事件"""
@@ -301,6 +304,14 @@ class StreamManager:
             event_type=AgentEventType.SYSTEM_MESSAGE,
             step_id=self._current_step_id,
             data={"message": message, "level": level}
+        ))
+
+    async def emit_stats_update(self, stats: dict) -> None:
+        """发送任务统计更新事件"""
+        await self.emit(AgentEvent(
+            event_type=AgentEventType.STATS_UPDATE,
+            step_id=self._current_step_id,
+            data={"stats": stats}
         ))
 
     async def emit_warning(self, message: str) -> None:

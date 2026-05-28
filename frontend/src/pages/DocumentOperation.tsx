@@ -8,7 +8,8 @@ import { useDocumentStore } from '../stores/documentStore'
 import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
 import AgentThinkingPanel from '../components/AgentThinkingPanel'
-import agentStreamService, { AgentStep } from '../services/agentStreamService'
+import TaskStatsBadge from '../components/TaskStatsBadge'
+import agentStreamService, { AgentStep, TaskStats } from '../services/agentStreamService'
 import { useDocumentPreview, getFileType } from '../hooks/useDocumentPreview'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
@@ -69,6 +70,7 @@ interface Message {
   timestamp: number
   steps?: AgentStep[]
   isStreaming?: boolean
+  task_stats?: TaskStats
 }
 
 interface PreviewItem {
@@ -118,7 +120,11 @@ export default function DocumentOperation() {
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [streamingStats, setStreamingStats] = useState<TaskStats | null>(null)
+  const [streamingDuration, setStreamingDuration] = useState(0)
   const streamingContentRef = useRef('')
+  const taskStartTimeRef = useRef<number>(0)
+  const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const currentConnectionRef = useRef<string | null>(null)
@@ -153,8 +159,30 @@ export default function DocumentOperation() {
       if (currentConnectionSessionRef.current) {
         agentStreamService.cancelSession(currentConnectionSessionRef.current)
       }
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+      }
     }
   }, [])
+
+  // 实时计时器
+  useEffect(() => {
+    if (isStreaming && taskStartTimeRef.current > 0) {
+      durationTimerRef.current = setInterval(() => {
+        setStreamingDuration(Date.now() - taskStartTimeRef.current)
+      }, 100)
+    } else {
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+        durationTimerRef.current = null
+      }
+    }
+    return () => {
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+      }
+    }
+  }, [isStreaming])
 
   useEffect(() => {
     if (activeSessionId) {
@@ -288,6 +316,10 @@ export default function DocumentOperation() {
         }
       }
 
+      if (event.event_type === 'stats_update' && event.data.stats) {
+        setStreamingStats(event.data.stats)
+      }
+
       if (event.event_type === 'content_chunk' && event.data.content) {
         if (event.data.agent_name) return
         setStreamingContent(prev => {
@@ -301,6 +333,7 @@ export default function DocumentOperation() {
     const onComplete = (result: any) => {
       if (currentConnectionSessionRef.current !== sessionId) return
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      setStreamingStats(null)
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
 
       if (result.message || result.download_url || latestStepsRef.current.length > 0) {
@@ -309,6 +342,7 @@ export default function DocumentOperation() {
           content: result.message || '',
           timestamp: Date.now(),
           steps: latestStepsRef.current.length > 0 ? [...latestStepsRef.current] : undefined,
+          task_stats: result.task_stats,
         }
         if (result.download_url) {
           aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id }
@@ -321,6 +355,7 @@ export default function DocumentOperation() {
     const onError = (error: any) => {
       if (currentConnectionSessionRef.current !== sessionId) return
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      setStreamingStats(null)
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
       if (error?.toString().includes('abort') || error?.toString().includes('AbortError')) return
       toast.error(error)
@@ -445,6 +480,9 @@ export default function DocumentOperation() {
     setCurrentSteps([])
     setStreamingContent('')
     streamingContentRef.current = ''
+    taskStartTimeRef.current = Date.now()
+    setStreamingDuration(0)
+    setStreamingStats(null)
 
     if (isFirstMessage) {
       api.post('/agent/generate-title', { message: userMessage })
@@ -907,6 +945,13 @@ export default function DocumentOperation() {
                 )}
               </div>
             )}
+
+            {/* 任务统计 */}
+            {message.role === 'assistant' && message.task_stats && (
+              <div className="flex justify-start mt-1">
+                <TaskStatsBadge stats={message.task_stats} />
+              </div>
+            )}
           </div>
         ))}
 
@@ -932,6 +977,13 @@ export default function DocumentOperation() {
                 {new Date().toLocaleTimeString()}
               </span>
             </div>
+          </div>
+        )}
+
+        {/* 实时统计显示 */}
+        {isStreaming && streamingStats && (
+          <div className="flex justify-start">
+            <TaskStatsBadge stats={streamingStats} isLive={true} liveDuration={streamingDuration} />
           </div>
         )}
 

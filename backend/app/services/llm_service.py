@@ -48,6 +48,8 @@ class LLMService:
         self.api_key = settings.DEEPSEEK_API_KEY
         self.base_url = settings.DEEPSEEK_BASE_URL
         self.model = settings.DEEPSEEK_MODEL
+        self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
+        self.max_context_tokens = settings.DEEPSEEK_MAX_CONTEXT_TOKENS
         self.ssl_verify = settings.SSL_VERIFY
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -78,11 +80,15 @@ class LLMService:
             self.api_key = settings.DEEPSEEK_API_KEY
             self.base_url = settings.DEEPSEEK_BASE_URL
             self.model = settings.DEEPSEEK_MODEL
+            self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
+            self.max_context_tokens = settings.DEEPSEEK_MAX_CONTEXT_TOKENS
         elif provider == "mimo":
             self.current_provider = "mimo"
             self.api_key = settings.MIMO_API_KEY
             self.base_url = settings.MIMO_BASE_URL
             self.model = settings.MIMO_MODEL
+            self.max_output_tokens = settings.MIMO_MAX_OUTPUT_TOKENS
+            self.max_context_tokens = settings.MIMO_MAX_CONTEXT_TOKENS
         else:
             raise ValueError(f"不支持的模型提供商: {provider}")
 
@@ -106,7 +112,9 @@ class LLMService:
         return {
             "provider": self.current_provider,
             "model": self.model,
-            "base_url": self.base_url
+            "base_url": self.base_url,
+            "max_output_tokens": self.max_output_tokens,
+            "max_context_tokens": self.max_context_tokens,
         }
 
     @staticmethod
@@ -155,7 +163,7 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 65536,
+        max_tokens: Optional[int] = None,
         enable_thinking: bool = True,
         stream: bool = False,
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -180,6 +188,8 @@ class LLMService:
         Raises:
             LLMError: 当API调用失败或响应异常时
         """
+        if max_tokens is None:
+            max_tokens = self.max_output_tokens
         start_time = time.time()
 
         # 记录请求开始
@@ -452,6 +462,10 @@ class LLMService:
         """
         chunk_index = 0
         actual_tokens = estimated_tokens
+        prompt_tokens = 0
+        completion_tokens = 0
+        cached_tokens = 0
+        reasoning_tokens = 0
         last_finish_reason = None
         request_info = {"model": self.model, "stream": True}
 
@@ -490,6 +504,10 @@ class LLMService:
                                 if "usage" in chunk and chunk["usage"] is not None:
                                     usage = chunk["usage"]
                                     actual_tokens = usage.get("total_tokens", estimated_tokens)
+                                    prompt_tokens = usage.get("prompt_tokens", 0)
+                                    completion_tokens = usage.get("completion_tokens", 0)
+                                    cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                                    reasoning_tokens = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
                                     continue
 
                                 if "choices" not in chunk or not chunk["choices"]:
@@ -534,6 +552,21 @@ class LLMService:
                             except json.JSONDecodeError:
                                 logger.warning("[llm_service] JSON解析失败: %s", data[:200])
                                 continue
+
+            # 流结束后yield usage统计数据
+            yield {
+                "content": "",
+                "reasoning_content": "",
+                "tool_calls": [],
+                "finish_reason": None,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": actual_tokens,
+                    "cached_tokens": cached_tokens,
+                    "reasoning_tokens": reasoning_tokens,
+                }
+            }
 
             # 流式调用完成
             elapsed = time.time() - start_time
@@ -702,7 +735,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
         except LLMError as e:
@@ -750,7 +783,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             result = self._extract_json(response)
@@ -782,7 +815,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             return self._extract_json(response)
@@ -806,7 +839,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             return self._extract_json(response)
@@ -839,7 +872,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             return self._extract_json(response)
@@ -872,7 +905,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             logger.debug("[BATCH-EXTRACT] LLM响应长度: %d", len(response) if response else 0)
@@ -915,7 +948,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.1,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             return self._extract_json(response)
@@ -973,7 +1006,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
 
@@ -1050,7 +1083,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
 
@@ -1077,7 +1110,7 @@ class LLMService:
         response = await self.chat_completion(
             messages,
             temperature=0.3,
-            max_tokens=65536,
+            # max_tokens 使用模型默认值
             enable_thinking=False,
         )
         return response.strip()
@@ -1116,7 +1149,7 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.3,
-                max_tokens=65536,
+                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
             return self._extract_json(response)

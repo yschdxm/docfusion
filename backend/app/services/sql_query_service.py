@@ -207,7 +207,7 @@ class SQLQueryService:
         messages.append({"role": "user", "content": prompt})
 
         try:
-            response = await llm_service.chat_completion(messages, temperature=0.3, max_tokens=65536, enable_thinking=False)
+            response = await llm_service.chat_completion(messages, temperature=0.3, enable_thinking=False)
             sql_result = llm_service._extract_json(response)
             sql = sql_result.get("sql", "")
         except Exception as e:
