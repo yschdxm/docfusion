@@ -633,8 +633,18 @@ class AgentRuntime:
             except Exception as e:
                 logger.exception(f"[AgentRuntime._execute_loop] LLM调用失败: {e}")
                 tracker.fail_step(step.id, str(e))
-                await stream.emit_error(f"LLM调用失败: {e}")
-                return {"success": False, "error": str(e), "steps": tracker.to_dict()}
+                # 判断错误类型，发送友好的错误信息
+                error_str = str(e).lower()
+                if "connection" in error_str or "readerror" in error_str or "连接" in error_str:
+                    user_msg = "连接意外中断，请重试"
+                elif "timeout" in error_str or "超时" in error_str:
+                    user_msg = "请求超时，请重试"
+                elif "rate_limit" in error_str or "频率" in error_str:
+                    user_msg = "请求频率过高，请稍后重试"
+                else:
+                    user_msg = "任务执行失败，请重试"
+                await stream.emit_failed(user_msg, {"error": str(e)})
+                return {"success": False, "error": user_msg, "steps": tracker.to_dict()}
 
             # 检测客户端是否已断开（LLM循环后）
             if stream.is_closed():
