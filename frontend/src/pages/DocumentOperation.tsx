@@ -187,6 +187,7 @@ export default function DocumentOperation() {
   useEffect(() => {
     if (activeSessionId) {
       const sessionId = activeSessionId
+      let cancelled = false  // 防止异步回调中的竞态条件
 
       // 清空上一个会话的流式状态
       setStreamingContent('')
@@ -199,6 +200,7 @@ export default function DocumentOperation() {
       const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
 
       loadSessionMessages(sessionId, true).then(() => {
+        if (cancelled) return  // session已切换，丢弃结果
         if (useChatStore.getState().activeSessionId !== sessionId) return
         const updatedSession = useChatStore.getState().sessions.find(s => s.id === sessionId)
         if (updatedSession) {
@@ -225,6 +227,8 @@ export default function DocumentOperation() {
           }
         }
       })
+
+      return () => { cancelled = true }
     } else {
       setLocalMessages([])
       setPendingAction(null)

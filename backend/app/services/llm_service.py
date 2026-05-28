@@ -82,6 +82,7 @@ class LLMService:
             self.model = settings.DEEPSEEK_MODEL
             self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
             self.max_context_tokens = settings.DEEPSEEK_MAX_CONTEXT_TOKENS
+            self.ssl_verify = settings.SSL_VERIFY
         elif provider == "mimo":
             self.current_provider = "mimo"
             self.api_key = settings.MIMO_API_KEY
@@ -89,6 +90,7 @@ class LLMService:
             self.model = settings.MIMO_MODEL
             self.max_output_tokens = settings.MIMO_MAX_OUTPUT_TOKENS
             self.max_context_tokens = settings.MIMO_MAX_CONTEXT_TOKENS
+            self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_MIMO
         else:
             raise ValueError(f"不支持的模型提供商: {provider}")
 
@@ -889,14 +891,17 @@ class LLMService:
         contexts: List[str],
         table_context: str = "",
         document_title: str = "",
+        max_records: int = 100,
     ) -> List[Dict[str, str]]:
         """从源文档中批量提取所有符合表头结构的记录。"""
-        context_text = "\n---\n".join(contexts[:5])
+        # 使用所有可用的上下文，最多10个chunk
+        context_text = "\n---\n".join(contexts[:10])
         prompt = BATCH_EXTRACT_PROMPT.format(
             table_headers=table_headers,
             context_text=context_text,
             table_context=table_context or "无",
             document_title=document_title if document_title else "未指定",
+            max_records=max_records,
         )
 
         messages = [{"role": "user", "content": prompt}]

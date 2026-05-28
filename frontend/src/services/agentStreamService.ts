@@ -161,6 +161,11 @@ class AgentStreamService {
   ): string {
     const connectionId = `conn_${++this.connectionCounter}_${sessionId}`
 
+    // 如果是新任务（非重连），先清除旧的 task_id
+    if (!existingTaskId) {
+      this.clearPersistedTask(sessionId)
+    }
+
     // 如果该 session 已有连接，先取消旧的
     this.cancelSession(sessionId)
 
