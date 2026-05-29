@@ -98,8 +98,8 @@ export default function ProfileCenter() {
   }
 
   return (
-    <div className="space-y-5">
-      <section className="glass overflow-hidden rounded-2xl border border-slate-200">
+    <div className="space-y-5 h-full overflow-y-auto scrollbar-thin pb-4">
+      <section className="glass overflow-hidden">
         <div className="h-1.5 bg-gradient-to-r from-primary-500 via-blue-400 to-cyan-300" />
         <div className="relative p-5 md:p-6">
           <div className="absolute right-5 top-4 text-xs text-slate-500">{t.recentLogin}: {profileMeta.lastLoginText}</div>

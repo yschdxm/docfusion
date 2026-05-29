@@ -52,7 +52,7 @@ export default function Sidebar() {
   ]
 
   return (
-    <aside className="flex w-60 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
+    <aside className="flex w-60 flex-col overflow-hidden border-r border-slate-200 bg-white">
       <div className="relative border-b border-slate-200/80 px-6 py-6">
         <div className="relative flex items-center gap-3">
           <img src="/logo.png" alt="logo" className="h-12 w-12 object-contain drop-shadow-sm" />

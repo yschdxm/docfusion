@@ -1,8 +1,9 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, FileText, FolderOpen, Network, NotebookPen, Table, TrendingUp } from 'lucide-react'
-import { useDocumentStore } from '../stores/documentStore'
+import { Activity, Clock, FileText, FolderOpen, Network, NotebookPen, Table, TrendingUp } from 'lucide-react'
+import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
 import { useI18n } from '../hooks/useI18n'
+import DocumentPreviewModal from '../components/DocumentPreviewModal'
 
 const dashboardI18n = {
   'zh-CN': {
@@ -27,6 +28,13 @@ const dashboardI18n = {
     modules: '共 4 个模块',
     formats: '支持的文件格式',
     logoAlt: '知融云枢Logo',
+    enter: '进入',
+    recentDocs: '最近文档',
+    viewAll: '查看全部',
+    noDocs: '暂无文档，上传后将显示在这里',
+    sourceLabel: '源文档',
+    templateLabel: '模板',
+    outputLabel: '输出',
   },
   'en-US': {
     featureDocs: 'Document Manager',
@@ -50,6 +58,13 @@ const dashboardI18n = {
     modules: '4 modules',
     formats: 'Supported Formats',
     logoAlt: 'ZhiRong Hub Logo',
+    enter: 'Enter',
+    recentDocs: 'Recent Documents',
+    viewAll: 'View All',
+    noDocs: 'No documents yet. Upload to see them here.',
+    sourceLabel: 'Source',
+    templateLabel: 'Template',
+    outputLabel: 'Output',
   },
   'ja-JP': {
     featureDocs: 'ドキュメント管理',
@@ -73,6 +88,13 @@ const dashboardI18n = {
     modules: '全4モジュール',
     formats: '対応フォーマット',
     logoAlt: '知融云枢ロゴ',
+    enter: '入力',
+    recentDocs: '最近の文書',
+    viewAll: 'すべて表示',
+    noDocs: '文書がありません。アップロードするとここに表示されます。',
+    sourceLabel: 'ソース',
+    templateLabel: 'テンプレート',
+    outputLabel: '出力',
   },
 } as const
 
@@ -91,6 +113,7 @@ export default function Dashboard() {
   const { documents, fetchDocuments } = useDocumentStore()
   const [tipIndex, setTipIndex] = useState(0)
   const [latestTodoText, setLatestTodoText] = useState('')
+  const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
 
   useEffect(() => {
     fetchDocuments()
@@ -159,6 +182,18 @@ export default function Dashboard() {
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
   const outputDocs = documents.filter((d) => d.doc_category === 'output')
 
+  const recentDocs = useMemo(() => {
+    return [...documents]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 8)
+  }, [documents])
+
+  const categoryMeta: Record<string, { label: string; cls: string }> = {
+    source: { label: t.sourceLabel, cls: 'bg-blue-100 text-blue-700' },
+    template: { label: t.templateLabel, cls: 'bg-emerald-100 text-emerald-700' },
+    output: { label: t.outputLabel, cls: 'bg-amber-100 text-amber-700' },
+  }
+
   const features = [
     {
       icon: FolderOpen,
@@ -198,70 +233,118 @@ export default function Dashboard() {
   ]
 
   return (
-    <div className="space-y-6">
-      <section className="glass relative overflow-hidden rounded-2xl p-8">
+    <div className="flex flex-col h-full min-h-0 gap-3">
+      {/* Hero */}
+      <section className="glass relative overflow-hidden px-5 py-3.5 shrink-0">
         <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-blue-100 blur-2xl" />
         <div className="absolute right-20 top-8 h-24 w-24 rounded-full bg-emerald-100 blur-2xl" />
         <div className="relative z-10 flex items-center justify-between gap-6">
-          <div>
-            <h1 className="text-3xl font-semibold text-slate-900">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold text-slate-900">
               {t.welcome} <span className="gradient-text">知融云枢</span>
             </h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t.heroDesc}</p>
-            <div className="mt-5 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              <TrendingUp className="h-4 w-4 text-primary-600" />
+            <p className="mt-1 max-w-2xl text-[11px] leading-5 text-slate-600">{t.heroDesc}</p>
+            <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600">
+              <TrendingUp className="h-3 w-3 text-primary-600" />
               <span key={tipIndex} className="inline-block animate-in">{rotatingTips[tipIndex] || t.suggestion}</span>
             </div>
           </div>
-          <div className="hidden lg:block">
-            <img src="/logo.png" alt={t.logoAlt} className="h-28 w-28 object-contain" />
+          <div className="hidden lg:block shrink-0">
+            <img src="/logo.png" alt={t.logoAlt} className="h-14 w-14 object-contain" />
           </div>
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {/* Stats */}
+      <section className="grid grid-cols-2 gap-3 xl:grid-cols-4 shrink-0">
         {statCards.map((stat) => (
-          <div key={stat.label} className="glass p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <div className={`flex h-9 w-9 items-center justify-center rounded-md ${stat.bg}`}>
-                <stat.icon className={`h-4 w-4 ${stat.color}`} />
+          <div key={stat.label} className="glass px-4 py-3 lg:px-5 lg:py-4">
+            <div className="flex items-center gap-3 lg:gap-4">
+              <div className={`flex h-9 w-9 lg:h-11 lg:w-11 items-center justify-center rounded-lg ${stat.bg} shrink-0`}>
+                <stat.icon className={`h-4 w-4 lg:h-5 lg:w-5 ${stat.color}`} />
               </div>
-              <span className="text-xs text-slate-500">{t.realtime}</span>
+              <div className="min-w-0">
+                <div className="text-xl lg:text-2xl font-bold text-slate-900 leading-tight">{stat.value}</div>
+                <div className="text-xs lg:text-sm text-slate-500 mt-0.5">{stat.label}</div>
+              </div>
             </div>
-            <div className="text-2xl font-semibold text-slate-900">{stat.value}</div>
-            <div className="mt-1 text-xs text-slate-500">{stat.label}</div>
           </div>
         ))}
       </section>
 
-      <section>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">{t.core}</h2>
-          <span className="text-xs text-slate-500">{t.modules}</span>
+      {/* Main: Features (left) + Recent Docs (right) */}
+      <section className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-3">
+        {/* Features - primary area */}
+        <div className="xl:col-span-8 min-h-0 flex flex-col gap-3">
+          <div className="flex items-center justify-between shrink-0">
+            <h2 className="text-sm font-semibold text-slate-900">{t.core}</h2>
+            <span className="text-[10px] text-slate-500">{t.modules}</span>
+          </div>
+          <div className="flex-1 min-h-0 grid grid-cols-2 gap-3 auto-rows-fr">
+            {features.map((feature) => (
+              <Link key={feature.path} to={feature.path} className="card !p-4 lg:!p-6 card-hover-lift group flex flex-col items-center justify-center text-center">
+                <div className={`flex h-12 w-12 lg:h-16 lg:w-16 xl:h-20 xl:w-20 items-center justify-center rounded-2xl bg-gradient-to-br ${feature.color} mb-3 lg:mb-4 transition-transform group-hover:scale-110`}>
+                  <feature.icon className="h-6 w-6 lg:h-8 lg:w-8 xl:h-10 xl:w-10 text-white" />
+                </div>
+                <h3 className="text-sm lg:text-base font-semibold text-slate-900 group-hover:text-primary-600">{feature.title}</h3>
+                <p className="mt-1 text-[11px] lg:text-xs leading-4 text-slate-500 line-clamp-2">{feature.description}</p>
+              </Link>
+            ))}
+          </div>
+          <div className="glass px-4 py-2.5 shrink-0 flex items-center gap-3">
+            <h3 className="text-xs font-semibold text-slate-900 shrink-0">{t.formats}</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {['DOCX', 'XLSX', 'MD', 'TXT'].map((format) => (
+                <span key={format} className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                  {format}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {features.map((feature) => (
-            <Link key={feature.path} to={feature.path} className="card card-hover-lift group">
-              <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br ${feature.color}`}>
-                <feature.icon className="h-5 w-5 text-white" />
+
+        {/* Recent Docs - sidebar */}
+        <div className="xl:col-span-4 min-h-0 flex flex-col">
+          <div className="glass rounded-xl flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <Clock className="w-3.5 h-3.5 text-slate-500" />
+                <h2 className="text-sm font-semibold text-slate-900">{t.recentDocs}</h2>
               </div>
-              <h3 className="text-base font-semibold text-slate-900 group-hover:text-primary-600">{feature.title}</h3>
-              <p className="mt-2 text-xs leading-5 text-slate-500">{feature.description}</p>
-            </Link>
-          ))}
+              <Link to="/documents" className="text-[11px] text-primary-600 hover:text-primary-700">{t.viewAll} →</Link>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
+              {recentDocs.length === 0 ? (
+                <div className="flex items-center justify-center h-full px-4">
+                  <p className="text-xs text-slate-400 text-center">{t.noDocs}</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {recentDocs.map((doc) => {
+                    const meta = categoryMeta[doc.doc_category] || { label: doc.doc_category, cls: 'bg-slate-100 text-slate-600' }
+                    return (
+                      <button
+                        key={doc.id}
+                        onClick={() => setPreviewDoc(doc)}
+                        className="flex items-center gap-2.5 px-4 py-2 hover:bg-slate-50/60 transition-colors w-full text-left"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-slate-700 truncate">{doc.original_filename}</p>
+                          <p className="text-[10px] text-slate-400">{new Date(doc.created_at).toLocaleDateString(language)}</p>
+                        </div>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${meta.cls}`}>{meta.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="glass p-5">
-        <h2 className="text-base font-semibold text-slate-900">{t.formats}</h2>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {['DOCX', 'XLSX', 'MD', 'TXT'].map((format) => (
-            <span key={format} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700">
-              {format}
-            </span>
-          ))}
-        </div>
-      </section>
+      <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
     </div>
   )
 }

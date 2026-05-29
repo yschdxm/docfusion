@@ -132,7 +132,7 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
     }
   }, [nodes, edges])
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: '500px' }} className="bg-slate-50" />
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} className="bg-slate-50" />
 })
 
 GraphContainer.displayName = 'GraphContainer'
@@ -206,9 +206,9 @@ export default function KnowledgeGraph() {
   const entityTypes = Array.from(new Set(allNodes.map((n) => n.type)))
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-1 space-y-4">
+    <div className="h-full flex flex-col">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-0">
+        <div className="lg:col-span-1 flex flex-col gap-4 min-h-0 overflow-y-auto scrollbar-thin">
           <div className="glass p-4">
             <h3 className="text-sm font-medium text-slate-500 mb-3 flex items-center gap-2">
               <FileText className="w-4 h-4" />
@@ -272,8 +272,8 @@ export default function KnowledgeGraph() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 space-y-4">
-          <div className="flex items-center justify-between">
+        <div className="lg:col-span-3 flex flex-col gap-4 min-h-0">
+          <div className="flex items-center justify-between shrink-0">
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setViewMode('graph')}
@@ -305,7 +305,7 @@ export default function KnowledgeGraph() {
           </div>
 
           {viewMode === 'graph' ? (
-            <div className="glass overflow-hidden" style={{ height: '500px' }}>
+            <div className="glass overflow-hidden flex-1 min-h-0">
               {filteredNodes.length > 0 ? (
                 <GraphContainer nodes={filteredNodes} edges={filteredEdges} />
               ) : (
@@ -319,7 +319,7 @@ export default function KnowledgeGraph() {
               )}
             </div>
           ) : (
-            <div className="glass p-3 max-h-[500px] overflow-y-auto scrollbar-thin">
+            <div className="glass p-3 flex-1 overflow-y-auto scrollbar-thin min-h-0">
               {filteredNodes.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {filteredNodes.map((node) => (
