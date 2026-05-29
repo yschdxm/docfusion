@@ -33,6 +33,8 @@ class Task:
     step_accumulator: Optional[object] = None  # StepAccumulator 实例（由 agent_stream 模块设置）
     last_saved_content: str = ""  # 最后保存的消息内容，用于去重
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)  # 用户取消信号
+    reconnect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # 重连锁，防止同一任务被多个连接同时接入
+    active_reconnections: int = 0  # 当前活跃的重连数
 
 
 class TaskManager:
@@ -56,6 +58,18 @@ class TaskManager:
         """查询任务"""
         async with self._lock:
             return self._tasks.get(task_id)
+
+    async def get_running_task_by_conversation(self, conversation_id: str) -> Optional[Task]:
+        """查找指定对话中正在运行的任务"""
+        if not conversation_id:
+            return None
+        async with self._lock:
+            for task in self._tasks.values():
+                if (task.conversation_id == conversation_id
+                        and not task.finished_at
+                        and not task.user_cancelled):
+                    return task
+            return None
 
     async def finish_task(self, task_id: str, result: Optional[dict] = None):
         """标记任务完成"""

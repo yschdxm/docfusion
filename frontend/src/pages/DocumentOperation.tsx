@@ -8,7 +8,8 @@ import { useDocumentStore } from '../stores/documentStore'
 import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
 import AgentThinkingPanel from '../components/AgentThinkingPanel'
-import agentStreamService, { AgentStep } from '../services/agentStreamService'
+import TaskStatsBadge from '../components/TaskStatsBadge'
+import agentStreamService, { AgentStep, TaskStats } from '../services/agentStreamService'
 import { useDocumentPreview, getFileType } from '../hooks/useDocumentPreview'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
@@ -69,6 +70,7 @@ interface Message {
   timestamp: number
   steps?: AgentStep[]
   isStreaming?: boolean
+  task_stats?: TaskStats
 }
 
 interface PreviewItem {
@@ -118,7 +120,11 @@ export default function DocumentOperation() {
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [streamingStats, setStreamingStats] = useState<TaskStats | null>(null)
+  const [streamingDuration, setStreamingDuration] = useState(0)
   const streamingContentRef = useRef('')
+  const taskStartTimeRef = useRef<number>(0)
+  const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const currentConnectionRef = useRef<string | null>(null)
@@ -126,10 +132,19 @@ export default function DocumentOperation() {
   const docDropdownRef = useRef<HTMLDivElement>(null)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
 
+  // 预览面板宽度与拖动
+  const PREVIEW_DEFAULT = 640
+  const PREVIEW_MIN = 320
+  const HANDLE_WIDTH = 16
+  const [previewWidth, setPreviewWidth] = useState(PREVIEW_DEFAULT)
+  const previewWidthRef = useRef(PREVIEW_DEFAULT)
+  const dragStartRef = useRef<{ x: number; width: number } | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+
   // 文档预览面板
   const {
     isPanelOpen,
-    togglePanel,
+    togglePanel: togglePanelRaw,
     previewFiles,
     currentFile: previewCurrentFile,
     setCurrentFile: setPreviewCurrentFile,
@@ -137,6 +152,14 @@ export default function DocumentOperation() {
     clearPreview,
     isLoading: previewIsLoading,
   } = useDocumentPreview()
+
+  const togglePanel = useCallback(() => {
+    togglePanelRaw()
+    if (!isPanelOpen) {
+      previewWidthRef.current = PREVIEW_DEFAULT
+      setPreviewWidth(PREVIEW_DEFAULT)
+    }
+  }, [isPanelOpen, togglePanelRaw])
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
@@ -153,12 +176,35 @@ export default function DocumentOperation() {
       if (currentConnectionSessionRef.current) {
         agentStreamService.cancelSession(currentConnectionSessionRef.current)
       }
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+      }
     }
   }, [])
+
+  // 实时计时器
+  useEffect(() => {
+    if (isStreaming && taskStartTimeRef.current > 0) {
+      durationTimerRef.current = setInterval(() => {
+        setStreamingDuration(Date.now() - taskStartTimeRef.current)
+      }, 100)
+    } else {
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+        durationTimerRef.current = null
+      }
+    }
+    return () => {
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current)
+      }
+    }
+  }, [isStreaming])
 
   useEffect(() => {
     if (activeSessionId) {
       const sessionId = activeSessionId
+      let cancelled = false  // 防止异步回调中的竞态条件
 
       // 清空上一个会话的流式状态
       setStreamingContent('')
@@ -171,6 +217,7 @@ export default function DocumentOperation() {
       const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
 
       loadSessionMessages(sessionId, true).then(() => {
+        if (cancelled) return  // session已切换，丢弃结果
         if (useChatStore.getState().activeSessionId !== sessionId) return
         const updatedSession = useChatStore.getState().sessions.find(s => s.id === sessionId)
         if (updatedSession) {
@@ -197,6 +244,8 @@ export default function DocumentOperation() {
           }
         }
       })
+
+      return () => { cancelled = true }
     } else {
       setLocalMessages([])
       setPendingAction(null)
@@ -219,6 +268,42 @@ export default function DocumentOperation() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [localMessages, currentSteps])
+
+  // 预览面板拖动调整宽度
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+    dragStartRef.current = { x: e.clientX, width: previewWidthRef.current }
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      if (!dragStartRef.current) return
+      const container = document.querySelector('[data-doc-op-container]')
+      if (!container) return
+      const containerWidth = container.clientWidth
+      const historyWidth = showHistory ? 256 : 0
+      const availableWidth = containerWidth - historyWidth - HANDLE_WIDTH
+      const chatMinWidth = availableWidth / 3
+      const maxPreview = availableWidth - chatMinWidth
+      const delta = dragStartRef.current.x - ev.clientX
+      const newWidth = Math.min(maxPreview, Math.max(PREVIEW_MIN, dragStartRef.current.width + delta))
+      previewWidthRef.current = newWidth
+      setPreviewWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsDragging(false)
+      dragStartRef.current = null
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [showHistory])
 
   // ===== SSE 流式相关 =====
 
@@ -288,6 +373,10 @@ export default function DocumentOperation() {
         }
       }
 
+      if (event.event_type === 'stats_update' && event.data.stats) {
+        setStreamingStats(event.data.stats)
+      }
+
       if (event.event_type === 'content_chunk' && event.data.content) {
         if (event.data.agent_name) return
         setStreamingContent(prev => {
@@ -301,6 +390,7 @@ export default function DocumentOperation() {
     const onComplete = (result: any) => {
       if (currentConnectionSessionRef.current !== sessionId) return
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      setStreamingStats(null)
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
 
       if (result.message || result.download_url || latestStepsRef.current.length > 0) {
@@ -309,6 +399,7 @@ export default function DocumentOperation() {
           content: result.message || '',
           timestamp: Date.now(),
           steps: latestStepsRef.current.length > 0 ? [...latestStepsRef.current] : undefined,
+          task_stats: result.task_stats,
         }
         if (result.download_url) {
           aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id }
@@ -321,6 +412,7 @@ export default function DocumentOperation() {
     const onError = (error: any) => {
       if (currentConnectionSessionRef.current !== sessionId) return
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
+      setStreamingStats(null)
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
       if (error?.toString().includes('abort') || error?.toString().includes('AbortError')) return
       toast.error(error)
@@ -445,6 +537,9 @@ export default function DocumentOperation() {
     setCurrentSteps([])
     setStreamingContent('')
     streamingContentRef.current = ''
+    taskStartTimeRef.current = Date.now()
+    setStreamingDuration(0)
+    setStreamingStats(null)
 
     if (isFirstMessage) {
       api.post('/agent/generate-title', { message: userMessage })
@@ -685,9 +780,9 @@ export default function DocumentOperation() {
   }
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-200px)]">
+    <div data-doc-op-container className="flex h-full">
       {/* 左侧历史会话面板 */}
-      <div className={`${showHistory ? 'w-64' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass rounded-2xl`}>
+      <div className={`${showHistory ? 'w-64 mr-4' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass shrink-0`}>
         <div className="p-4 border-b border-slate-200">
           <button
             onClick={handleNewChat}
@@ -729,19 +824,19 @@ export default function DocumentOperation() {
       </div>
 
       {/* 主聊天区域 */}
-      <div className="glass relative flex flex-col flex-1 min-w-0">
+      <div className="glass relative flex flex-col flex-1 min-w-[33%]">
       <div className="p-4 border-b border-slate-200">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
             <button
               onClick={() => setShowHistory(!showHistory)}
               aria-label={tr('切换历史记录', 'Toggle history', '履歴を切替')}
-              className={`p-2 rounded-lg transition-colors ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+              className={`p-2 rounded-lg transition-colors shrink-0 ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
               title={tr('历史记录', 'History', '履歴')}
             >
               <History className="w-4 h-4" />
             </button>
-            <div className="relative min-w-[240px]" ref={docDropdownRef}>
+            <div className="relative min-w-0 flex-1" ref={docDropdownRef}>
               <button
                 onClick={() => {
                   setShowDocDropdown(!showDocDropdown)
@@ -786,7 +881,7 @@ export default function DocumentOperation() {
               )}
             </div>
 
-            <div className="relative min-w-[200px]" ref={templateDropdownRef}>
+            <div className="relative min-w-0 flex-1" ref={templateDropdownRef}>
               <button
                 onClick={() => {
                   setShowTemplateDropdown(!showTemplateDropdown)
@@ -907,6 +1002,13 @@ export default function DocumentOperation() {
                 )}
               </div>
             )}
+
+            {/* 任务统计 */}
+            {message.role === 'assistant' && message.task_stats && (
+              <div className="flex justify-start mt-1">
+                <TaskStatsBadge stats={message.task_stats} />
+              </div>
+            )}
           </div>
         ))}
 
@@ -935,6 +1037,13 @@ export default function DocumentOperation() {
           </div>
         )}
 
+        {/* 实时统计显示 */}
+        {isStreaming && streamingStats && (
+          <div className="flex justify-start">
+            <TaskStatsBadge stats={streamingStats} isLive={true} liveDuration={streamingDuration} />
+          </div>
+        )}
+
         {isLoading && !isStreaming && (
           <div className="flex justify-start">
             <div className="bg-slate-50 p-4 rounded-2xl">
@@ -947,7 +1056,7 @@ export default function DocumentOperation() {
 
       {previewState && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-6 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
               <div>
                 <h3 id="doc-op-preview-title" className="text-lg font-semibold text-slate-900">{previewState.title}</h3>
@@ -1024,15 +1133,31 @@ export default function DocumentOperation() {
       </div>
       </div>
 
+      {/* 拖动手柄 */}
+      {isPanelOpen && (
+        <div
+          onMouseDown={handleDragStart}
+          className="shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-primary-100/50 transition-colors"
+          style={{ width: HANDLE_WIDTH }}
+          title="拖动调整宽度"
+        >
+          <div className="w-1 h-8 rounded-full bg-slate-300 group-hover:bg-primary-400 transition-colors" />
+        </div>
+      )}
+
       {/* 右侧文档预览面板 */}
-      <DocumentPreviewPanel
-        isPanelOpen={isPanelOpen}
-        onToggle={togglePanel}
-        previewFiles={previewFiles}
-        currentFile={previewCurrentFile}
-        onFileSelect={setPreviewCurrentFile}
-        isLoading={previewIsLoading}
-      />
+      <div
+        className={`shrink-0 overflow-hidden ${isDragging ? '' : 'transition-[width] duration-300 ease-in-out'}`}
+        style={{ width: isPanelOpen ? previewWidth : 0 }}
+      >
+        <DocumentPreviewPanel
+          onToggle={togglePanel}
+          previewFiles={previewFiles}
+          currentFile={previewCurrentFile}
+          onFileSelect={setPreviewCurrentFile}
+          isLoading={previewIsLoading}
+        />
+      </div>
     </div>
   )
 }

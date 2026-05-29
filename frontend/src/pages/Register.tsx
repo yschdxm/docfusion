@@ -78,7 +78,7 @@ export default function Register() {
             <h1 className="mt-6 text-3xl font-semibold leading-tight">只需一分钟，开启智能办公体验</h1>
             <p className="mt-3 text-sm leading-6 text-slate-200">注册后即可使用智能助手、自动填表和知识图谱分析。</p>
 
-            <div className="mt-8 rounded-2xl border border-white/15 bg-white/10 p-4">
+            <div className="mt-8 rounded-xl border border-white/15 bg-white/10 p-4">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                 <Shield className="h-4 w-4 text-cyan-200" />
                 安全建议

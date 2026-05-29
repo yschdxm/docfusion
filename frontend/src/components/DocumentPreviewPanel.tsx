@@ -2,7 +2,6 @@ import { Eye, FileText, Loader2 } from 'lucide-react'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 
 interface DocumentPreviewPanelProps {
-  isPanelOpen: boolean
   onToggle: () => void
   previewFiles: PreviewFile[]
   currentFile: PreviewFile | null
@@ -11,7 +10,6 @@ interface DocumentPreviewPanelProps {
 }
 
 export default function DocumentPreviewPanel({
-  isPanelOpen,
   onToggle,
   previewFiles,
   currentFile,
@@ -19,7 +17,7 @@ export default function DocumentPreviewPanel({
   isLoading,
 }: DocumentPreviewPanelProps) {
   return (
-    <div className={`${isPanelOpen ? 'w-[480px]' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass rounded-2xl`}>
+    <div className="h-full overflow-hidden flex flex-col glass">
       {/* 标题栏 */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/5">
         <div className="flex items-center gap-2 min-w-0">

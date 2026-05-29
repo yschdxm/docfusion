@@ -98,7 +98,7 @@ class ExtractFromDocsTool(BaseTool):
             # 使用RAG检索 + LLM提取
             for doc_id in doc_ids:
                 try:
-                    records = await self._extract_with_rag(doc_id, fields)
+                    records = await self._extract_with_rag(doc_id, fields, max_records)
                     all_records.extend(records)
                 except Exception as e:
                     error_msg = f"文档 {doc_id} 提取失败: {str(e)}"
@@ -146,11 +146,14 @@ class ExtractFromDocsTool(BaseTool):
                 error=f"文档提取失败: {str(e)}"
             )
 
-    async def _extract_with_rag(self, doc_id: str, fields: List[str]) -> List[Dict]:
+    async def _extract_with_rag(self, doc_id: str, fields: List[str], max_records: int = 50) -> List[Dict]:
         """使用RAG检索并提取信息"""
         records = []
 
         try:
+            # 根据max_records动态调整top_k，确保检索足够的数据
+            top_k = min(max(10, max_records // 5), 30)
+
             # 为所有字段生成一个综合查询
             fields_str = "、".join(fields)
             query = f"提取以下字段的所有信息：{fields_str}"
@@ -158,7 +161,7 @@ class ExtractFromDocsTool(BaseTool):
             results = await rag_service.search_for_field(
                 query=query,
                 doc_ids=[doc_id],
-                top_k=10
+                top_k=top_k
             )
 
             # 合并检索结果
@@ -171,7 +174,8 @@ class ExtractFromDocsTool(BaseTool):
                     table_headers=table_headers,
                     contexts=contexts,
                     table_context="从文档中提取指定字段的数据",
-                    document_title=f"文档 {doc_id}"
+                    document_title=f"文档 {doc_id}",
+                    max_records=max_records
                 )
                 records.extend(extracted_records)
 

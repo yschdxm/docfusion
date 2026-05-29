@@ -455,6 +455,17 @@ class AgentRuntime:
         """执行主循环 - 使用原生工具调用和流式输出"""
         logger.info("[AgentRuntime._execute_loop] 进入执行循环 (原生工具调用)")
 
+        # 记录任务开始时间和token统计
+        task_start_time = datetime.utcnow()
+        accumulated_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+            "llm_calls": 0,
+        }
+
         # 检查取消信号
         def check_cancelled():
             if cancel_event and cancel_event.is_set():
@@ -485,6 +496,22 @@ class AgentRuntime:
         final_result = None
         total_tool_calls = 0
         delegation_called = False  # 限制每次用户消息只能委派一次子Agent
+
+        def build_task_stats():
+            """构建任务统计信息"""
+            duration = (datetime.utcnow() - task_start_time).total_seconds() * 1000
+            return {
+                "task_stats": {
+                    "duration_ms": round(duration),
+                    "total_tokens": accumulated_usage["total_tokens"],
+                    "prompt_tokens": accumulated_usage["prompt_tokens"],
+                    "completion_tokens": accumulated_usage["completion_tokens"],
+                    "cached_tokens": accumulated_usage["cached_tokens"],
+                    "reasoning_tokens": accumulated_usage["reasoning_tokens"],
+                    "llm_calls": accumulated_usage["llm_calls"],
+                    "iterations": iteration + 1,
+                }
+            }
 
         for iteration in range(self.max_iterations):
             # 检查是否被取消
@@ -524,7 +551,7 @@ class AgentRuntime:
                 llm_stream = await llm_service.chat_completion(
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=65536,  # 使用模型的最大输出长度 64K
+                    # max_tokens 使用模型默认值
                     enable_thinking=True,
                     stream=True,
                     tools=openai_tools,
@@ -538,6 +565,16 @@ class AgentRuntime:
                     if stream.is_closed():
                         logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止LLM消费")
                         break
+
+                    # 检测usage统计chunk
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                        accumulated_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                        accumulated_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                        accumulated_usage["total_tokens"] += usage.get("total_tokens", 0)
+                        accumulated_usage["cached_tokens"] += usage.get("cached_tokens", 0)
+                        accumulated_usage["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
+                        continue
 
                     # 处理思考内容
                     if chunk.get("reasoning_content"):
@@ -587,13 +624,27 @@ class AgentRuntime:
                         # 如果是 stop 且没有内容/工具调用，会在后续逻辑中处理
 
                 response_time = (datetime.utcnow() - response_start).total_seconds()
+                accumulated_usage["llm_calls"] += 1
                 logger.info(f"[AgentRuntime._execute_loop] LLM流式调用完成 | 耗时: {response_time:.2f}s | 内容长度: {len(full_content)} | 思考长度: {len(full_reasoning)} | 工具调用: {len(tool_calls_buffer)}")
+
+                # 发送实时统计更新
+                await stream.emit_stats_update(build_task_stats()["task_stats"])
 
             except Exception as e:
                 logger.exception(f"[AgentRuntime._execute_loop] LLM调用失败: {e}")
                 tracker.fail_step(step.id, str(e))
-                await stream.emit_error(f"LLM调用失败: {e}")
-                return {"success": False, "error": str(e), "steps": tracker.to_dict()}
+                # 判断错误类型，发送友好的错误信息
+                error_str = str(e).lower()
+                if "connection" in error_str or "readerror" in error_str or "连接" in error_str:
+                    user_msg = "连接意外中断，请重试"
+                elif "timeout" in error_str or "超时" in error_str:
+                    user_msg = "请求超时，请重试"
+                elif "rate_limit" in error_str or "频率" in error_str:
+                    user_msg = "请求频率过高，请稍后重试"
+                else:
+                    user_msg = "任务执行失败，请重试"
+                await stream.emit_failed(user_msg, {"error": str(e)})
+                return {"success": False, "error": user_msg, "steps": tracker.to_dict()}
 
             # 检测客户端是否已断开（LLM循环后）
             if stream.is_closed():
@@ -637,14 +688,14 @@ class AgentRuntime:
                         # 有思考内容但没有最终回复，说明LLM完成了任务但不需要回复
                         logger.info(f"[AgentRuntime._execute_loop] LLM完成任务但无最终回复（有思考内容），思考长度: {len(full_reasoning)}")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "LLM完成任务但无最终回复"})
-                        await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
                     elif is_after_tool_result:
                         # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
                         # 但只有在 finish_reason 正常（stop 或 tool_calls）时才认为是完成
                         logger.info("[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
-                        await stream.emit_completed("", {"final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
                     else:
                         # 没有工具调用且没有内容/思考，说明LLM返回为空（可能是content_filter或其他问题）
@@ -668,7 +719,7 @@ class AgentRuntime:
 
                 # 有实际回复内容，正常完成任务
                 tracker.complete_step(step.id, {"response": full_content, "reasoning": full_reasoning})
-                await stream.emit_completed(full_content, {"final_response": full_content, "reasoning": full_reasoning})
+                await stream.emit_completed(full_content, {**build_task_stats(), "final_response": full_content, "reasoning": full_reasoning})
                 logger.info(f"[AgentRuntime._execute_loop] 任务完成 | 总迭代: {iteration + 1} | 总工具调用: {total_tool_calls}")
                 return {"success": True, "message": full_content, "reasoning": full_reasoning, "steps": tracker.to_dict()}
 
@@ -784,7 +835,7 @@ class AgentRuntime:
         await stream.emit_warning(f"达到最大迭代次数限制 ({self.max_iterations})")
         await stream.emit_completed(
             "任务已部分完成，但达到了最大迭代次数限制。",
-            {"partial_result": final_result.data if final_result else None}
+            {**build_task_stats(), "partial_result": final_result.data if final_result else None}
         )
 
         return {

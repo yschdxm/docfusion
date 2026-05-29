@@ -307,7 +307,6 @@ Sheet名：{sheet_name}
                     response = await llm_service.chat_completion(
                         [{"role": "user", "content": prompt}],
                         temperature=0.3,
-                        max_tokens=65536,
                         enable_thinking=False
                     )
 
@@ -568,7 +567,7 @@ Sheet名：{sheet_name}
 请根据提供的信息回答问题。"""
 
             messages = [{"role": "user", "content": prompt}]
-            answer = await llm_service.chat_completion(messages, temperature=0.5, max_tokens=65536, enable_thinking=False)
+            answer = await llm_service.chat_completion(messages, temperature=0.5, enable_thinking=False)
         else:
             answer = "未找到相关实体信息。"
 

@@ -84,7 +84,7 @@ async def generate_title(
         title = await llm_service.chat_completion(
             [{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=65536
+            max_tokens=100
         )
         return {"title": title.strip()[:10]}
     except Exception as e:

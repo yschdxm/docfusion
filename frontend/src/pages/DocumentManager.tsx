@@ -5,7 +5,6 @@ import {
   Download,
   Edit3,
   Eye,
-  File,
   FileText,
   Filter,
   FolderOpen,
@@ -15,23 +14,13 @@ import {
   Table,
   Trash2,
   Undo2,
-  X,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import Dropdown from '../components/ui/Dropdown'
 import api from '../services/api'
 import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
 import { useI18n } from '../hooks/useI18n'
-
-declare global {
-  interface Window {
-    DocsAPI?: {
-      DocEditor: new (elementId: string, config: Record<string, unknown>) => {
-        destroyEditor?: () => void
-      }
-    }
-  }
-}
+import DocumentPreviewModal from '../components/DocumentPreviewModal'
 
 type CategoryFilter = 'all' | 'source' | 'template' | 'output'
 
@@ -42,29 +31,6 @@ interface ExtractionStatus {
   current_step: string
   error?: string
   entities_count: number
-}
-
-interface PreviewSheet {
-  name: string
-  data: string[][]
-  rows: number
-  cols: number
-}
-
-interface PreviewPayload {
-  file_name: string
-  file_type: string
-  preview_type: 'text' | 'markdown' | 'spreadsheet' | 'pdf' | 'onlyoffice'
-  content: string
-  html_content?: string | null
-  truncated: boolean
-  can_edit: boolean
-  sheets?: PreviewSheet[] | null
-}
-
-interface OfficeConfigResponse {
-  serverUrl: string
-  config: Record<string, unknown>
 }
 
 const categoryConfig = {
@@ -116,28 +82,9 @@ export default function DocumentManager() {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
-  const [previewData, setPreviewData] = useState<PreviewPayload | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [editorOpen, setEditorOpen] = useState(false)
-  const [editContent, setEditContent] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [officeMode, setOfficeMode] = useState<'view' | 'edit'>('view')
-  const [officeLoading, setOfficeLoading] = useState(false)
-  const [officeError, setOfficeError] = useState('')
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pendingDeleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const isMountedRef = useRef(true)
-  const officeEditorRef = useRef<{ destroyEditor?: () => void } | null>(null)
-  const loadedScriptRef = useRef<string | null>(null)
-  const officeContainerRef = useRef<HTMLDivElement | null>(null)
-  // 独立于 React DOM 的容器节点
-  const [officeHost] = useState(() => {
-    const el = document.createElement('div')
-    el.id = 'onlyoffice-editor'
-    el.style.width = '100%'
-    el.style.height = '100%'
-    return el
-  })
   const notifyBell = (title: string, message: string) => {
     window.dispatchEvent(
       new CustomEvent('app-notify', {
@@ -161,21 +108,8 @@ export default function DocumentManager() {
     return () => {
       isMountedRef.current = false
       stopPolling()
-      destroyOnlyOfficeEditor()
     }
   }, [fetchDocuments])
-
-  useEffect(() => {
-    if (previewDoc && previewData?.preview_type === 'onlyoffice') {
-      void mountOnlyOffice(officeMode)
-    }
-
-    return () => {
-      if (previewData?.preview_type === 'onlyoffice') {
-        destroyOnlyOfficeEditor()
-      }
-    }
-  }, [previewDoc, previewData, officeMode])
 
   const startPolling = useCallback(() => {
     if (pollingRef.current) return
@@ -193,122 +127,8 @@ export default function DocumentManager() {
     }
   }, [])
 
-  const destroyOnlyOfficeEditor = () => {
-    if (officeEditorRef.current?.destroyEditor) {
-      officeEditorRef.current.destroyEditor()
-    }
-    officeEditorRef.current = null
-    // 从 React DOM 树中移除独立容器
-    if (officeHost.parentNode) {
-      officeHost.parentNode.removeChild(officeHost)
-    }
-    officeHost.innerHTML = ''
-  }
-
-  const ensureOnlyOfficeScript = async () => {
-    if (window.DocsAPI?.DocEditor) return
-
-    // 使用相对路径，依赖 nginx 代理转发到 OnlyOffice 容器
-    const scriptUrl = '/web-apps/apps/api/documents/api.js'
-
-    await new Promise<void>((resolve, reject) => {
-      if (window.DocsAPI?.DocEditor) {
-        resolve()
-        return
-      }
-
-      const script = document.createElement('script')
-      script.src = scriptUrl
-      document.head.appendChild(script)
-      loadedScriptRef.current = scriptUrl
-
-      const startedAt = Date.now()
-      const timer = window.setInterval(() => {
-        if (window.DocsAPI?.DocEditor) {
-          window.clearInterval(timer)
-          resolve()
-          return
-        }
-
-        if (Date.now() - startedAt > 60000) {
-          window.clearInterval(timer)
-          reject(new Error('OnlyOffice 脚本加载超时，请检查文档服务是否启动'))
-        }
-      }, 200)
-
-      script.onerror = () => {
-        window.clearInterval(timer)
-        reject(new Error('OnlyOffice 脚本加载失败，请检查文档服务地址是否可访问'))
-      }
-    })
-  }
-
-  const mountOnlyOffice = async (mode: 'view' | 'edit') => {
-    if (!previewDoc || !officeContainerRef.current) return
-
-    setOfficeLoading(true)
-    setOfficeError('')
-    destroyOnlyOfficeEditor()
-
-    // 将独立的 OnlyOffice 容器挂到 ref 位置
-    officeContainerRef.current.innerHTML = ''
-    officeContainerRef.current.appendChild(officeHost)
-
-    try {
-      const response = await api.get<OfficeConfigResponse>(`/documents/${previewDoc.id}/office-config`, {
-        params: { mode },
-      })
-
-      await ensureOnlyOfficeScript()
-
-      if (!window.DocsAPI?.DocEditor) {
-        throw new Error('OnlyOffice 组件未正确加载')
-      }
-
-      officeEditorRef.current = new window.DocsAPI.DocEditor('onlyoffice-editor', response.data.config)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'OnlyOffice 加载失败'
-      setOfficeError(message)
-    } finally {
-      setOfficeLoading(false)
-    }
-  }
-
-  const closePreview = () => {
-    destroyOnlyOfficeEditor()
-    setPreviewDoc(null)
-    setPreviewData(null)
-    setPreviewLoading(false)
-    setEditorOpen(false)
-    setEditContent('')
-    setSaving(false)
-    setOfficeMode('view')
-    setOfficeLoading(false)
-    setOfficeError('')
-  }
-
-  const openPreview = async (doc: DocumentInfo, editMode = false) => {
+  const openPreview = (doc: DocumentInfo) => {
     setPreviewDoc(doc)
-    setPreviewLoading(true)
-    setPreviewData(null)
-    setEditorOpen(false)
-    setOfficeMode('view')
-    setOfficeError('')
-
-    try {
-      const response = await api.get<PreviewPayload>(`/documents/${doc.id}/preview`)
-      setPreviewData(response.data)
-      setEditContent(response.data.content ?? '')
-      setEditorOpen(editMode && response.data.can_edit)
-      if (response.data.preview_type === 'onlyoffice') {
-        setOfficeMode(editMode ? 'edit' : 'view')
-      }
-    } catch (error) {
-      toast.error(tr('文档预览加载失败', 'Failed to load preview', 'プレビューの読み込みに失敗しました'))
-      setPreviewDoc(null)
-    } finally {
-      setPreviewLoading(false)
-    }
   }
 
   const onSourceDrop = async (acceptedFiles: File[]) => {
@@ -374,7 +194,7 @@ export default function DocumentManager() {
         await deleteDocument(docId)
         setSelectedDocs((prev) => prev.filter((id) => id !== docId))
         if (previewDoc?.id === docId) {
-          closePreview()
+          setPreviewDoc(null)
         }
         const message = tr('删除成功', 'Deleted', '削除しました')
         toast.success(message)
@@ -420,7 +240,7 @@ export default function DocumentManager() {
         await deleteDocument(docId)
       }
       if (previewDoc && deleting.includes(previewDoc.id)) {
-        closePreview()
+        setPreviewDoc(null)
       }
       setSelectedDocs([])
       const message = tr('批量删除成功', 'Batch delete completed', '一括削除が完了しました')
@@ -462,28 +282,6 @@ export default function DocumentManager() {
       }, 300)
     } catch (error) {
       toast.error(tr('重试失败', 'Retry failed', '再試行に失敗しました'))
-    }
-  }
-
-  const handleSave = async () => {
-    if (!previewDoc || !previewData?.can_edit) return
-
-    setSaving(true)
-    try {
-      await api.post(`/documents/${previewDoc.id}/save`, { content: editContent })
-      setPreviewData({
-        ...previewData,
-        content: editContent,
-        html_content: null,
-        truncated: false,
-      })
-      setEditorOpen(false)
-      await fetchDocuments()
-      toast.success(tr('保存成功', 'Saved', '保存しました'))
-    } catch (error) {
-      toast.error(tr('保存失败', 'Save failed', '保存に失敗しました'))
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -556,210 +354,117 @@ export default function DocumentManager() {
     return null
   }
 
-  const renderPreviewContent = () => {
-    if (previewLoading) {
-      return <div className="flex h-full items-center justify-center text-slate-400">{tr('正在加载预览...', 'Loading preview...', 'プレビューを読み込み中...')}</div>
-    }
-
-    if (!previewData) {
-      return <div className="flex h-full items-center justify-center text-slate-500">{tr('暂无预览内容', 'No preview content', 'プレビューはありません')}</div>
-    }
-
-    if (previewData.preview_type === 'onlyoffice') {
-      return (
-        <div className="h-[68vh] overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          {officeLoading && <div className="p-4 text-sm text-slate-500">正在加载 OnlyOffice...</div>}
-          {officeError && <div className="border-b border-red-100 bg-red-50 p-4 text-sm text-red-600">{officeError}</div>}
-          {/* 空的 ref 容器，mountOnlyOffice 会将独立的 officeHost 挂入 */}
-          <div ref={officeContainerRef} className="h-full w-full" />
-        </div>
-      )
-    }
-
-    if (editorOpen && previewData.can_edit) {
-      return (
-        <textarea
-          value={editContent}
-          onChange={(e) => setEditContent(e.target.value)}
-          spellCheck={false}
-          className="h-full min-h-[420px] w-full rounded-2xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-7 text-slate-800 outline-none"
-        />
-      )
-    }
-
-    if (previewData.preview_type === 'pdf') {
-      return (
-        <iframe
-          title="document-preview"
-          src={`/api/v1/documents/${previewDoc?.id}/inline`}
-          className="h-[68vh] w-full rounded-2xl border border-slate-200 bg-white"
-        />
-      )
-    }
-
-    if (previewData.preview_type === 'spreadsheet') {
-      return (
-        <div className="space-y-5">
-          {previewData.sheets?.map((sheet) => (
-            <div key={sheet.name} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-              <div className="border-b border-slate-200 px-4 py-3">
-                <div className="text-sm font-medium text-slate-900">{sheet.name}</div>
-                <div className="text-xs text-slate-400">
-                  {sheet.rows} 行 · {sheet.cols} 列
-                </div>
-              </div>
-              <div className="max-h-72 overflow-auto scrollbar-thin">
-                <table className="min-w-full text-left text-xs">
-                  <tbody>
-                    {sheet.data.slice(0, 20).map((row, rowIndex) => (
-                      <tr key={`${sheet.name}-${rowIndex}`} className="border-b border-slate-100">
-                        {row.map((cell, colIndex) => (
-                          <td key={`${sheet.name}-${rowIndex}-${colIndex}`} className="px-3 py-1.5 text-slate-700">
-                            {cell || '-'}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-          <pre className="whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-600">
-            {previewData.content}
-          </pre>
-        </div>
-      )
-    }
-
-    if (previewData.preview_type === 'markdown' && previewData.html_content) {
-      return (
-        <div className="space-y-4">
-          <div
-            className="prose max-w-none rounded-2xl border border-slate-200 bg-slate-50 p-5 prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-code:text-blue-300"
-            dangerouslySetInnerHTML={{ __html: previewData.html_content }}
-          />
-          <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <summary className="cursor-pointer text-sm text-slate-600">查看原始 Markdown</summary>
-            <pre className="mt-4 whitespace-pre-wrap text-xs leading-6 text-slate-600">{previewData.content}</pre>
-          </details>
-        </div>
-      )
-    }
-
-    return (
-      <pre className="min-h-[420px] whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
-        {previewData.content}
-      </pre>
-    )
-  }
-
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        <div className="glass p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/20">
-              <FileText className="h-5 w-5 text-blue-400" />
+    <div className="h-full flex flex-col gap-4 min-h-0">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 shrink-0">
+        <div className="glass p-4">
+          <div className="mb-3 flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/20">
+              <FileText className="h-4 w-4 text-blue-400" />
             </div>
             <div>
-              <h3 className="font-medium text-slate-900">{tr('上传源文档', 'Upload Source Docs', 'ソース文書をアップロード')}</h3>
+              <h3 className="text-sm font-medium text-slate-900">{tr('上传源文档', 'Upload Source Docs', 'ソース文書をアップロード')}</h3>
               <p className="text-xs text-slate-400">{tr('支持 docx、xlsx、md、txt', 'Supports docx, xlsx, md, txt', 'docx/xlsx/md/txt 対応')}</p>
             </div>
           </div>
           <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
             <input {...getSourceInputProps()} />
             <div className="flex items-center justify-center gap-2">
-              <Plus className="h-5 w-5 text-slate-400" />
-              <span className="text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
+              <Plus className="h-4 w-4 text-slate-400" />
+              <span className="text-sm text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
             </div>
           </div>
         </div>
 
-        <div className="glass p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-500/20">
-              <Table className="h-5 w-5 text-green-400" />
+        <div className="glass p-4">
+          <div className="mb-3 flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-500/20">
+              <Table className="h-4 w-4 text-green-400" />
             </div>
             <div>
-              <h3 className="font-medium text-slate-900">{tr('上传模板', 'Upload Templates', 'テンプレートをアップロード')}</h3>
+              <h3 className="text-sm font-medium text-slate-900">{tr('上传模板', 'Upload Templates', 'テンプレートをアップロード')}</h3>
               <p className="text-xs text-slate-400">{tr('支持 docx、xlsx', 'Supports docx, xlsx', 'docx/xlsx 対応')}</p>
             </div>
           </div>
           <div {...getTemplateRootProps()} className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}>
             <input {...getTemplateInputProps()} />
             <div className="flex items-center justify-center gap-2">
-              <Plus className="h-5 w-5 text-slate-400" />
-              <span className="text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
+              <Plus className="h-4 w-4 text-slate-400" />
+              <span className="text-sm text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`} onClick={() => setFilter('all')}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-500/20">
-              <File className="h-5 w-5 text-primary-400" />
+      <div className="grid grid-cols-4 gap-3 shrink-0">
+        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`} onClick={() => setFilter('all')}>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-500/20">
+              <FileText className="h-4 w-4 text-primary-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-slate-900">{documents.length}</p>
-              <p className="text-xs text-slate-400">{tr('全部文档', 'All Docs', '全ドキュメント')}</p>
+              <p className="text-lg font-bold text-slate-900">{documents.length}</p>
+              <p className="text-xs text-slate-400">{tr('全部', 'All', 'すべて')}</p>
             </div>
           </div>
         </div>
-
-        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => setFilter('source')}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/20">
-              <FileText className="h-5 w-5 text-blue-400" />
+        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => setFilter('source')}>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20">
+              <FileText className="h-4 w-4 text-blue-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-slate-900">{sourceDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('源文档', 'Source Docs', 'ソース文書')}</p>
+              <p className="text-lg font-bold text-slate-900">{sourceDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('源文档', 'Source', 'ソース')}</p>
             </div>
           </div>
         </div>
-
-        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`} onClick={() => setFilter('template')}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/20">
-              <Table className="h-5 w-5 text-green-400" />
+        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`} onClick={() => setFilter('template')}>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-500/20">
+              <Table className="h-4 w-4 text-green-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-slate-900">{templateDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('模板', 'Templates', 'テンプレート')}</p>
+              <p className="text-lg font-bold text-slate-900">{templateDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('模板', 'Template', 'テンプレート')}</p>
             </div>
           </div>
         </div>
-
-        <div className={`glass card-hover-lift cursor-pointer p-4 transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`} onClick={() => setFilter('output')}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/20">
-              <FolderOpen className="h-5 w-5 text-orange-400" />
+        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`} onClick={() => setFilter('output')}>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/20">
+              <FolderOpen className="h-4 w-4 text-orange-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-slate-900">{outputDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('输出文件', 'Output Files', '出力ファイル')}</p>
+              <p className="text-lg font-bold text-slate-900">{outputDocs.length}</p>
+              <p className="text-xs text-slate-400">{tr('输出', 'Output', '出力')}</p>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="glass p-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="relative">
+      <div className="glass flex flex-col min-h-0 flex-1">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-200 shrink-0">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <label className="flex cursor-pointer items-center gap-2 shrink-0">
+              <input
+                type="checkbox"
+                checked={selectedDocs.length === filteredDocs.length && filteredDocs.length > 0}
+                onChange={toggleSelectAll}
+                className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
+              />
+              <span className="text-xs text-slate-400">{tr('全选', 'Select all', 'すべて選択')}</span>
+            </label>
+            <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder={tr('搜索文档...', 'Search documents...', 'ドキュメントを検索...')}
-                className="input w-64 pl-10"
+                className="input h-9 pl-10 text-sm"
               />
             </div>
-
             <Dropdown
               value={filter}
               onChange={(v) => setFilter(v as CategoryFilter)}
@@ -770,38 +475,23 @@ export default function DocumentManager() {
                 { value: 'output', label: tr('输出', 'Output', '出力') },
               ]}
               icon={<Filter className="h-4 w-4 text-slate-400" />}
-              className="w-40"
+              className="w-32"
             />
           </div>
-
-          <div className="flex items-center gap-3">
-            <button onClick={() => fetchDocuments()} className="btn-secondary flex items-center gap-2" title={tr('刷新', 'Refresh', '更新')}>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={() => fetchDocuments()} className="btn-secondary p-2" title={tr('刷新', 'Refresh', '更新')}>
               <RefreshCw className="h-4 w-4" />
             </button>
             {selectedDocs.length > 0 && (
-              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300">
+              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-1.5 px-3 py-2 text-red-400 hover:text-red-300 text-sm">
                 <Trash2 className="h-4 w-4" />
                 {tr('删除选中', 'Delete Selected', '選択を削除')} ({selectedDocs.length})
               </button>
             )}
           </div>
         </div>
-      </div>
 
-      <div className="glass overflow-hidden">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <label className="flex cursor-pointer items-center gap-3">
-            <input
-              type="checkbox"
-              checked={selectedDocs.length === filteredDocs.length && filteredDocs.length > 0}
-              onChange={toggleSelectAll}
-              className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
-            />
-            <span className="text-sm text-slate-400">{tr('全选', 'Select all', 'すべて選択')} ({filteredDocs.length} {tr('个文档', 'docs', '件')})</span>
-          </label>
-        </div>
-
-        <div className="max-h-[560px] overflow-y-auto scrollbar-thin">
+        <div className="flex-1 overflow-y-auto scrollbar-thin min-h-0">
           {filteredDocs.length > 0 ? (
             filteredDocs.map((doc) => {
               const config = categoryConfig[doc.doc_category as keyof typeof categoryConfig] || categoryConfig.source
@@ -853,7 +543,7 @@ export default function DocumentManager() {
                     </button>
                     {(doc.file_type === 'txt' || doc.file_type === 'md') && (
                       <button
-                        onClick={() => openPreview(doc, true)}
+                        onClick={() => openPreview(doc)}
                         aria-label={tr('编辑文档', 'Edit document', '文書を編集')}
                         className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
                         title="编辑"
@@ -884,55 +574,7 @@ export default function DocumentManager() {
         </div>
       </div>
 
-      {previewDoc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4 py-6 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="document-preview-title" className="glass-dark flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px]">
-            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-              <div className="min-w-0">
-                <h3 id="document-preview-title" className="truncate text-lg font-semibold text-slate-900">{previewDoc.original_filename}</h3>
-                <p className="mt-1 text-sm text-slate-400">
-                  {previewDoc.file_type.toUpperCase()} · {previewDoc.doc_category === 'source' ? tr('源文档', 'Source', 'ソース') : previewDoc.doc_category === 'template' ? tr('模板', 'Template', 'テンプレート') : tr('输出', 'Output', '出力')}
-                  {previewData?.truncated ? tr(' · 当前为截断预览', ' · Truncated preview', ' · 省略プレビュー') : ''}
-                  {previewData?.preview_type === 'onlyoffice' ? ' · OnlyOffice' : ''}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                {previewData?.preview_type === 'onlyoffice' && (
-                  <button
-                    onClick={() => setOfficeMode((current) => (current === 'edit' ? 'view' : 'edit'))}
-                    className="btn-secondary flex items-center gap-2 px-4 py-2"
-                  >
-                    <Edit3 className="h-4 w-4" />
-                    {officeMode === 'edit' ? tr('切到只读', 'Switch to read-only', '閲覧モードに切替') : tr('进入编辑', 'Edit mode', '編集モードへ')}
-                  </button>
-                )}
-                {previewData?.can_edit && (
-                  <button
-                    onClick={() => {
-                      setEditorOpen((current) => !current)
-                      setEditContent(previewData.content)
-                    }}
-                    className="btn-secondary flex items-center gap-2 px-4 py-2"
-                  >
-                    <Edit3 className="h-4 w-4" />
-                    {editorOpen ? tr('返回预览', 'Back to preview', 'プレビューへ戻る') : tr('编辑', 'Edit', '編集')}
-                  </button>
-                )}
-                {editorOpen && previewData?.can_edit && (
-                  <button onClick={handleSave} className="btn-primary flex items-center gap-2 px-4 py-2" disabled={saving}>
-                    <CheckCircle className="h-4 w-4" />
-                    {saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')}
-                  </button>
-                )}
-                <button onClick={closePreview} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-auto p-6 scrollbar-thin">{renderPreviewContent()}</div>
-          </div>
-        </div>
-      )}
+      <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
     </div>
   )
 }

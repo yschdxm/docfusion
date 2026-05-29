@@ -113,7 +113,7 @@ export default function Layout() {
   }, [location.pathname, navigate, shortcutsEnabled])
 
   return (
-    <div className="min-h-screen flex">
+    <div className="h-screen flex overflow-hidden">
       <input
         ref={sourceInputRef}
         type="file"
@@ -131,10 +131,10 @@ export default function Layout() {
         onChange={onSelectTemplateFiles}
       />
       <Sidebar />
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <Header />
-        <main className="flex-1 p-6 overflow-auto scrollbar-thin">
-          <div className="max-w-7xl mx-auto animate-in">
+        <main className="flex-1 p-6 min-h-0">
+          <div className="animate-in h-full flex flex-col min-h-0">
             <Outlet />
           </div>
         </main>

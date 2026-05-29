@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { Network, Options } from 'vis-network/standalone'
 import { DataSet } from 'vis-data'
-import { Search, RefreshCw, Loader2, Network as NetworkIcon, List, Send, FileText, Filter } from 'lucide-react'
+import { RefreshCw, Network as NetworkIcon, List, FileText, Filter } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useDocumentStore } from '../stores/documentStore'
@@ -21,11 +21,6 @@ interface Edge {
   target: string
   type: string
   description?: string
-}
-
-interface QueryResult {
-  answer: string
-  relatedEntities: Node[]
 }
 
 /** 字符串哈希 → 色相，同类类型名始终同色 */
@@ -137,7 +132,7 @@ const GraphContainer = memo(({ nodes, edges }: { nodes: Node[]; edges: Edge[] })
     }
   }, [nodes, edges])
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: '500px' }} className="bg-slate-50" />
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} className="bg-slate-50" />
 })
 
 GraphContainer.displayName = 'GraphContainer'
@@ -150,9 +145,6 @@ export default function KnowledgeGraph() {
   const [allEdges, setAllEdges] = useState<Edge[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph')
-  const [query, setQuery] = useState('')
-  const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
-  const [isQuerying, setIsQuerying] = useState(false)
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all')
   const [isDark, setIsDark] = useState(document.documentElement.getAttribute('data-theme') === 'night-mode')
@@ -207,23 +199,6 @@ export default function KnowledgeGraph() {
   const nodeIds = new Set(filteredNodes.map((n) => n.id))
   const filteredEdges = allEdges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
 
-  const handleQuery = async () => {
-    if (!query.trim()) return
-    setIsQuerying(true)
-    setQueryResult(null)
-    try {
-      const response = await api.post('/knowledge/query', { query })
-      setQueryResult({
-        answer: response.data.answer,
-        relatedEntities: response.data.related_entities || [],
-      })
-    } catch {
-      toast.error(tr('查询失败', 'Query failed', '検索に失敗しました'))
-    } finally {
-      setIsQuerying(false)
-    }
-  }
-
   const toggleDocSelection = (docId: string) => {
     setSelectedDocs((prev) => (prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]))
   }
@@ -231,9 +206,9 @@ export default function KnowledgeGraph() {
   const entityTypes = Array.from(new Set(allNodes.map((n) => n.type)))
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-1 space-y-4">
+    <div className="h-full flex flex-col">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-0">
+        <div className="lg:col-span-1 flex flex-col gap-4 min-h-0 overflow-y-auto scrollbar-thin">
           <div className="glass p-4">
             <h3 className="text-sm font-medium text-slate-500 mb-3 flex items-center gap-2">
               <FileText className="w-4 h-4" />
@@ -297,8 +272,8 @@ export default function KnowledgeGraph() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 space-y-4">
-          <div className="flex items-center justify-between">
+        <div className="lg:col-span-3 flex flex-col gap-4 min-h-0">
+          <div className="flex items-center justify-between shrink-0">
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setViewMode('graph')}
@@ -329,42 +304,8 @@ export default function KnowledgeGraph() {
             </button>
           </div>
 
-          <div className="glass p-4">
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleQuery()}
-                  placeholder={tr('在知识图谱中提问...', 'Ask in the knowledge graph...', 'ナレッジグラフに質問...')}
-                  className="input pl-12"
-                />
-              </div>
-              <button onClick={handleQuery} disabled={isQuerying || !query.trim()} className="btn-primary disabled:opacity-50">
-                {isQuerying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-              </button>
-            </div>
-
-            {queryResult && (
-              <div className="mt-4 p-4 rounded-xl bg-primary-500/10 border border-primary-500/30">
-                <p className="text-slate-900 mb-3">{queryResult.answer}</p>
-                {queryResult.relatedEntities.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {queryResult.relatedEntities.map((entity, index) => (
-                      <span key={index} className="px-3 py-1 rounded-full text-xs border" style={typeBadgeStyle(entity.type, isDark)}>
-                        {entity.name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
           {viewMode === 'graph' ? (
-            <div className="glass overflow-hidden" style={{ height: '500px' }}>
+            <div className="glass overflow-hidden flex-1 min-h-0">
               {filteredNodes.length > 0 ? (
                 <GraphContainer nodes={filteredNodes} edges={filteredEdges} />
               ) : (
@@ -378,7 +319,7 @@ export default function KnowledgeGraph() {
               )}
             </div>
           ) : (
-            <div className="glass p-3 max-h-[500px] overflow-y-auto scrollbar-thin">
+            <div className="glass p-3 flex-1 overflow-y-auto scrollbar-thin min-h-0">
               {filteredNodes.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {filteredNodes.map((node) => (

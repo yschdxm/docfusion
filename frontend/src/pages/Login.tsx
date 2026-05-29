@@ -80,7 +80,7 @@ export default function Login() {
             ))}
           </div>
 
-          <div className="mt-10 rounded-2xl border border-white/15 bg-white/10 p-4">
+          <div className="mt-10 rounded-xl border border-white/15 bg-white/10 p-4">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15">
                 <Building2 className="h-5 w-5" />

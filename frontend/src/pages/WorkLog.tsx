@@ -155,12 +155,12 @@ export default function WorkLog() {
   const templateDocs = useMemo(() => documents.filter((d) => d.doc_category === 'template'), [documents])
   const outputDocs = useMemo(() => documents.filter((d) => d.doc_category === 'output'), [documents])
 
-  const recentSources = useMemo(() => sortByCreatedAtDesc(sourceDocs).slice(0, 4), [sourceDocs])
-  const recentTemplates = useMemo(() => sortByCreatedAtDesc(templateDocs).slice(0, 4), [templateDocs])
-  const recentOutputs = useMemo(() => sortByCreatedAtDesc(outputDocs).slice(0, 4), [outputDocs])
+  const recentSources = useMemo(() => sortByCreatedAtDesc(sourceDocs).slice(0, 8), [sourceDocs])
+  const recentTemplates = useMemo(() => sortByCreatedAtDesc(templateDocs).slice(0, 8), [templateDocs])
+  const recentOutputs = useMemo(() => sortByCreatedAtDesc(outputDocs).slice(0, 8), [outputDocs])
 
   const pendingTodos = useMemo(() => todos.filter((t) => !t.done), [todos])
-  const todoPreview = useMemo(() => pendingTodos.slice(0, 3), [pendingTodos])
+  const todoPreview = useMemo(() => pendingTodos.slice(0, 6), [pendingTodos])
 
   const docsByDate = useMemo(() => {
     return documents.reduce<Record<string, DocumentInfo[]>>((acc, doc) => {
@@ -503,87 +503,87 @@ export default function WorkLog() {
   const hasAnyDayData = (source: number, template: number, output: number) => source > 0 || template > 0 || output > 0
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="glass p-4 rounded-xl">
-          <div className="mb-3 flex items-center justify-between">
+    <div className="flex flex-col h-full min-h-0 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 shrink-0">
+        <div className="glass p-3 rounded-xl flex flex-col">
+          <div className="mb-2 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
-                <FileText className="w-4 h-4 text-blue-600" />
+              <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+                <FileText className="w-3.5 h-3.5 text-blue-600" />
               </div>
-              <p className="text-sm font-medium text-slate-900 truncate">{tr('最近上传文档', 'Recent Uploaded Docs', '最近アップロードした文書')}</p>
+              <p className="text-xs font-medium text-slate-900 truncate">{tr('最近上传文档', 'Recent Uploaded Docs', '最近アップロードした文書')}</p>
             </div>
-            <span className="text-xs text-slate-500">{sourceDocs.length} 份</span>
+            <span className="text-[10px] text-slate-500">{sourceDocs.length} 份</span>
           </div>
-          <div className="mt-2 space-y-1.5">
+          <div className="space-y-1 overflow-y-auto min-h-0 max-h-28 scrollbar-thin">
             {recentSources.length > 0 ? (
               recentSources.map((item) => (
-                <p key={item.id} className="text-xs text-slate-500 truncate">{item.original_filename}</p>
+                <p key={item.id} className="text-[11px] text-slate-500 truncate">{item.original_filename}</p>
               ))
             ) : (
-              <p className="text-xs text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
+              <p className="text-[11px] text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
             )}
           </div>
         </div>
 
-        <div className="glass p-4 rounded-xl">
-          <div className="mb-3 flex items-center justify-between">
+        <div className="glass p-3 rounded-xl flex flex-col">
+          <div className="mb-2 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center shrink-0">
-                <Table className="w-4 h-4 text-emerald-600" />
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center shrink-0">
+                <Table className="w-3.5 h-3.5 text-emerald-600" />
               </div>
-              <p className="text-sm font-medium text-slate-900 truncate">{tr('最近上传模板', 'Recent Uploaded Templates', '最近アップロードしたテンプレート')}</p>
+              <p className="text-xs font-medium text-slate-900 truncate">{tr('最近上传模板', 'Recent Uploaded Templates', '最近アップロードしたテンプレート')}</p>
             </div>
-            <span className="text-xs text-slate-500">{templateDocs.length} 份</span>
+            <span className="text-[10px] text-slate-500">{templateDocs.length} 份</span>
           </div>
-          <div className="mt-2 space-y-1.5">
+          <div className="space-y-1 overflow-y-auto min-h-0 max-h-28 scrollbar-thin">
             {recentTemplates.length > 0 ? (
               recentTemplates.map((item) => (
-                <p key={item.id} className="text-xs text-slate-500 truncate">{item.original_filename}</p>
+                <p key={item.id} className="text-[11px] text-slate-500 truncate">{item.original_filename}</p>
               ))
             ) : (
-              <p className="text-xs text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
+              <p className="text-[11px] text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
             )}
           </div>
         </div>
 
-        <div className="glass p-4 rounded-xl">
-          <div className="mb-3 flex items-center justify-between">
+        <div className="glass p-3 rounded-xl flex flex-col">
+          <div className="mb-2 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
-                <FileOutput className="w-4 h-4 text-amber-600" />
+              <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
+                <FileOutput className="w-3.5 h-3.5 text-amber-600" />
               </div>
-              <p className="text-sm font-medium text-slate-900 truncate">{tr('最近输出文件', 'Recent Output Files', '最近出力ファイル')}</p>
+              <p className="text-xs font-medium text-slate-900 truncate">{tr('最近输出文件', 'Recent Output Files', '最近出力ファイル')}</p>
             </div>
-            <span className="text-xs text-slate-500">{outputDocs.length} 份</span>
+            <span className="text-[10px] text-slate-500">{outputDocs.length} 份</span>
           </div>
-          <div className="mt-2 space-y-1.5">
+          <div className="space-y-1 overflow-y-auto min-h-0 max-h-28 scrollbar-thin">
             {recentOutputs.length > 0 ? (
               recentOutputs.map((item) => (
-                <p key={item.id} className="text-xs text-slate-500 truncate">{item.original_filename}</p>
+                <p key={item.id} className="text-[11px] text-slate-500 truncate">{item.original_filename}</p>
               ))
             ) : (
-              <p className="text-xs text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
+              <p className="text-[11px] text-slate-500">{tr('暂无记录', 'No records', '記録なし')}</p>
             )}
           </div>
         </div>
 
-        <div className="glass p-4 rounded-xl">
-          <div className="mb-3 flex items-center justify-between">
+        <div className="glass p-3 rounded-xl flex flex-col">
+          <div className="mb-2 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-9 h-9 rounded-lg bg-violet-100 flex items-center justify-center shrink-0">
-                <ClipboardList className="w-4 h-4 text-violet-600" />
+              <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center shrink-0">
+                <ClipboardList className="w-3.5 h-3.5 text-violet-600" />
               </div>
-              <p className="text-sm font-medium text-slate-900 truncate">{tr('待办事项', 'Todo Items', 'TODO項目')}</p>
+              <p className="text-xs font-medium text-slate-900 truncate">{tr('待办事项', 'Todo Items', 'TODO項目')}</p>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500">待办 {pendingTodos.length}</span>
-              <button onClick={() => setShowTodoModal(true)} aria-label={tr('展开全部待办', 'Expand all todos', 'TODOをすべて表示')} className="p-1 rounded hover:bg-slate-100" title="展开全部">
-                <Maximize2 className="w-3.5 h-3.5 text-slate-500" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-500">待办 {pendingTodos.length}</span>
+              <button onClick={() => setShowTodoModal(true)} aria-label={tr('展开全部待办', 'Expand all todos', 'TODOをすべて表示')} className="p-0.5 rounded hover:bg-slate-100" title="展开全部">
+                <Maximize2 className="w-3 h-3 text-slate-500" />
               </button>
             </div>
           </div>
-          <div className="flex gap-2 mb-2">
+          <div className="flex gap-1.5 mb-1.5 shrink-0">
             <input
               value={todoInput}
               onChange={(e) => setTodoInput(e.target.value)}
@@ -591,67 +591,68 @@ export default function WorkLog() {
                 if (e.key === 'Enter') addTodo()
               }}
               placeholder={tr('输入近期任务', 'Enter upcoming task', '近日中のタスクを入力')}
-              className="input h-9 text-xs"
+              className="input h-8 text-[11px]"
             />
-            <button onClick={addTodo} className="btn-secondary px-3 py-2">
-              <Plus className="w-4 h-4" />
+            <button onClick={addTodo} className="btn-secondary px-2 py-1.5">
+              <Plus className="w-3.5 h-3.5" />
             </button>
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1 overflow-y-auto min-h-0 max-h-24 scrollbar-thin">
             {todoPreview.length > 0 ? (
               todoPreview.map((todo) => (
-                <label key={todo.id} className="flex items-center gap-2 text-xs text-slate-600">
-                  <input type="checkbox" checked={todo.done} onChange={() => toggleTodo(todo.id)} className="h-3.5 w-3.5" />
+                <label key={todo.id} className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                  <input type="checkbox" checked={todo.done} onChange={() => toggleTodo(todo.id)} className="h-3 w-3" />
                   <span className="truncate">{todo.text}</span>
                 </label>
               ))
             ) : (
-              <p className="text-xs text-slate-500">暂无待办，输入后会显示在这里</p>
+              <p className="text-[11px] text-slate-500">暂无待办</p>
             )}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        <div className="xl:col-span-9">
-          <div className="glass rounded-xl overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
+      <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <div className="xl:col-span-9 min-h-0 flex flex-col">
+          <div className="glass rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col">
+            <div className="px-4 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setActiveTab('calendar')}
-                  className={`px-3 py-1.5 rounded-lg text-sm ${activeTab === 'calendar' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'calendar' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> {tr('日历总览', 'Calendar Overview', 'カレンダー概要')}</span>
+                  <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {tr('日历总览', 'Calendar Overview', 'カレンダー概要')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('funnel')}
-                  className={`px-3 py-1.5 rounded-lg text-sm ${activeTab === 'funnel' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'funnel' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1.5"><LayoutGrid className="w-4 h-4" /> {tr('完成率漏斗', 'Completion Funnel', '完了率ファネル')}</span>
+                  <span className="inline-flex items-center gap-1"><LayoutGrid className="w-3.5 h-3.5" /> {tr('完成率漏斗', 'Completion Funnel', '完了率ファネル')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('templatePie')}
-                  className={`px-3 py-1.5 rounded-lg text-sm ${activeTab === 'templatePie' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'templatePie' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1.5"><PieChart className="w-4 h-4" /> {tr('模板使用排行', 'Template Usage Ranking', 'テンプレート利用ランキング')}</span>
+                  <span className="inline-flex items-center gap-1"><PieChart className="w-3.5 h-3.5" /> {tr('模板使用排行', 'Template Usage Ranking', 'テンプレート利用ランキング')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('uploadTrend')}
-                  className={`px-3 py-1.5 rounded-lg text-sm ${activeTab === 'uploadTrend' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'uploadTrend' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1.5"><TrendingUp className="w-4 h-4" /> {tr('上传量趋势', 'Upload Trend', 'アップロード推移')}</span>
+                  <span className="inline-flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5" /> {tr('上传量趋势', 'Upload Trend', 'アップロード推移')}</span>
                 </button>
               </div>
 
-              <button onClick={exportWorkLog} className="btn-secondary px-3 py-1.5 text-sm">
-                <Download className="w-4 h-4" />
+              <button onClick={exportWorkLog} className="btn-secondary px-2.5 py-1 text-xs">
+                <Download className="w-3.5 h-3.5" />
                 {tr('导出工作日志', 'Export Work Log', '作業ログをエクスポート')}
               </button>
             </div>
 
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col">
             {activeTab === 'calendar' && (
-              <div className="p-4 space-y-4">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="p-4 flex-1 min-h-0 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap shrink-0">
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => {
@@ -666,7 +667,7 @@ export default function WorkLog() {
                       <ChevronLeft className="w-4 h-4" />
                     </button>
 
-                    <button onClick={openDatePicker} className="btn-secondary min-w-[150px] justify-center">
+                    <button onClick={openDatePicker} className="btn-secondary min-w-[150px] justify-center text-sm">
                       {periodMode === 'month' ? `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月` : `${selectedYear}年`}
                     </button>
 
@@ -687,13 +688,13 @@ export default function WorkLog() {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setPeriodMode('month')}
-                      className={`px-3 py-1.5 rounded-lg text-xs ${periodMode === 'month' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                      className={`px-2.5 py-1 rounded-lg text-xs ${periodMode === 'month' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                     >
                       {tr('按月', 'By Month', '月別')}
                     </button>
                     <button
                       onClick={() => setPeriodMode('year')}
-                      className={`px-3 py-1.5 rounded-lg text-xs ${periodMode === 'year' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                      className={`px-2.5 py-1 rounded-lg text-xs ${periodMode === 'year' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                     >
                       {tr('按年', 'By Year', '年別')}
                     </button>
@@ -703,7 +704,7 @@ export default function WorkLog() {
                         setCurrentMonth(new Date(now.getFullYear(), now.getMonth(), 1))
                         setSelectedYear(now.getFullYear())
                       }}
-                      className="btn-secondary px-3 py-1.5 text-xs"
+                      className="btn-secondary px-2.5 py-1 text-xs"
                     >
                       本{periodMode === 'month' ? '月' : '年'}
                     </button>
@@ -711,7 +712,7 @@ export default function WorkLog() {
                 </div>
 
                 {showDatePicker && (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 shrink-0">
                     <div className="flex items-center justify-between mb-3">
                       <button onClick={() => setPickerYear((y) => y - 1)} className="btn-secondary px-2 py-1">{tr('上一年', 'Prev Year', '前年')}</button>
                       <span className="text-sm font-medium text-slate-800">{pickerYear} 年</span>
@@ -760,32 +761,52 @@ export default function WorkLog() {
 
                 {periodMode === 'month' ? (
                   <>
-                    <div className="grid grid-cols-7 gap-2 text-xs text-slate-500 px-1">
+                    <div className="grid grid-cols-7 gap-1.5 text-[11px] text-slate-500 px-0.5 shrink-0">
                       {['日', '一', '二', '三', '四', '五', '六'].map((w) => (
-                        <div key={w} className="text-center py-1">{w}</div>
+                        <div key={w} className="text-center py-0.5">{w}</div>
                       ))}
                     </div>
 
-                    <div className="grid grid-cols-7 gap-2">
+                    <div className="flex-1 min-h-0 grid grid-cols-7 gap-1.5 auto-rows-fr">
                       {currentMonthStats.cells.map((cell, idx) => {
                         if (!cell.key) {
-                          return <div key={`empty-${idx}`} className="h-24 rounded-lg bg-transparent" />
+                          return <div key={`empty-${idx}`} className="rounded-lg bg-transparent" />
                         }
 
                         const dayStats = dailyStats[cell.key] || { source: 0, template: 0, output: 0, total: 0 }
+                        const hasData = hasAnyDayData(dayStats.source, dayStats.template, dayStats.output)
                         return (
                           <button
                             key={cell.key}
                             onClick={() => setSelectedDayKey(cell.key)}
-                            className="h-24 rounded-lg border border-slate-200 bg-slate-50 p-2 text-left hover:border-primary-300 transition-colors"
+                            className="calendar-cell rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-left hover:border-primary-300 transition-colors flex flex-col"
                           >
-                            <div className="text-xs font-medium text-slate-700">{cell.day}</div>
-                            {hasAnyDayData(dayStats.source, dayStats.template, dayStats.output) && (
-                              <div className="mt-1 space-y-0.5 text-[10px] leading-4">
-                                {dayStats.source > 0 && <p className="text-blue-600">{tr('文档', 'Docs', '文書')} {dayStats.source}</p>}
-                                {dayStats.template > 0 && <p className="text-emerald-600">{tr('模板', 'Templates', 'テンプレート')} {dayStats.template}</p>}
-                                {dayStats.output > 0 && <p className="text-amber-600">{tr('输出', 'Output', '出力')} {dayStats.output}</p>}
-                              </div>
+                            <div className="text-[11px] font-medium text-slate-700">{cell.day}</div>
+                            {hasData && (
+                              <>
+                                <div className="calendar-cell-tags mt-auto flex flex-col gap-0.5">
+                                  {dayStats.source > 0 && (
+                                    <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-blue-50 text-blue-600 rounded px-1 py-0.5 truncate">
+                                      {tr('文档', 'Docs', '文書')} {dayStats.source}
+                                    </span>
+                                  )}
+                                  {dayStats.template > 0 && (
+                                    <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-emerald-50 text-emerald-600 rounded px-1 py-0.5 truncate">
+                                      {tr('模板', 'Tmp', 'テンプレート')} {dayStats.template}
+                                    </span>
+                                  )}
+                                  {dayStats.output > 0 && (
+                                    <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-amber-50 text-amber-600 rounded px-1 py-0.5 truncate">
+                                      {tr('输出', 'Out', '出力')} {dayStats.output}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="calendar-cell-dots mt-auto items-center gap-0.5 flex-wrap">
+                                  {dayStats.source > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />}
+                                  {dayStats.template > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+                                  {dayStats.output > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />}
+                                </div>
+                              </>
                             )}
                           </button>
                         )
@@ -793,49 +814,70 @@ export default function WorkLog() {
                     </div>
                   </>
                 ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                    {yearMonthlyStats.map((item) => (
-                      <button
-                        key={item.month}
-                        onClick={() => {
-                          setCurrentMonth(new Date(selectedYear, item.month, 1))
-                          setPeriodMode('month')
-                        }}
-                        className="h-24 rounded-lg border border-slate-200 bg-slate-50 p-2 text-left hover:border-primary-300 transition-colors"
-                        title={`查看 ${selectedYear}年${item.month + 1}月`}
-                      >
-                        <div className="text-xs font-medium text-slate-700">{item.month + 1}月</div>
-                        {hasAnyDayData(item.source, item.template, item.output) && (
-                          <div className="mt-1 space-y-0.5 text-[10px] leading-4">
-                            {item.source > 0 && <p className="text-blue-600">{tr('文档', 'Docs', '文書')} {item.source}</p>}
-                            {item.template > 0 && <p className="text-emerald-600">{tr('模板', 'Templates', 'テンプレート')} {item.template}</p>}
-                            {item.output > 0 && <p className="text-amber-600">{tr('输出', 'Output', '出力')} {item.output}</p>}
-                          </div>
-                        )}
-                      </button>
-                    ))}
+                  <div className="flex-1 min-h-0 grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 auto-rows-fr">
+                    {yearMonthlyStats.map((item) => {
+                      const hasData = hasAnyDayData(item.source, item.template, item.output)
+                      return (
+                        <button
+                          key={item.month}
+                          onClick={() => {
+                            setCurrentMonth(new Date(selectedYear, item.month, 1))
+                            setPeriodMode('month')
+                          }}
+                          className="calendar-cell rounded-lg border border-slate-200 bg-slate-50 p-2 text-left hover:border-primary-300 transition-colors flex flex-col"
+                        >
+                          <div className="text-[11px] font-medium text-slate-700">{item.month + 1}月</div>
+                          {hasData && (
+                            <>
+                              <div className="calendar-cell-tags mt-auto flex flex-col gap-0.5">
+                                {item.source > 0 && (
+                                  <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-blue-50 text-blue-600 rounded px-1 py-0.5 truncate">
+                                    {tr('文档', 'Docs', '文書')} {item.source}
+                                  </span>
+                                )}
+                                {item.template > 0 && (
+                                  <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-emerald-50 text-emerald-600 rounded px-1 py-0.5 truncate">
+                                    {tr('模板', 'Tmp', 'テンプレート')} {item.template}
+                                  </span>
+                                )}
+                                {item.output > 0 && (
+                                  <span className="inline-flex items-center text-[8px] lg:text-[9px] leading-none bg-amber-50 text-amber-600 rounded px-1 py-0.5 truncate">
+                                    {tr('输出', 'Out', '出力')} {item.output}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="calendar-cell-dots mt-auto items-center gap-0.5 flex-wrap">
+                                {item.source > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />}
+                                {item.template > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+                                {item.output > 0 && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />}
+                              </div>
+                            </>
+                          )}
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
             )}
 
             {activeTab === 'funnel' && (
-              <div className="p-4 space-y-3">
+              <div className="p-4 space-y-2.5">
                 <p className="text-xs text-slate-500">{tr('上传→提取→填写→输出，快速定位流程卡点', 'Upload -> Extract -> Fill -> Output, quickly locate bottlenecks', 'アップロード→抽出→入力→出力、ボトルネックを素早く把握')}</p>
                 {funnelData.map((stage, index) => (
-                  <div key={stage.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div key={stage.key} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
                     <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
                       <span>{stage.label}</span>
                       <span>{stage.value} 条</span>
                     </div>
-                    <div className="mt-2 h-8 rounded-lg bg-slate-200 overflow-hidden">
+                    <div className="mt-1.5 h-7 rounded-lg bg-slate-200 overflow-hidden">
                       <div className={`h-full ${stage.color} px-3 text-white text-xs flex items-center justify-between`} style={{ width: `${stage.widthPercent}%` }}>
                         <span>{stage.label}</span>
                         <span>{stage.fromPrevious}%</span>
                       </div>
                     </div>
                     {index > 0 && stage.fromPrevious < 100 && (
-                      <p className="mt-1 text-[11px] text-amber-600">{tr('较上一阶段转化率', 'Conversion from previous stage', '前段階からの転換率')} {stage.fromPrevious}%</p>
+                      <p className="mt-1 text-[10px] text-amber-600">{tr('较上一阶段转化率', 'Conversion from previous stage', '前段階からの転換率')} {stage.fromPrevious}%</p>
                     )}
                   </div>
                 ))}
@@ -843,7 +885,7 @@ export default function WorkLog() {
             )}
 
             {activeTab === 'templatePie' && (
-              <div className="p-4 space-y-4">
+              <div className="p-4 space-y-3">
                 {templateTop10.length === 0 ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
                     {tr('暂无模板数据，上传模板后将展示 Top10 使用排行。', 'No template data yet. Top10 ranking will appear after template usage is generated.', 'テンプレートデータがありません。利用後にTop10ランキングが表示されます。')}
@@ -852,7 +894,7 @@ export default function WorkLog() {
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex items-center justify-center">
                       <div
-                        className="w-56 h-56 rounded-full"
+                        className="w-44 h-44 rounded-full"
                         style={{
                           background: `conic-gradient(${templateTop10
                             .map((item) => `${item.color} ${item.start}deg ${item.end}deg`)
@@ -861,14 +903,14 @@ export default function WorkLog() {
                       />
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       {templateTop10.map((item, index) => (
-                        <div key={item.name} className="rounded-lg border border-slate-200 bg-white px-3 py-2 flex items-center justify-between gap-3">
+                        <div key={item.name} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 flex items-center justify-between gap-3">
                           <div className="min-w-0 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
-                            <p className="text-xs text-slate-700 truncate">{index + 1}. {item.name}</p>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                            <p className="text-[11px] text-slate-700 truncate">{index + 1}. {item.name}</p>
                           </div>
-                          <span className="text-xs text-slate-500 shrink-0">{item.count} 次 ({item.percent}%)</span>
+                          <span className="text-[10px] text-slate-500 shrink-0">{item.count} 次 ({item.percent}%)</span>
                         </div>
                       ))}
                     </div>
@@ -878,14 +920,14 @@ export default function WorkLog() {
             )}
 
             {activeTab === 'uploadTrend' && (
-              <div className="p-4 space-y-4">
+              <div className="p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     {(['day', 'week', 'month'] as TrendGranularity[]).map((mode) => (
                       <button
                         key={mode}
                         onClick={() => setTrendGranularity(mode)}
-                        className={`px-3 py-1.5 rounded-lg text-xs ${
+                        className={`px-2.5 py-1 rounded-lg text-xs ${
                           trendGranularity === mode ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'
                         }`}
                       >
@@ -893,15 +935,15 @@ export default function WorkLog() {
                       </button>
                     ))}
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-slate-600">
-                    <span className="inline-flex items-center gap-1"><ChartNoAxesColumnIncreasing className="w-3.5 h-3.5" /> {tr('总上传', 'Total Uploads', '総アップロード')} {uploadTrendSummary.total}</span>
+                  <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                    <span className="inline-flex items-center gap-1"><ChartNoAxesColumnIncreasing className="w-3 h-3" /> {tr('总上传', 'Total Uploads', '総アップロード')} {uploadTrendSummary.total}</span>
                     <span>{tr('均值', 'Avg', '平均')} {uploadTrendSummary.avg}</span>
                     <span>{tr('峰值', 'Peak', 'ピーク')} {uploadTrendSummary.peak}</span>
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="h-52 w-full">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="h-40 w-full">
                     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
                       <line x1="0" y1="90" x2="100" y2="90" stroke="#cbd5e1" strokeWidth="0.8" />
                       <polyline
@@ -924,39 +966,40 @@ export default function WorkLog() {
                     </svg>
                   </div>
                   <div
-                    className="mt-3 grid gap-1.5"
+                    className="mt-2 grid gap-1"
                     style={{ gridTemplateColumns: `repeat(${Math.max(uploadTrendData.length, 1)}, minmax(0, 1fr))` }}
                   >
                     {uploadTrendData.map((item) => (
-                      <div key={item.key} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-center">
-                        <p className="text-[10px] text-slate-500 truncate">{item.label}</p>
-                        <p className="text-xs text-slate-700 mt-0.5">{item.value}</p>
+                      <div key={item.key} className="rounded-md border border-slate-200 bg-white px-1.5 py-1 text-center">
+                        <p className="text-[9px] text-slate-500 truncate">{item.label}</p>
+                        <p className="text-[10px] text-slate-700 mt-0.5">{item.value}</p>
                       </div>
                     ))}
                   </div>
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
 
-        <div className="xl:col-span-3">
-          <div className="glass p-4 rounded-xl h-full min-h-[420px] flex flex-col">
-            <h3 className="text-sm font-medium text-slate-900 mb-3">{tr('工作日记本', 'Work Notebook', '作業ノート')}</h3>
+        <div className="xl:col-span-3 min-h-0">
+          <div className="glass p-4 rounded-xl h-full flex flex-col">
+            <h3 className="text-sm font-medium text-slate-900 mb-2 shrink-0">{tr('工作日记本', 'Work Notebook', '作業ノート')}</h3>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder={tr('写下近期计划、风险提醒、会议结论...', 'Write plans, risks, and meeting conclusions...', '計画、リスク、会議結論を記録...')}
-              className="input min-h-[260px] flex-1 resize-none"
+              className="input flex-1 min-h-0 resize-none text-sm"
             />
-            <p className="mt-3 text-xs text-slate-500">{tr('内容自动保存到本地浏览器。', 'Content is auto-saved in browser.', '内容はブラウザに自動保存されます。')}</p>
+            <p className="mt-2 text-[10px] text-slate-500 shrink-0">{tr('内容自动保存到本地浏览器。', 'Content is auto-saved in browser.', '内容はブラウザに自動保存されます。')}</p>
           </div>
         </div>
       </div>
 
       {showTodoModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm p-4 md:p-8 flex items-center justify-center">
-          <div role="dialog" aria-modal="true" aria-labelledby="worklog-todo-title" className="glass w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-2xl">
+          <div role="dialog" aria-modal="true" aria-labelledby="worklog-todo-title" className="glass w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <h4 id="worklog-todo-title" className="text-base font-semibold text-slate-900">{tr('全部待办事项', 'All Todo Items', 'すべてのTODO')}</h4>
               <button onClick={() => setShowTodoModal(false)} aria-label={tr('关闭待办弹窗', 'Close todo dialog', 'TODOダイアログを閉じる')} className="p-2 rounded-lg hover:bg-slate-100">
@@ -1000,7 +1043,7 @@ export default function WorkLog() {
 
       {selectedDayKey && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm p-4 md:p-8 flex items-center justify-center">
-          <div role="dialog" aria-modal="true" aria-labelledby="worklog-day-title" className="glass w-full max-w-3xl max-h-[85vh] overflow-hidden rounded-2xl">
+          <div role="dialog" aria-modal="true" aria-labelledby="worklog-day-title" className="glass w-full max-w-3xl max-h-[85vh] overflow-hidden rounded-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <h4 id="worklog-day-title" className="text-base font-semibold text-slate-900">{selectedDayKey} {tr('文件明细', 'File Details', 'ファイル詳細')}</h4>
               <button onClick={() => setSelectedDayKey(null)} aria-label={tr('关闭文件明细弹窗', 'Close file detail dialog', 'ファイル詳細ダイアログを閉じる')} className="p-2 rounded-lg hover:bg-slate-100">

@@ -238,7 +238,7 @@ export default function Header() {
   }
 
   return (
-    <header className="glass-dark border-b border-slate-200 px-4 py-2.5">
+    <header className="glass-dark !rounded-none border-b border-slate-200 px-4 py-2.5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-900">{title}</h2>

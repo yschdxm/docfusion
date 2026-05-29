@@ -445,6 +445,14 @@ async def agent_stream(
                 headers={"Cache-Control": "no-cache", "X-Task-Id": task.task_id}
             )
         elif task and not task.stream.is_closed():
+            # 检查是否已有活跃的重连，如果有则拒绝
+            if task.active_reconnections > 0:
+                logger.warning(f"[API /agent/stream] 任务已有活跃重连，拒绝 | task_id={request.task_id} | active={task.active_reconnections}")
+                return StreamingResponse(
+                    _already_connected_response(request.task_id),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Task-Id": task.task_id}
+                )
             return StreamingResponse(
                 _replay_and_stream(task),
                 media_type="text/event-stream",
@@ -500,6 +508,17 @@ async def agent_stream(
                 logger.info(f"[API /agent/stream] 加载了 {len(conversation_history)} 条历史消息")
         except Exception as e:
             logger.warning(f"[API /agent/stream] 加载对话历史失败: {e}")
+
+    # 检查是否已有该对话的运行中任务，防止重复创建
+    if request.conversation_id:
+        existing_task = await task_manager.get_running_task_by_conversation(request.conversation_id)
+        if existing_task:
+            logger.warning(f"[API /agent/stream] 该对话已有运行中任务，转为重连 | conversation_id={request.conversation_id} | existing_task_id={existing_task.task_id}")
+            return StreamingResponse(
+                _replay_and_stream(existing_task),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Task-Id": existing_task.task_id}
+            )
 
     return StreamingResponse(
         _new_task_stream(request, conversation_history, user_id=str(current_user.id)),
@@ -617,6 +636,22 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
 
 async def _replay_and_stream(task):
     """重连：回放历史事件（跳过已持久化消息），然后继续实时流"""
+    # 使用重连锁确保同一任务只有一个活跃重连
+    await task.reconnect_lock.acquire()
+    task.active_reconnections += 1
+    logger.info(f"[API /agent/stream] 重连获取锁 | task_id={task.task_id} | active={task.active_reconnections}")
+
+    try:
+        async for event in _replay_and_stream_inner(task):
+            yield event
+    finally:
+        task.active_reconnections -= 1
+        task.reconnect_lock.release()
+        logger.info(f"[API /agent/stream] 重连释放锁 | task_id={task.task_id} | active={task.active_reconnections}")
+
+
+async def _replay_and_stream_inner(task):
+    """重连内部实现"""
     history = task.stream.get_history()
 
     # 检查历史中是否已有结束事件
@@ -749,6 +784,16 @@ async def _task_not_found_response(task_id: str):
     event = AgentEvent(
         event_type=AgentEventType.FAILED,
         data={"error": "任务不存在或已过期"}
+    )
+    yield event.to_sse_format()
+
+
+async def _already_connected_response(task_id: str):
+    """任务已有活跃连接的响应"""
+    logger.warning(f"[API /agent/stream] 任务已有活跃连接: {task_id}")
+    event = AgentEvent(
+        event_type=AgentEventType.FAILED,
+        data={"error": "该任务已有活跃连接，请勿重复连接"}
     )
     yield event.to_sse_format()
 

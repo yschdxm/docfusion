@@ -42,6 +42,17 @@ export interface AgentStep {
   streamingReply?: string
 }
 
+export interface TaskStats {
+  duration_ms: number
+  total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  llm_calls: number
+  iterations: number
+}
+
 /** 单个SSE连接的状态 */
 interface ConnectionState {
   connectionId: string
@@ -59,7 +70,7 @@ interface ConnectionState {
   maxReconnectAttempts: number
   // 回调
   onEvent: (event: AgentEvent, steps: AgentStep[]) => void
-  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void
+  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string; task_stats?: TaskStats }) => void
   onError: (error: string) => void
   // 重连用的请求参数
   request: AgentStreamRequest
@@ -149,6 +160,11 @@ class AgentStreamService {
     existingTaskId?: string
   ): string {
     const connectionId = `conn_${++this.connectionCounter}_${sessionId}`
+
+    // 如果是新任务（非重连），先清除旧的 task_id
+    if (!existingTaskId) {
+      this.clearPersistedTask(sessionId)
+    }
 
     // 如果该 session 已有连接，先取消旧的
     this.cancelSession(sessionId)
@@ -322,6 +338,7 @@ class AgentStreamService {
               message: event.data.message || '任务完成',
               output_file_id: event.data.result?.output_file_id,
               download_url: event.data.result?.download_url,
+              task_stats: event.data.result?.task_stats,
             })
             state.abortController.abort()
           } else if (event.event_type === 'failed') {
@@ -632,6 +649,7 @@ class AgentStreamService {
         s.progress = event.data.progress || 0
         break
       }
+      case 'stats_update': break  // 统计更新事件，由onEvent回调处理
       case 'completed': { const s = state.steps.get(stepId); if (s && s.type === 'thinking') { s.status = 'completed'; s.progress = 100 } break }
       case 'failed': {
         const fid = event.step_id || `step_fail_${Date.now()}`
