@@ -800,15 +800,6 @@ export default function DocumentOperation() {
     <div data-doc-op-container className="flex h-full">
       {/* 左侧历史会话面板 */}
       <div className={`${showHistory ? 'w-64 mr-4' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass shrink-0`}>
-        <div className="p-4 border-b border-slate-200">
-          <button
-            onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 btn-primary text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            {tr('新建对话', 'New Chat', '新しい会話')}
-          </button>
-        </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin">
           {sessions.map(session => (
             <div
@@ -1172,7 +1163,6 @@ export default function DocumentOperation() {
         style={{ width: isPanelOpen ? previewWidth : 0 }}
       >
         <DocumentPreviewPanel
-          onToggle={togglePanel}
           previewFiles={previewFiles}
           currentFile={previewCurrentFile}
           onFileSelect={setPreviewCurrentFile}

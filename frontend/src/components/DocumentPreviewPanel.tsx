@@ -1,8 +1,7 @@
-import { Eye, FileText, Loader2 } from 'lucide-react'
+import { FileText, Loader2 } from 'lucide-react'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 
 interface DocumentPreviewPanelProps {
-  onToggle: () => void
   previewFiles: PreviewFile[]
   currentFile: PreviewFile | null
   onFileSelect: (file: PreviewFile) => void
@@ -10,7 +9,6 @@ interface DocumentPreviewPanelProps {
 }
 
 export default function DocumentPreviewPanel({
-  onToggle,
   previewFiles,
   currentFile,
   onFileSelect,
@@ -26,13 +24,6 @@ export default function DocumentPreviewPanel({
             {currentFile?.name || '文档预览'}
           </span>
         </div>
-        <button
-          onClick={onToggle}
-          className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-slate-300 transition-colors"
-          title="关闭预览"
-        >
-          <Eye className="w-4 h-4" />
-        </button>
       </div>
 
       {/* 文件标签页 */}
