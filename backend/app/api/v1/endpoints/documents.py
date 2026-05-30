@@ -218,6 +218,12 @@ async def auto_extract_document(
     user_id: UUID = None
 ):
     """自动提取文档信息（后台任务）"""
+
+    # 检查文件是否存在（任务可能在等待信号量时文件被删除）
+    if not os.path.exists(file_path):
+        logger.warning(f"文件已不存在，跳过处理: {file_path}")
+        return
+
     AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     async with AsyncSessionLocal() as db:
