@@ -13,7 +13,7 @@ export interface DocumentInfo {
   created_at: string
   extraction_status?: {
     task_id: string
-    status: 'processing' | 'completed' | 'failed'
+    status: 'queued' | 'processing' | 'completed' | 'failed'
     progress: string
     current_step: string
     error?: string
@@ -24,6 +24,7 @@ export interface DocumentInfo {
 interface DocumentStore {
   documents: DocumentInfo[]
   isLoading: boolean
+  uploadProgress: number | null  // 上传进度 0-100，null 表示未上传中
   fetchDocuments: (category?: string) => Promise<void>
   addDocuments: (files: File[], category?: string) => Promise<DocumentInfo[]>
   deleteDocument: (id: string) => Promise<void>
@@ -32,6 +33,7 @@ interface DocumentStore {
 export const useDocumentStore = create<DocumentStore>((set) => ({
   documents: [],
   isLoading: false,
+  uploadProgress: null,
 
   fetchDocuments: async (category?: string) => {
     set({ isLoading: true })
@@ -57,14 +59,39 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       formData.append('files', file)
     })
 
+    set({ uploadProgress: 0 })
+
     try {
       const response = await api.post(`/documents/upload?doc_category=${category}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            set({ uploadProgress: percent })
+          }
+        },
       })
       const newDocs = response.data || []
-      set((state) => ({ documents: [...state.documents, ...newDocs] }))
-      return newDocs
+      // 为 source 类型文档预设排队状态，避免显示"待提取"
+      const docsWithStatus = newDocs.map((doc: DocumentInfo) => {
+        if (category === 'source') {
+          return {
+            ...doc,
+            extraction_status: {
+              task_id: '',
+              status: 'queued' as const,
+              progress: '0%',
+              current_step: '等待处理...',
+              entities_count: 0,
+            },
+          }
+        }
+        return doc
+      })
+      set((state) => ({ documents: [...state.documents, ...docsWithStatus], uploadProgress: null }))
+      return docsWithStatus
     } catch (error) {
+      set({ uploadProgress: null })
       console.error('Failed to upload documents:', error)
       throw error
     }

@@ -1,4 +1,11 @@
-"""预处理流水线 — 文档上传后触发，编排解析→分块→嵌入→入库→实体提取→图谱构建"""
+"""预处理流水线 — 文档上传后触发，编排解析→分块→嵌入→入库→实体提取→图谱构建
+
+优化特性：
+- xlsx 文件只加载一次 workbook，各步骤复用
+- PostgreSQL 入库使用单连接 + 单事务提交
+- 流式读取 + 分批处理，内存占用 O(BATCH_SIZE)
+- 索引延迟到最后统一创建
+"""
 import logging
 from typing import Dict, Any, Optional, Callable, List
 from app.services.document_processor import DocxParser, XlsxParser, MdParser, TxtParser
@@ -54,7 +61,14 @@ async def preprocess_document(
     if progress_callback:
         await progress_callback("正在解析文档...", f"{base_progress}%")
 
-    parsed_data = parser.parse(file_path)
+    # 对于 xlsx，只加载一次 workbook，后续步骤复用
+    workbook = None
+    if file_type == "xlsx":
+        workbook = XlsxParser.load_workbook_once(file_path)
+        parsed_data = XlsxParser.parse(workbook=workbook)
+    else:
+        parsed_data = parser.parse(file_path)
+
     chunks = parsed_data.get("chunks", [])
     full_text = parsed_data.get("full_text", "")
 
@@ -74,41 +88,90 @@ async def preprocess_document(
     # ── Step 2: xlsx 双轨处理 ──
     schema_info = []
     if file_type == "xlsx":
-        # Track 1: 元数据摘要 chunks
+        # Track 1: 元数据摘要 chunks（复用 workbook）
         if progress_callback:
             await progress_callback("正在生成表格摘要...", f"{base_progress + 5}%")
         try:
-            summary_chunks = XlsxParser.generate_metadata_summary(file_path, doc_id)
+            summary_chunks = XlsxParser.generate_metadata_summary(workbook=workbook, doc_id=doc_id)
             chunks = summary_chunks + chunks  # 摘要在前
         except Exception as e:
             logger.warning(f"生成 xlsx 元数据摘要失败: {e}")
 
-        # Track 2: 入 PostgreSQL
+        # Track 2: 入 PostgreSQL（复用 workbook，单连接 + 单事务）
         if progress_callback:
             await progress_callback("正在导入表格数据...", f"{base_progress + 10}%")
         try:
             from app.db.postgres import engine
             from sqlalchemy import text as sa_text
 
-            async def db_execute(sql: str, params=None):
-                async with engine.connect() as conn:
+            # 使用单连接 + 单事务提交
+            async with engine.connect() as conn:
+                async def db_execute_in_conn(sql: str, params=None):
                     if params:
                         await conn.execute(sa_text(sql), params)
                     else:
                         await conn.execute(sa_text(sql))
-                    await conn.commit()
 
-            async def db_execute_many(sql: str, param_list: list):
-                async with engine.connect() as conn:
+                async def db_execute_many_in_conn(sql: str, param_list: list):
                     await conn.execute(sa_text(sql), param_list)
-                    await conn.commit()
 
-            schema_info = await XlsxParser.load_to_postgres(file_path, doc_id, db_execute, db_execute_many)
+                schema_info = await XlsxParser.load_to_postgres(
+                    workbook=workbook,
+                    doc_id=doc_id,
+                    db_execute=db_execute_in_conn,
+                    db_execute_many=db_execute_many_in_conn,
+                    conn=conn,
+                )
+
+                # 统一提交事务
+                await conn.commit()
+
             if schema_info:
                 _xlsx_schema_store[doc_id] = schema_info
                 logger.info(f"xlsx schema 已存储: doc_id={doc_id}, tables={len(schema_info)}")
+
+                # 立即保存 xlsx_schema 到数据库，确保删除时能找到表名
+                try:
+                    from app.models.document import DocumentExtraction
+                    from sqlalchemy import select
+                    from sqlalchemy.ext.asyncio import async_sessionmaker
+                    from app.db.postgres import engine
+                    from uuid import UUID
+
+                    AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+                    async with AsyncSessionLocal() as session:
+                        # 将字符串 doc_id 转换为 UUID
+                        doc_uuid = UUID(doc_id) if isinstance(doc_id, str) else doc_id
+
+                        result = await session.execute(
+                            select(DocumentExtraction).where(DocumentExtraction.document_id == doc_uuid)
+                        )
+                        existing = result.scalar_one_or_none()
+
+                        if existing:
+                            existing.xlsx_schema = schema_info
+                            existing.updated_at = None
+                        else:
+                            extraction = DocumentExtraction(
+                                document_id=doc_uuid,
+                                entities_count=0,
+                                relations_count=0,
+                                chunks_count=0,
+                                xlsx_schema=schema_info,
+                            )
+                            session.add(extraction)
+
+                        await session.commit()
+                        logger.info(f"xlsx_schema 已提前保存到数据库: doc_id={doc_id}")
+                except Exception as e:
+                    logger.warning(f"提前保存 xlsx_schema 失败: {e}")
         except Exception as e:
             logger.error(f"xlsx 入 PostgreSQL 失败: {e}")
+        finally:
+            # 关闭 workbook
+            if workbook:
+                workbook.close()
+                workbook = None
 
     # ── Step 3: 嵌入 + 入向量库 ──
     if progress_callback:
