@@ -10,7 +10,7 @@ MiMO API 错误类型:
 import json
 import logging
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)

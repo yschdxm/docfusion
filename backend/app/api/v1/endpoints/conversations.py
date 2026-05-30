@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, update, or_
+from sqlalchemy import select, delete, or_
 from datetime import datetime
 from app.core.config import get_settings
 from app.core.deps import get_current_user
@@ -201,7 +201,7 @@ async def delete_conversation(
     current_user: User = Depends(get_current_user)
 ):
     """删除对话及其所有消息"""
-    conv = await _get_user_conversation(conversation_id, current_user.id, db)
+    await _get_user_conversation(conversation_id, current_user.id, db)
 
     await db.execute(
         delete(Message).where(Message.conversation_id == conversation_id)

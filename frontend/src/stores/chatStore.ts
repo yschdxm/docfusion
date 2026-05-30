@@ -116,7 +116,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const response = await api.get(`/conversations/${sessionId}`)
       const conv = response.data
 
-      let messages: Message[] = conv.messages.map((msg: any) => ({
+      const messages: Message[] = conv.messages.map((msg: any) => ({
         id: msg.id,
         role: msg.role,
         content: msg.content,
