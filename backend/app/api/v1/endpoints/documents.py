@@ -3,9 +3,11 @@ import time
 import hmac
 import hashlib
 import html
+import json
 import httpx
+import asyncio
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from typing import Any, List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -216,24 +218,53 @@ async def auto_extract_document(
     user_id: UUID = None
 ):
     """自动提取文档信息（后台任务）"""
+
+    # 检查文件是否存在（任务可能在等待信号量时文件被删除）
+    if not os.path.exists(file_path):
+        logger.warning(f"文件已不存在，跳过处理: {file_path}")
+        return
+
     AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     async with AsyncSessionLocal() as db:
-        task = ExtractionTask(
-            task_type="entity_extraction",
-            status="processing",
-            user_id=user_id,
-            input_files=[str(doc_id)],
-            config={"entity_types": "auto"},
-            result={
+        # 查找已存在的任务记录（上传时创建的）
+        doc_id_str = str(doc_id)
+        result = await db.execute(
+            select(ExtractionTask)
+            .where(text("input_files::text LIKE :doc_id"))
+            .params(doc_id=f'%"{doc_id_str}"%')
+            .order_by(ExtractionTask.created_at.desc())
+            .limit(1)
+        )
+        task = result.scalar_one_or_none()
+
+        if not task:
+            # 如果没有找到，创建新任务
+            task = ExtractionTask(
+                task_type="entity_extraction",
+                status="processing",
+                user_id=user_id,
+                input_files=[doc_id_str],
+                config={"entity_types": "auto"},
+                result={
+                    "progress": "0%",
+                    "current_step": "准备中...",
+                    "total_files": 1,
+                    "processed_files": 0
+                },
+                started_at=datetime.utcnow()
+            )
+            db.add(task)
+        else:
+            # 更新已有任务状态为处理中
+            task.status = "processing"
+            task.result = {
                 "progress": "0%",
                 "current_step": "准备中...",
                 "total_files": 1,
                 "processed_files": 0
-            },
-            started_at=datetime.utcnow()
-        )
-        db.add(task)
+            }
+
         await db.commit()
         await db.refresh(task)
 
@@ -343,9 +374,15 @@ async def upload_documents(
         unique_filename = f"{uuid4().hex}.{file_ext}"
         file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
 
+        # 流式读取文件，减少内存占用
+        file_size = 0
         async with aiofiles.open(file_path, "wb") as f:
-            content = await file.read()
-            await f.write(content)
+            while True:
+                chunk = await file.read(8192)  # 每次读取 8KB
+                if not chunk:
+                    break
+                await f.write(chunk)
+                file_size += len(chunk)
 
         doc = Document(
             user_id=current_user.id,
@@ -353,27 +390,74 @@ async def upload_documents(
             original_filename=file.filename,
             file_type=file_ext,
             doc_category=doc_category,
-            file_size=len(content),
+            file_size=file_size,
             file_path=file_path,
             status="uploaded"
         )
         db.add(doc)
-        await db.commit()
-        await db.refresh(doc)
+        await db.flush()  # 先 flush 获取 ID，最后统一 commit
 
-        if doc_category == "source" and background_tasks:
-            background_tasks.add_task(
-                auto_extract_document,
-                doc.id,
-                file_path,
-                file_ext,
-                file.filename,
-                current_user.id
+        if doc_category == "source":
+            # 立即创建 ExtractionTask 记录，让前端能看到"处理中"状态
+            task = ExtractionTask(
+                task_type="entity_extraction",
+                status="queued",  # 先标记为排队中
+                user_id=current_user.id,
+                input_files=[str(doc.id)],
+                config={"entity_types": "auto"},
+                result={
+                    "progress": "0%",
+                    "current_step": "等待处理...",
+                    "total_files": 1,
+                    "processed_files": 0
+                },
+                started_at=datetime.utcnow()
             )
+            db.add(task)
 
         uploaded_docs.append(doc)
 
+    # 所有文件统一 commit，减少数据库交互次数
+    await db.commit()
+    for doc in uploaded_docs:
+        await db.refresh(doc)
+
+    # 提交后再启动后台任务
+    for doc in uploaded_docs:
+        if doc.doc_category == "source":
+            asyncio.create_task(
+                _queued_extract_document(
+                    doc.id,
+                    doc.file_path,
+                    doc.file_type,
+                    doc.original_filename,
+                    current_user.id,
+                )
+            )
+
     return uploaded_docs
+
+
+async def _queued_extract_document(
+    doc_id: UUID,
+    file_path: str,
+    file_type: str,
+    original_filename: str,
+    user_id: UUID = None
+):
+    """通过任务队列执行文档提取（限制并发数）"""
+    from app.services.task_queue import enqueue_task
+
+    await enqueue_task(
+        auto_extract_document,
+        doc_id,
+        file_path,
+        file_type,
+        original_filename,
+        user_id,
+        doc_id=str(doc_id),
+        task_name=f"extract_{original_filename}",
+    )
 
 
 @router.get("/", response_model=List[dict])
@@ -452,6 +536,102 @@ async def list_documents(
         doc_list.append(doc_dict)
 
     return doc_list
+
+
+@router.get("/queue-status")
+async def get_queue_status(
+    current_user: User = Depends(get_current_user)
+):
+    """获取任务队列状态"""
+    from app.services.task_queue import get_queue_status
+    return get_queue_status()
+
+
+@router.get("/{document_id}/progress-stream")
+async def progress_stream(
+    document_id: UUID,
+    request: Request,
+):
+    """SSE 端点：实时推送文档提取进度。
+
+    使用 Server-Sent Events 替代前端轮询，减少数据库查询压力。
+    """
+    async def event_generator():
+        AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+        last_progress = None
+        not_found_count = 0
+
+        while True:
+            # 检查客户端是否断开连接
+            if await request.is_disconnected():
+                break
+
+            try:
+                async with AsyncSessionLocal() as db:
+                    # 查询最新的提取任务
+                    doc_id_str = str(document_id)
+                    task_result = await db.execute(
+                        select(ExtractionTask)
+                        .where(text("input_files::text LIKE :doc_id"))
+                        .params(doc_id=f'%"{doc_id_str}"%')
+                        .order_by(ExtractionTask.created_at.desc())
+                        .limit(1)
+                    )
+                    task = task_result.scalar_one_or_none()
+
+                    if task and task.result and isinstance(task.result, dict):
+                        not_found_count = 0
+                        current_progress = task.result.get("progress", "0%")
+                        current_step = task.result.get("current_step", "")
+
+                        # 只在进度变化时发送
+                        progress_data = {
+                            "task_id": str(task.id),
+                            "status": task.status,
+                            "progress": current_progress,
+                            "current_step": current_step,
+                            "error": task.error_message,
+                        }
+
+                        progress_key = f"{task.status}:{current_progress}"
+                        if progress_key != last_progress:
+                            yield f"data: {json.dumps(progress_data)}\n\n"
+                            last_progress = progress_key
+
+                        # 任务完成或失败时，发送 done 事件通知客户端可以关闭连接
+                        if task.status in ("completed", "failed"):
+                            yield "event: done\ndata: {}\n\n"
+                            # 等待客户端处理完成后关闭连接
+                            for _ in range(30):  # 最多等待 30 秒
+                                if await request.is_disconnected():
+                                    break
+                                await asyncio.sleep(1)
+                            break
+                    else:
+                        not_found_count += 1
+                        # 如果超过 10 次未找到任务（10秒），可能是任务还未创建或已删除
+                        if not_found_count > 10:
+                            yield f"data: {json.dumps({'status': 'not_found', 'progress': '0%', 'current_step': '等待任务创建...'})}\n\n"
+                            not_found_count = 0
+            except Exception as e:
+                logger.error(f"SSE progress stream error: {e}")
+                # 发送错误事件给客户端
+                try:
+                    yield f"data: {json.dumps({'status': 'error', 'error': str(e)})}\n\n"
+                except Exception:
+                    pass
+
+            await asyncio.sleep(1)  # 每秒检查一次
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{document_id}/preview", response_model=DocumentPreviewResponse)
@@ -758,16 +938,39 @@ async def retry_extraction(
     await db.commit()
     await db.refresh(task)
 
-    background_tasks.add_task(
-        auto_extract_document_with_task,
-        doc.id,
-        doc.file_path,
-        doc.file_type,
-        doc.original_filename,
-        task.id
+    # 使用 asyncio.create_task 并发启动任务，通过队列限制并发数
+    asyncio.create_task(
+        _queued_extract_document_with_task(
+            doc.id,
+            doc.file_path,
+            doc.file_type,
+            doc.original_filename,
+            task.id,
+        )
     )
 
     return {"message": "重新预处理已启动", "document_id": document_id}
+
+
+async def _queued_extract_document_with_task(
+    doc_id: UUID,
+    file_path: str,
+    file_type: str,
+    original_filename: str,
+    task_id: UUID
+):
+    """通过任务队列执行文档提取（限制并发数）"""
+    from app.services.task_queue import enqueue_task
+
+    await enqueue_task(
+        auto_extract_document_with_task,
+        doc_id,
+        file_path,
+        file_type,
+        original_filename,
+        task_id,
+        task_name=f"retry_{original_filename}",
+    )
 
 
 @router.delete("/{document_id}")
@@ -781,6 +984,15 @@ async def delete_document(
     doc_id_str = str(document_id)
 
     try:
+        # 0. 取消正在运行的预处理任务
+        try:
+            from app.services.task_queue import cancel_task
+            cancelled = cancel_task(doc_id_str)
+            if cancelled:
+                logger.info(f"已取消文档 {doc_id_str} 的预处理任务")
+        except Exception as e:
+            logger.warning(f"取消任务失败: {e}")
+
         # 1. 删除 PostgreSQL extraction_tasks
         await db.execute(
             text("DELETE FROM extraction_tasks WHERE input_files::text LIKE :doc_id"),

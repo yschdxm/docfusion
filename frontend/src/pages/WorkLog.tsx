@@ -885,16 +885,16 @@ export default function WorkLog() {
             )}
 
             {activeTab === 'templatePie' && (
-              <div className="p-4 space-y-3">
+              <div className="p-4 lg:p-6 space-y-4">
                 {templateTop10.length === 0 ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
                     {tr('暂无模板数据，上传模板后将展示 Top10 使用排行。', 'No template data yet. Top10 ranking will appear after template usage is generated.', 'テンプレートデータがありません。利用後にTop10ランキングが表示されます。')}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex items-center justify-center">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 flex items-center justify-center">
                       <div
-                        className="w-44 h-44 rounded-full"
+                        className="w-48 h-48 lg:w-64 lg:h-64 xl:w-72 xl:h-72 rounded-full"
                         style={{
                           background: `conic-gradient(${templateTop10
                             .map((item) => `${item.color} ${item.start}deg ${item.end}deg`)
@@ -903,14 +903,14 @@ export default function WorkLog() {
                       />
                     </div>
 
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {templateTop10.map((item, index) => (
-                        <div key={item.name} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 flex items-center justify-between gap-3">
-                          <div className="min-w-0 flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
-                            <p className="text-[11px] text-slate-700 truncate">{index + 1}. {item.name}</p>
+                        <div key={item.name} className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex items-center gap-2.5">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                            <p className="text-xs lg:text-sm text-slate-700 truncate">{index + 1}. {item.name}</p>
                           </div>
-                          <span className="text-[10px] text-slate-500 shrink-0">{item.count} 次 ({item.percent}%)</span>
+                          <span className="text-xs text-slate-500 shrink-0">{item.count} 次 ({item.percent}%)</span>
                         </div>
                       ))}
                     </div>
@@ -920,7 +920,7 @@ export default function WorkLog() {
             )}
 
             {activeTab === 'uploadTrend' && (
-              <div className="p-4 space-y-3">
+              <div className="p-4 lg:p-6 space-y-4">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-1.5">
                     {(['day', 'week', 'month'] as TrendGranularity[]).map((mode) => (
@@ -935,15 +935,15 @@ export default function WorkLog() {
                       </button>
                     ))}
                   </div>
-                  <div className="flex items-center gap-3 text-[11px] text-slate-600">
-                    <span className="inline-flex items-center gap-1"><ChartNoAxesColumnIncreasing className="w-3 h-3" /> {tr('总上传', 'Total Uploads', '総アップロード')} {uploadTrendSummary.total}</span>
+                  <div className="flex items-center gap-3 text-xs text-slate-600">
+                    <span className="inline-flex items-center gap-1"><ChartNoAxesColumnIncreasing className="w-3.5 h-3.5" /> {tr('总上传', 'Total Uploads', '総アップロード')} {uploadTrendSummary.total}</span>
                     <span>{tr('均值', 'Avg', '平均')} {uploadTrendSummary.avg}</span>
                     <span>{tr('峰值', 'Peak', 'ピーク')} {uploadTrendSummary.peak}</span>
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="h-40 w-full">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="h-48 lg:h-64 xl:h-72 w-full">
                     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
                       <line x1="0" y1="90" x2="100" y2="90" stroke="#cbd5e1" strokeWidth="0.8" />
                       <polyline
@@ -966,13 +966,13 @@ export default function WorkLog() {
                     </svg>
                   </div>
                   <div
-                    className="mt-2 grid gap-1"
+                    className="mt-3 grid gap-1.5"
                     style={{ gridTemplateColumns: `repeat(${Math.max(uploadTrendData.length, 1)}, minmax(0, 1fr))` }}
                   >
                     {uploadTrendData.map((item) => (
-                      <div key={item.key} className="rounded-md border border-slate-200 bg-white px-1.5 py-1 text-center">
-                        <p className="text-[9px] text-slate-500 truncate">{item.label}</p>
-                        <p className="text-[10px] text-slate-700 mt-0.5">{item.value}</p>
+                      <div key={item.key} className="rounded-md border border-slate-200 bg-white px-1.5 py-1.5 text-center">
+                        <p className="text-[10px] lg:text-xs text-slate-500 truncate">{item.label}</p>
+                        <p className="text-xs lg:text-sm text-slate-700 mt-0.5">{item.value}</p>
                       </div>
                     ))}
                   </div>

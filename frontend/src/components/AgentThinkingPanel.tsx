@@ -253,7 +253,6 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
     }
     steps.forEach(checkAndCollapse)
     steps.forEach(s => s.children?.forEach(checkAndCollapse))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps])
 
   const toggleStep = (stepId: string) => {

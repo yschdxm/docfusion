@@ -70,7 +70,7 @@ interface ConnectionState {
   maxReconnectAttempts: number
   // 回调
   onEvent: (event: AgentEvent, steps: AgentStep[]) => void
-  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string; task_stats?: TaskStats }) => void
+  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string; task_stats?: TaskStats; _replayDone?: boolean }) => void
   onError: (error: string) => void
   // 重连用的请求参数
   request: AgentStreamRequest
@@ -83,21 +83,50 @@ class AgentStreamService {
   private connectionCounter = 0
 
   /**
-   * 持久化 session → task_id 映射
+   * 持久化 session → task_id + startedAt 映射到 localStorage
    */
-  private persistTaskId(sessionId: string, taskId: string): void {
+  private persistTaskId(sessionId: string, taskId: string, startedAt?: number): void {
     try {
+      const existing = this._loadTaskData(sessionId)
       localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify({
         taskId,
         timestamp: Date.now(),
+        startedAt: startedAt || existing?.startedAt || Date.now(),
       }))
     } catch { /* localStorage 不可用时静默 */ }
+  }
+
+  /**
+   * 存储任务开始时间到 localStorage
+   * 如果已有记录则更新，否则创建新记录（taskId 暂为空，后续 persistTaskId 会补上）
+   */
+  persistTaskStartTime(sessionId: string, time: number): void {
+    try {
+      const existing = this._loadTaskData(sessionId)
+      const data = existing || { taskId: '', timestamp: Date.now() }
+      data.startedAt = time
+      localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify(data))
+    } catch { /* */ }
   }
 
   /**
    * 从 localStorage 恢复 session 对应的 task_id
    */
   getRunningTaskId(sessionId: string): string | null {
+    const data = this._loadTaskData(sessionId)
+    return data?.taskId || null
+  }
+
+  /**
+   * 获取任务开始时间（从 localStorage 读取，跨组件生命周期存活）
+   */
+  getTaskStartTime(sessionId: string): number | null {
+    const data = this._loadTaskData(sessionId)
+    return data?.startedAt || null
+  }
+
+  /** 从 localStorage 加载任务数据 */
+  private _loadTaskData(sessionId: string): { taskId: string; timestamp: number; startedAt?: number } | null {
     try {
       const raw = localStorage.getItem(AgentStreamService.TASK_ID_PREFIX + sessionId)
       if (!raw) return null
@@ -107,7 +136,7 @@ class AgentStreamService {
         this.clearPersistedTask(sessionId)
         return null
       }
-      return data.taskId
+      return data
     } catch {
       return null
     }
@@ -360,7 +389,19 @@ class AgentStreamService {
         },
 
         onclose: () => {
-          // 流正常关闭，不抛异常，重连由 onerror 统一控制
+          // 流正常关闭。如果 completedFired 未触发（回放跳过了终端事件），
+          // 回放结束但未收到终端事件（任务已在断连期间完成）
+          // 通知前端清理流式状态，但标记 _replayDone 以保留统计显示
+          if (!state.completedFired && !state.cancelled) {
+            state.completedFired = true
+            state.taskEnded = true
+            this.clearPersistedTask(state.sessionId)
+            state.onComplete({
+              success: true,
+              message: '',
+              _replayDone: true,
+            })
+          }
         },
 
         onerror: (_err) => {

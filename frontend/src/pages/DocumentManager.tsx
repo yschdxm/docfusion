@@ -26,7 +26,7 @@ type CategoryFilter = 'all' | 'source' | 'template' | 'output'
 
 interface ExtractionStatus {
   task_id: string
-  status: 'processing' | 'completed' | 'failed'
+  status: 'queued' | 'processing' | 'completed' | 'failed'
   progress: string
   current_step: string
   error?: string
@@ -77,12 +77,12 @@ function triggerFileDownload(blob: Blob, filename: string) {
 export default function DocumentManager() {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-  const { documents, fetchDocuments, addDocuments, deleteDocument } = useDocumentStore()
+  const { documents, fetchDocuments, addDocuments, deleteDocument, uploadProgress } = useDocumentStore()
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const sseSourcesRef = useRef<Record<string, EventSource>>({})
   const pendingDeleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const isMountedRef = useRef(true)
   const notifyBell = (title: string, message: string) => {
@@ -103,29 +103,110 @@ export default function DocumentManager() {
   useEffect(() => {
     isMountedRef.current = true
     fetchDocuments()
-    startPolling()
 
     return () => {
       isMountedRef.current = false
-      stopPolling()
+      closeAllSSEConnections()
     }
   }, [fetchDocuments])
 
-  const startPolling = useCallback(() => {
-    if (pollingRef.current) return
-    pollingRef.current = setInterval(() => {
+  const closeAllSSEConnections = useCallback(() => {
+    Object.values(sseSourcesRef.current).forEach((source) => {
+      source.close()
+    })
+    sseSourcesRef.current = {}
+  }, [])
+
+  const startSSEForDoc = useCallback((docId: string) => {
+    // 如果已有连接，不重复创建
+    if (sseSourcesRef.current[docId]) return
+
+    const baseUrl = api.defaults.baseURL || '/api/v1'
+    const url = `${baseUrl}/documents/${docId}/progress-stream`
+
+    const eventSource = new EventSource(url)
+    sseSourcesRef.current[docId] = eventSource
+
+    eventSource.onmessage = (event) => {
+      if (!isMountedRef.current) return
+
+      try {
+        const data = JSON.parse(event.data)
+
+        // 更新文档列表中的提取状态
+        useDocumentStore.setState((state) => ({
+          documents: state.documents.map((doc) => {
+            if (doc.id === docId) {
+              return {
+                ...doc,
+                extraction_status: {
+                  task_id: data.task_id || doc.extraction_status?.task_id,
+                  status: data.status,
+                  progress: data.progress,
+                  current_step: data.current_step,
+                  error: data.error,
+                  entities_count: doc.extraction_status?.entities_count || 0,
+                },
+              }
+            }
+            return doc
+          }),
+        }))
+
+        // 任务完成或失败时关闭连接
+        if (data.status === 'completed' || data.status === 'failed') {
+          eventSource.close()
+          delete sseSourcesRef.current[docId]
+          // 最终刷新一次确保数据一致
+          fetchDocuments()
+        }
+      } catch (e) {
+        // 忽略解析错误
+      }
+    }
+
+    // 监听 done 事件（服务器通知任务结束）
+    eventSource.addEventListener('done', () => {
+      eventSource.close()
+      delete sseSourcesRef.current[docId]
       if (isMountedRef.current) {
         fetchDocuments()
       }
-    }, 1000)
+    })
+
+    eventSource.onerror = () => {
+      // SSE 连接错误时，静默关闭连接并刷新文档状态
+      eventSource.close()
+      delete sseSourcesRef.current[docId]
+      // 刷新文档列表获取最新状态
+      if (isMountedRef.current) {
+        fetchDocuments()
+      }
+    }
   }, [fetchDocuments])
 
-  const stopPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current)
-      pollingRef.current = null
-    }
-  }, [])
+  // 监听文档列表变化，为处理中的文档启动 SSE
+  useEffect(() => {
+    const processingDocs = documents.filter(
+      (doc) => doc.doc_category === 'source' && (doc.extraction_status?.status === 'processing' || doc.extraction_status?.status === 'queued')
+    )
+
+    // 为处理中的文档启动 SSE
+    processingDocs.forEach((doc) => {
+      if (!sseSourcesRef.current[doc.id]) {
+        startSSEForDoc(doc.id)
+      }
+    })
+
+    // 清理已不存在的文档的 SSE 连接
+    const docIds = new Set(documents.map((d) => d.id))
+    Object.keys(sseSourcesRef.current).forEach((id) => {
+      if (!docIds.has(id)) {
+        sseSourcesRef.current[id].close()
+        delete sseSourcesRef.current[id]
+      }
+    })
+  }, [documents, startSSEForDoc])
 
   const openPreview = (doc: DocumentInfo) => {
     setPreviewDoc(doc)
@@ -137,6 +218,8 @@ export default function DocumentManager() {
       const message = tr(`已上传 ${acceptedFiles.length} 个源文档，正在自动提取信息`, `Uploaded ${acceptedFiles.length} source docs, extraction started`, `${acceptedFiles.length} 件のソース文書をアップロードし、抽出を開始しました`)
       toast.success(message)
       notifyBell(tr('上传成功', 'Upload succeeded', 'アップロード成功'), message)
+      // 延迟刷新，等待后台任务创建
+      setTimeout(() => fetchDocuments(), 500)
     } catch (error) {
       toast.error(tr('上传失败', 'Upload failed', 'アップロードに失敗しました'))
     }
@@ -305,6 +388,15 @@ export default function DocumentManager() {
       return <span className="status-badge status-pending">{tr('待提取', 'Pending extraction', '抽出待ち')}</span>
     }
 
+    if (status.status === 'queued') {
+      return (
+        <div className="flex items-center gap-2">
+          <span className="status-badge status-pending">{tr('排队中', 'Queued', '待機中')}</span>
+          <span className="text-xs text-slate-500">{status.current_step || '等待处理...'}</span>
+        </div>
+      )
+    }
+
     if (status.status === 'processing') {
       const progressNum = parseInt(status.progress, 10) || 0
       return (
@@ -369,10 +461,23 @@ export default function DocumentManager() {
           </div>
           <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
             <input {...getSourceInputProps()} />
-            <div className="flex items-center justify-center gap-2">
-              <Plus className="h-4 w-4 text-slate-400" />
-              <span className="text-sm text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
-            </div>
+            {uploadProgress !== null ? (
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-sm text-blue-400">{tr('上传中...', 'Uploading...', 'アップロード中...')}</span>
+                <div className="h-2 w-48 overflow-hidden rounded-full bg-slate-700">
+                  <div
+                    className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <span className="text-xs text-slate-400">{uploadProgress}%</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center gap-2">
+                <Plus className="h-4 w-4 text-slate-400" />
+                <span className="text-sm text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
+              </div>
+            )}
           </div>
         </div>
 

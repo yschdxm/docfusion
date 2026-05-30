@@ -206,12 +206,16 @@ export default function DocumentOperation() {
       const sessionId = activeSessionId
       let cancelled = false  // 防止异步回调中的竞态条件
 
-      // 清空上一个会话的流式状态
+      // 如果有活跃的 SSE 连接（handleSend 刚创建了新会话并开始流式），不重置流式状态
+      const hasActiveConn = agentStreamService.hasActiveConnection(sessionId)
+
       setStreamingContent('')
       streamingContentRef.current = ''
       setCurrentSteps([])
-      setIsStreaming(false)
-      setIsLoading(false)
+      if (!hasActiveConn) {
+        setIsStreaming(false)
+        setIsLoading(false)
+      }
 
       const { loadSessionMessages } = useChatStore.getState()
       const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
@@ -229,6 +233,7 @@ export default function DocumentOperation() {
                 action: m.action_data,
                 timestamp: m.timestamp,
                 steps: m.steps,
+                task_stats: m.task_stats,
               }))
             )
           }
@@ -334,9 +339,7 @@ export default function DocumentOperation() {
         if (message) {
           if (event.data.agent_name) return
           const messagesToAdd: Message[] = []
-          if (streamingContentRef.current) {
-            messagesToAdd.push({ role: 'assistant', content: streamingContentRef.current, timestamp: Date.now() })
-          }
+          // 不再保存 streamingContent — 它与 assistant_message 内容相同（来自 content_chunk 累积）
           if (latestStepsRef.current.length > 0) {
             messagesToAdd.push({ role: 'assistant', content: '', timestamp: Date.now(), steps: [...latestStepsRef.current] })
           }
@@ -390,9 +393,15 @@ export default function DocumentOperation() {
     const onComplete = (result: any) => {
       if (currentConnectionSessionRef.current !== sessionId) return
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
-      setStreamingStats(null)
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
 
+      if (result._replayDone) {
+        // 回放结束但任务已在断连期间完成：保留统计显示，消息已从 DB 加载
+        setCurrentSteps([])
+        return
+      }
+
+      setStreamingStats(null)
       if (result.message || result.download_url || latestStepsRef.current.length > 0) {
         const aiMsg: Message = {
           role: 'assistant',
@@ -429,6 +438,13 @@ export default function DocumentOperation() {
     setStreamingContent('')
     streamingContentRef.current = ''
     currentConnectionSessionRef.current = session.id
+
+    // 恢复任务开始时间，使计时器从断点继续
+    const savedStartTime = agentStreamService.getTaskStartTime(session.id)
+    if (savedStartTime) {
+      taskStartTimeRef.current = savedStartTime
+      setStreamingDuration(Date.now() - savedStartTime)
+    }
 
     const latestStepsRef: { current: AgentStep[] } = { current: [] }
     const { onEvent, onComplete, onError } = createStreamCallbacks(session.id, latestStepsRef)
@@ -538,6 +554,7 @@ export default function DocumentOperation() {
     setStreamingContent('')
     streamingContentRef.current = ''
     taskStartTimeRef.current = Date.now()
+    agentStreamService.persistTaskStartTime(currentSessionId, Date.now())
     setStreamingDuration(0)
     setStreamingStats(null)
 
@@ -783,15 +800,6 @@ export default function DocumentOperation() {
     <div data-doc-op-container className="flex h-full">
       {/* 左侧历史会话面板 */}
       <div className={`${showHistory ? 'w-64 mr-4' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass shrink-0`}>
-        <div className="p-4 border-b border-slate-200">
-          <button
-            onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 btn-primary text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            {tr('新建对话', 'New Chat', '新しい会話')}
-          </button>
-        </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin">
           {sessions.map(session => (
             <div
@@ -1037,10 +1045,14 @@ export default function DocumentOperation() {
           </div>
         )}
 
-        {/* 实时统计显示 */}
-        {isStreaming && streamingStats && (
+        {/* 实时统计显示 — AI开始回复时即显示，用零值填充尚未收到的字段 */}
+        {isStreaming && (
           <div className="flex justify-start">
-            <TaskStatsBadge stats={streamingStats} isLive={true} liveDuration={streamingDuration} />
+            <TaskStatsBadge
+              stats={streamingStats || { duration_ms: 0, total_tokens: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, llm_calls: 0, iterations: 0 }}
+              isLive={true}
+              liveDuration={streamingDuration}
+            />
           </div>
         )}
 
@@ -1151,7 +1163,6 @@ export default function DocumentOperation() {
         style={{ width: isPanelOpen ? previewWidth : 0 }}
       >
         <DocumentPreviewPanel
-          onToggle={togglePanel}
           previewFiles={previewFiles}
           currentFile={previewCurrentFile}
           onFileSelect={setPreviewCurrentFile}

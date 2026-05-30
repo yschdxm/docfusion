@@ -378,6 +378,7 @@ async def _save_message(
     content: str,
     action_data: Optional[dict] = None,
     steps: Optional[list] = None,
+    task_stats: Optional[dict] = None,
 ):
     """将消息保存到数据库（后端统一持久化）
 
@@ -393,11 +394,12 @@ async def _save_message(
                 content=content,
                 action_data=action_data,
                 steps=steps,
+                task_stats=task_stats,
             )
             db.add(msg)
             await db.commit()
             await db.refresh(msg)
-            logger.info(f"[Persist] 消息已保存 | id={msg.id} | conv={conversation_id} | role={role} | len={len(content)} | steps={len(steps) if steps else 0}")
+            logger.info(f"[Persist] 消息已保存 | id={msg.id} | conv={conversation_id} | role={role} | len={len(content)} | steps={len(steps) if steps else 0} | stats={'yes' if task_stats else 'no'}")
 
     try:
         task = _asyncio.ensure_future(_do_save())
@@ -594,8 +596,9 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
                             if msg and msg != task.last_saved_content:
                                 action_data = _extract_action_data(event_info["data"])
                                 steps = accumulator.get_steps()
-                                await _save_message(request.conversation_id, "assistant", msg, action_data=action_data, steps=steps)
-                                logger.info(f"[Persist] completed saved: {msg[:80]} | steps={len(steps)}")
+                                task_stats = event_info["data"].get("result", {}).get("task_stats")
+                                await _save_message(request.conversation_id, "assistant", msg, action_data=action_data, steps=steps, task_stats=task_stats)
+                                logger.info(f"[Persist] completed saved: {msg[:80]} | steps={len(steps)} | stats={'yes' if task_stats else 'no'}")
                             elif msg == task.last_saved_content:
                                 logger.info(f"[Persist] completed skipped (duplicate): {msg[:80]}")
                 except Exception as e:
@@ -668,9 +671,18 @@ async def _replay_and_stream_inner(task):
     accumulator = StepAccumulator()
     task.step_accumulator = accumulator
 
-    # 1. 回放历史事件（跳过已持久化的 assistant_message，但保留 completed）
+    # 1. 回放历史事件（跳过已持久化消息和流式内容片段）
+    #    - assistant_message: 已持久化，前端 loadSessionMessages 会加载
+    #    - 终端事件（completed/failed/cancelled）: 消息已持久化
+    #    - content_chunk/content_end: 流式内容片段，回放会导致幽灵消息
+    #    注意：stats_update 不跳过，用于恢复断连期间的统计显示
+    _SKIP_MARKERS = (
+        '"event_type": "assistant_message"',
+        '"event_type": "completed"', '"event_type": "failed"', '"event_type": "cancelled"',
+        '"event_type": "content_chunk"', '"event_type": "content_end"',
+    )
     for sse_data in history:
-        if '"event_type": "assistant_message"' in sse_data:
+        if any(m in sse_data for m in _SKIP_MARKERS):
             continue
         # 回放时也经过 accumulator，重建步骤状态
         event_info = _parse_sse_event(sse_data)
@@ -719,8 +731,9 @@ async def _replay_and_stream_inner(task):
                             if msg and msg != task.last_saved_content:
                                 action_data = _extract_action_data(event_info["data"])
                                 steps = accumulator.get_steps()
-                                await _save_message(task.conversation_id, "assistant", msg, action_data=action_data, steps=steps)
-                                logger.info(f"[Persist/Reconnect] completed saved: {msg[:80]} | steps={len(steps)}")
+                                task_stats = event_info["data"].get("result", {}).get("task_stats")
+                                await _save_message(task.conversation_id, "assistant", msg, action_data=action_data, steps=steps, task_stats=task_stats)
+                                logger.info(f"[Persist/Reconnect] completed saved: {msg[:80]} | steps={len(steps)} | stats={'yes' if task_stats else 'no'}")
                 except Exception as e:
                     logger.warning(f"[Persist/Reconnect] 事件处理异常: {e}", exc_info=True)
 
@@ -732,46 +745,19 @@ async def _replay_and_stream_inner(task):
 
 
 async def _replay_history(task):
-    """任务已完成，回放所有历史事件（跳过已持久化消息），同时持久化未保存的消息"""
+    """任务已完成，回放所有历史事件（跳过已持久化消息和流式内容片段）"""
     history = task.stream.get_history()
     logger.info(f"[API /agent/stream] 回放已完成任务 | task_id={task.task_id} | {len(history)} 个事件")
 
-    # 用 accumulator 重建步骤状态，用于持久化
-    accumulator = StepAccumulator()
-
+    _SKIP_MARKERS = (
+        '"event_type": "assistant_message"',
+        '"event_type": "completed"', '"event_type": "failed"', '"event_type": "cancelled"',
+        '"event_type": "content_chunk"', '"event_type": "content_end"',
+    )
     for sse_data in history:
-        if '"event_type": "assistant_message"' in sse_data:
+        if any(m in sse_data for m in _SKIP_MARKERS):
             continue
         yield sse_data
-
-        # 回放时也做持久化（处理断连期间任务在后台完成的情况）
-        if task.conversation_id:
-            try:
-                event_info = _parse_sse_event(sse_data)
-                if event_info:
-                    accumulator.process_event(
-                        event_info["type"], event_info["data"], event_info.get("step_id")
-                    )
-                    is_child = bool(event_info["data"].get("agent_name"))
-
-                    if event_info["type"] == "assistant_message" and not is_child:
-                        msg = event_info["data"].get("message", "")
-                        if msg:
-                            steps = accumulator.get_steps()
-                            await _save_message(task.conversation_id, "assistant", msg, steps=steps)
-                            task.last_saved_content = msg
-                            accumulator.reset()
-                            logger.info(f"[Persist/Replay] assistant_message saved: {msg[:80]}")
-
-                    elif event_info["type"] == "completed" and not is_child:
-                        msg = event_info["data"].get("message", "")
-                        if msg and msg != task.last_saved_content:
-                            action_data = _extract_action_data(event_info["data"])
-                            steps = accumulator.get_steps()
-                            await _save_message(task.conversation_id, "assistant", msg, action_data=action_data, steps=steps)
-                            logger.info(f"[Persist/Replay] completed saved: {msg[:80]}")
-            except Exception as e:
-                logger.warning(f"[Persist/Replay] 事件处理异常: {e}", exc_info=True)
 
     if not task.finished_at:
         await task_manager.finish_task(task.task_id)

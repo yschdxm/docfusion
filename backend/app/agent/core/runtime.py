@@ -465,6 +465,8 @@ class AgentRuntime:
             "reasoning_tokens": 0,
             "llm_calls": 0,
         }
+        # 存为实例属性，供父agent读取子agent的usage
+        self.accumulated_usage = accumulated_usage
 
         # 检查取消信号
         def check_cancelled():
@@ -806,6 +808,14 @@ class AgentRuntime:
                         execution_time_ms=result.execution_time_ms
                     )
                     await stream.emit_step_end(tool_step.id, "工具执行成功")
+
+                    # 汇总子agent的token统计到父agent
+                    if isinstance(result.data, dict) and result.data.get("sub_agent_usage"):
+                        sub = result.data["sub_agent_usage"]
+                        for key in accumulated_usage:
+                            accumulated_usage[key] += sub.get(key, 0)
+                        logger.info(f"[AgentRuntime._execute_loop] 已汇总子agent({tool_name})统计 | "
+                                    f"tokens={sub.get('total_tokens', 0)} calls={sub.get('llm_calls', 0)}")
                 else:
                     logger.error(f"[AgentRuntime._execute_loop] 工具 {tool_name} 失败 | 耗时: {tool_time:.2f}s | 错误: {result.error}")
                     tracker.fail_step(tool_step.id, result.error)
