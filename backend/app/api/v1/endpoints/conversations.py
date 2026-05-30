@@ -135,6 +135,7 @@ async def get_conversation(
                 "content": msg.content,
                 "action_data": msg.action_data,
                 "steps": msg.steps,
+                "task_stats": msg.task_stats,
                 "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else None
             }
             for msg in messages

@@ -34,6 +34,7 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_user_id_columns(conn)
+        await _ensure_task_stats_column(conn)
     logger.info("PostgreSQL database initialized")
 
 
@@ -58,3 +59,11 @@ async def _ensure_user_id_columns(conn):
             f"CREATE INDEX IF NOT EXISTS idx_{table}_user_id ON {table}(user_id)"
         ))
     logger.info("user_id columns ensured for all relevant tables")
+
+
+async def _ensure_task_stats_column(conn):
+    """幂等地为 messages 表添加 task_stats 列（向后兼容）"""
+    await conn.execute(text(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_stats JSON"
+    ))
+    logger.info("task_stats column ensured for messages table")

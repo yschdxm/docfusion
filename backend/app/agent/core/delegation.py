@@ -190,12 +190,15 @@ class DelegateAgentTool(BaseTool):
                 ))
 
             # 7. 将结果包装为ToolResult返回给通用Agent
+            #    收集子agent的token统计，供父agent汇总
+            sub_usage = getattr(agent, 'accumulated_usage', None)
             return ToolResult(
                 success=result.get("success", False),
                 data={
                     "agent_name": self.name,
                     "message": result.get("message", ""),
                     "steps_summary": result.get("steps", {}),
+                    "sub_agent_usage": sub_usage,
                     **self._extract_result(result),
                 },
                 error=result.get("error"),

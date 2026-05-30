@@ -76,6 +76,7 @@ class Message(Base):
     content = Column(Text, nullable=False)
     action_data = Column(JSON, nullable=True)  # 操作卡片数据
     steps = Column(JSON, nullable=True)  # Agent 执行步骤
+    task_stats = Column(JSON, nullable=True)  # 任务统计（token用量、耗时等）
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -8,6 +8,7 @@ export interface Message {
   timestamp: number
   action_data?: any
   steps?: any[]
+  task_stats?: any
 }
 
 export interface ChatSession {
@@ -121,7 +122,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         content: msg.content,
         timestamp: msg.timestamp || Date.now(),
         action_data: msg.action_data,
-        steps: msg.steps
+        steps: msg.steps,
+        task_stats: msg.task_stats
       }))
 
       // 检查是否有confirm_fill类型的消息，如果有，从任务API获取最新状态
