@@ -15,7 +15,7 @@ from pathlib import Path
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.db.postgres import async_session
-from app.models.document import Document
+from app.models.document import Document, TemplateUsageEvent
 from sqlalchemy import select
 from app.core.config import get_settings
 
@@ -263,7 +263,7 @@ fill_mode 详解（针对指定表格的操作）：
                 if is_update_existing:
                     # 操作已有输出文件（可能是覆盖某个表格，也可能是追加）
                     return await self._update_existing_file(
-                        db, output_doc_id, template_id, data, fill_mode, target_table_index, logger
+                        db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
                     )
                 else:
                     # 首次填写，基于模板创建新文件
@@ -510,7 +510,7 @@ fill_mode 详解（针对指定表格的操作）：
         if output_doc_id:
             async with async_session() as db:
                 return await self._update_existing_file(
-                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger
+                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
                 )
         else:
             async with async_session() as db:
@@ -726,6 +726,17 @@ fill_mode 详解（针对指定表格的操作）：
         await db.commit()
         await db.refresh(output_doc)
 
+        # 记录模板使用事件
+        usage_event = TemplateUsageEvent(
+            user_id=context.user_id,
+            template_id=template_id,
+            template_name=template_doc.original_filename,
+            source_file_count=len(context.file_ids) if context and context.file_ids else 0,
+            output_file_id=str(output_doc.id),
+        )
+        db.add(usage_event)
+        await db.commit()
+
         logger.info(f"[FillTableTool] 创建新文件成功: {output_filename}, 填写{len(data)}行")
 
         return ToolResult(
@@ -745,7 +756,7 @@ fill_mode 详解（针对指定表格的操作）：
         )
 
     async def _update_existing_file(
-        self, db, output_doc_id: str, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger
+        self, db, output_doc_id: str, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
     ) -> ToolResult:
         """更新已有输出文件（覆盖或追加指定表格）"""
         # 查询输出文档
@@ -789,6 +800,23 @@ fill_mode 详解（针对指定表格的操作）：
         # 更新文件大小
         output_doc.file_size = os.path.getsize(file_path)
         await db.commit()
+
+        # 记录模板使用事件
+        if template_id:
+            template_name = template_id  # fallback
+            tpl_result = await db.execute(select(Document).where(Document.id == template_id))
+            tpl_doc = tpl_result.scalar_one_or_none()
+            if tpl_doc:
+                template_name = tpl_doc.original_filename
+            usage_event = TemplateUsageEvent(
+                user_id=context.user_id if context else None,
+                template_id=template_id,
+                template_name=template_name,
+                source_file_count=len(context.file_ids) if context and context.file_ids else 0,
+                output_file_id=output_doc_id,
+            )
+            db.add(usage_event)
+            await db.commit()
 
         logger.info(f"[FillTableTool] 更新文件成功: {fill_mode}模式，{len(data)}行到 {output_doc.filename}")
 
