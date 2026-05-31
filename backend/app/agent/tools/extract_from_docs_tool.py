@@ -105,12 +105,14 @@ class ExtractFromDocsTool(BaseTool):
                     logger.error(f"[ExtractFromDocsTool] {error_msg}")
                     errors.append(error_msg)
 
-            # 去重
+            # 去重（使用所有字段组合作为去重 key，避免仅按首字段误删）
             seen = set()
             unique_records = []
             for record in all_records:
-                # 使用第一个字段作为去重键
-                key = str(record.get(fields[0], "")) if fields else str(record)
+                key = "|".join(
+                    f"{k}={v}" for k, v in sorted(record.items())
+                    if v is not None and str(v).strip()
+                )
                 if key and key not in seen:
                     seen.add(key)
                     unique_records.append(record)

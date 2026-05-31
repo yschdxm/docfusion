@@ -1,0 +1,26 @@
+"""Agent Prompt 模块
+
+将共享的 prompt 内容抽取为独立模块，消除重复，便于维护。
+"""
+
+from app.agent.prompts.shared import (
+    WORK_PRINCIPLES,
+    DOCUMENT_TYPE_ROUTING,
+    QUERY_FAILURE_STRATEGY,
+    RESULT_REPORTING,
+    MULTI_TABLE_STRATEGY,
+    IMPORTANT_REMINDERS,
+    TASK_PLANNING,
+    ERROR_RECOVERY,
+)
+
+__all__ = [
+    "WORK_PRINCIPLES",
+    "DOCUMENT_TYPE_ROUTING",
+    "QUERY_FAILURE_STRATEGY",
+    "RESULT_REPORTING",
+    "MULTI_TABLE_STRATEGY",
+    "IMPORTANT_REMINDERS",
+    "TASK_PLANNING",
+    "ERROR_RECOVERY",
+]

@@ -118,6 +118,54 @@ class ToolExecutor:
             error=final_error
         )
 
+    async def execute_parallel(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        context: ToolContext,
+        max_retries: int = 3
+    ) -> List[ToolResult]:
+        """并行执行多个独立工具调用。
+
+        使用 asyncio.gather 并发执行所有工具调用，提升多工具场景的执行速度。
+
+        Args:
+            tool_calls: 工具调用列表，每个元素包含 tool_name 和 tool_params
+            context: 执行上下文
+            max_retries: 最大重试次数
+
+        Returns:
+            与输入顺序对应的 ToolResult 列表
+        """
+        if not tool_calls:
+            return []
+
+        if len(tool_calls) == 1:
+            # 单个工具调用，直接串行执行
+            tc = tool_calls[0]
+            result = await self.execute(tc["tool_name"], tc["tool_params"], context, max_retries)
+            return [result]
+
+        logger.info(f"[ToolExecutor] 并行执行 {len(tool_calls)} 个工具调用")
+
+        async def _run_one(tc: Dict[str, Any]) -> ToolResult:
+            return await self.execute(tc["tool_name"], tc["tool_params"], context, max_retries)
+
+        import asyncio
+        results = await asyncio.gather(*[_run_one(tc) for tc in tool_calls], return_exceptions=True)
+
+        # 处理异常情况
+        final_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[ToolExecutor] 并行执行异常 | {tool_calls[i]['tool_name']}: {result}")
+                final_results.append(ToolResult(success=False, error=f"并行执行异常: {str(result)}"))
+            else:
+                final_results.append(result)
+
+        success_count = sum(1 for r in final_results if r.success)
+        logger.info(f"[ToolExecutor] 并行执行完成 | 成功: {success_count}/{len(tool_calls)}")
+        return final_results
+
     def parse_tool_call(self, tool_call_data: Any) -> Optional[tuple[str, Dict[str, Any]]]:
         """解析LLM的工具调用数据
 

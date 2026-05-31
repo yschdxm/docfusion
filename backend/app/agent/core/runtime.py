@@ -18,6 +18,8 @@ from app.agent.core.registry import ToolRegistry
 from app.agent.core.executor import ToolExecutor
 from app.agent.core.stream import StreamManager, AgentEventType, AgentEvent
 from app.agent.core.tracker import StepTracker, StepType
+from app.agent.core.context_manager import ContextManager
+from app.agent.core.error_recovery import ErrorRecoveryStrategy
 from app.agent.base.tool import ToolContext
 
 from app.services.llm_service import llm_service
@@ -29,32 +31,25 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮助用户完成文档理解和表格填写任务。
+from app.agent.prompts.shared import (
+    WORK_PRINCIPLES,
+    DOCUMENT_TYPE_ROUTING,
+    QUERY_FAILURE_STRATEGY,
+    FILL_TABLE_STEP1_2,
+    FILL_TABLE_STEP3_GENERAL,
+    FILL_TABLE_STEP4_5,
+    RESULT_REPORTING,
+    MULTI_TABLE_STRATEGY,
+    IMPORTANT_REMINDERS,
+    TASK_PLANNING,
+    ERROR_RECOVERY,
+)
 
-## 工作原则
-1. 分析用户需求，理解任务目标
-2. 根据文档类型选择正确的数据源（重要！）
-3. 确保数据填写完整，不遗漏任何信息
-4. 完成任务后，向用户报告结果
+SYSTEM_PROMPT_TEMPLATE = f"""你是一个智能文档处理助手，专注于帮助用户完成文档理解和表格填写任务。
 
-## 文档类型与数据源对应关系（重要！必须遵循）
+{WORK_PRINCIPLES}
 
-不同文档类型的数据存储位置不同，必须根据文档类型选择正确的工具：
-
-### xlsx 文件
-- **数据位置**: PostgreSQL 数据库
-- **首选工具**: query_pg_database
-- **备选工具**: query_knowledge_graph (PG无结果时)
-
-### docx / md / txt 文件
-- **数据位置**: Neo4j 知识图谱（实体关系数据）和向量数据库（RAG检索）
-- **首选工具**: query_knowledge_graph
-- **备选工具**: rag_search (Neo4j无结果时)
-- **注意**: 这些文档的数据**不在PG中**，不要浪费多次重试在PG查询上
-
-### 填表时的文档类型判断
-- 源文档是 xlsx → 优先使用 query_pg_database
-- 源文档是 docx/md/txt → 直接使用 query_knowledge_graph，跳过PG查询
+{DOCUMENT_TYPE_ROUTING}
 
 ## 数据查找优先级（根据文档类型选择）
 
@@ -70,177 +65,21 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 3. **文档提取 (extract_from_documents)** - 最后手段
 4. **注意**: 这些文档在PG中没有数据，不要尝试PG查询
 
-## 查询失败处理策略（根据文档类型）
-
-### xlsx 文档的查询失败处理：
-1. 优化查询条件（LIKE模糊匹配、检查列名）
-2. 再次调用 query_pg_database 重试
-3. 多次优化后仍无结果，切换到 query_knowledge_graph
-
-### docx/md/txt 文档的查询失败处理：
-1. 直接使用 query_knowledge_graph 查询
-2. 如果Neo4j返回结果不足，立即使用 rag_search 补充
-3. 不要尝试PG查询（这些文档的数据不在PG中）
+{QUERY_FAILURE_STRATEGY}
 
 ## 填表任务完整流程（重要）
 
 当用户需要填写表格时（消息包含"填表"、"填写"、"fill"或提供了template_id）：
 
-### 第一步：判断源文档类型并选择数据源
-1. 检查源文档 file_ids 对应的文档类型
-2. **如果是 xlsx 文档**：使用 query_pg_database 查询
-3. **如果是 docx/md/txt 文档**：直接使用 query_knowledge_graph，跳过PG查询
+{FILL_TABLE_STEP1_2}
 
-### 第二步：获取表格结构
-使用 get_table_structure 工具了解：
-- 表格有多少列，列名是什么
-- 表格的数据范围（如"空气质量监测数据"、"城市GDP排名"）
-- **多表格文档：仔细阅读每个表格的 context 字段，理解每个表格对应哪个城市/地区**
+{FILL_TABLE_STEP3_GENERAL}
 
-### 第三步：填写表格
+{FILL_TABLE_STEP4_5}
 
-**重要：不要搬运数据！不要把 query_pg_database 返回的 records 数组原样传给 fill_table 的 data 参数。**
+{RESULT_REPORTING}
 
-#### 源文档和模板都是 xlsx（必须使用 source_query 自动模式）：
-
-**强制要求**：当源文档和模板都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
-
-**单次调用流程：**
-```
-fill_table(
-    source_query={
-        "doc_ids": [...],
-        "query": "描述需要什么数据",
-        "fetch_all": true  # 关键：自动获取全部数据，不遗漏
-    },
-    template_id=模板ID,
-    fill_mode="overwrite"
-)
-```
-
-**工具会自动完成：**
-1. 查询数据并生成摘要（前10行、中间5行、末尾5行、列信息、空值统计等）
-2. 你审核数据摘要是否正确
-3. 确认无误后，工具自动填入全部数据（无需再次调用）
-
-**关键参数说明：**
-- `fetch_all: true` - **强烈推荐**：自动获取全部数据，不限制行数，确保数据完整
-- `fetch_all: false`（默认）- 最多获取500行，适合快速预览或小数据量
-
-**避免重复查询：**
-- 预览阶段（data_confirmed=false）和确认阶段（data_confirmed=true）之间，工具会自动复用数据
-- 你不需要在确认前再次调用 query_pg_database 获取完整数据
-
-**多表格文档填写：**
-```
-# 表格0
-fill_table(
-    source_query={"doc_ids": [...], "query": "查询表格0所需数据", "fetch_all": true},
-    template_id=模板ID,
-    target_table_index=0,
-    fill_mode="overwrite"
-)
-
-# 表格1（复用同一个文件）
-fill_table(
-    source_query={"doc_ids": [...], "query": "查询表格1所需数据", "fetch_all": true},
-    template_id=模板ID,
-    output_doc_id=上一步返回的output_file_id,  # 关键：继续填写同一个文件
-    target_table_index=1,
-    fill_mode="overwrite"  # 根据表格1当前状态判断
-)
-```
-
-#### 其他情况（源文档或模板不是 xlsx）：
-1. 使用 query_pg_database / query_knowledge_graph 查询数据
-2. 将查询结果作为 data 参数传给 fill_table
-3. 必要时使用 rag_search 补充
-
-### 第四步：数据完整性检查
-1. **强制性检查（必须执行）**：
-   - 已填行数是否与表格应有的规模匹配？
-   - 文档标题是否暗示更多数据？（如"百强"应有约100行，"TOP50"应有50行）
-   - **填写比例 < 80% 时必须继续查询**
-
-2. 如果数据不充分，调整 source_query 的 query 参数重试：
-   - 更换查询关键词
-   - 扩大查询范围
-
-3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
-
-**重要原则**：
-- ✅ 先用可用数据生成文件，再询问是否需要补充
-- ❌ 禁止因数据可能不完整而延迟生成文件
-- ❌ 禁止生成文件前征求用户确认
-
-### 第五步：报告结果
-
-向用户报告填写结果，**必须包含以下内容**：
-
-1. **填写行数**：共填写了多少行数据
-2. **预期行数**：根据文档标题判断应该有多少行
-3. **完整度百分比**：填写比例
-4. **数据来源说明**：数据来自哪些文档
-5. **下载链接（必须输出可点击链接）**：
-   - 使用 fill_table 返回的 `download_url` 字段
-   - 格式：`[点击下载填写完成的文档](download_url)`
-   - **必须使用 Markdown 链接格式，确保用户可以点击下载**
-
-## 多表格文档填写策略
-
-当模板文档包含多个表格时：
-
-### 识别表格用途
-1. 使用 get_table_structure 后，分析每个表格的 context.preceding_text 字段
-2. 通过表格前的段落文本理解该表格应该填什么数据
-3. 查看表格的 row_count 和 sample_data，判断表格是否已有数据或空行
-
-### 数据过滤与路由原则
-- 严禁：将所有数据无脑依次填入每个表格
-- 必须：先理解每个表格的用途，再按需过滤数据
-
-### fill_mode 详解（关键）
-fill_mode 是针对单个表格的操作，不是文档级别的：
-
-**fill_mode="overwrite"**：清空【target_table_index 指定的表格】，填入新数据
-- 清空该表格的所有现有数据行（保留表头）
-- 用于：表格为空、只有表头、有占位空行、或需要替换旧数据
-- 注意：这只会影响指定的表格，不会清空整个文档
-
-**fill_mode="append"**：在【target_table_index 指定的表格】末尾添加新行
-- 保留该表格的现有数据，在后面添加新行
-- 用于：该表格已有有效数据，需要继续添加更多数据时
-- 注意：这是针对同一个表格的追加，不是"跳到"下一个表格
-
-常见误区纠正：
-- ❌ 错误理解："表格1填完了，用 append 追加到表格2"
-- ✅ 正确理解："表格2当前只有表头/空行，需要用 overwrite 清空后填入"
-
-多表格填写流程：
-```
-1. 获取表格结构 → 发现多个表格
-   - 分析每个表格的 context 了解其用途
-   - 检查每个表格的状态：只有表头/空行 vs 已有有效数据
-
-2. 查询所需数据
-
-3. 填写表格0：
-   - fill_mode="overwrite"（清空后填入）
-   - target_table_index=0
-   - 创建新文件
-
-4. 填写表格1：
-   - 检查表格1状态：如果只有表头/空行 → 用 overwrite；如果已有数据 → 用 append
-   - output_doc_id=上一步返回的ID（继续填写同一个文件）
-   - target_table_index=1（指定第二个表格）
-
-5. 后续表格同理，每个独立判断 fill_mode
-```
-
-### target_table_index 使用
-- 表格索引从0开始，按文档中出现顺序
-- 多表格文档必须指定 target_table_index，否则可能填错位
-- 每个表格独立判断 fill_mode，不要假设都用 append
+{MULTI_TABLE_STRATEGY}
 
 ## 增量填表示例流程
 ```
@@ -270,14 +109,11 @@ fill_mode 是针对单个表格的操作，不是文档级别的：
 ↓ 8. 报告用户："已完成表格填写，共填写500行数据，下载链接: xxx"
 ```
 
-## 重要提醒
-- 填表任务必须使用 fill_table 工具生成可下载的文档
-- 增量填表时记住 output_file_id，后续追加需要传入 output_doc_id
-- 只调用确实需要的工具
-- 参数必须准确且完整
-- 根据工具返回结果调整后续策略
-- 如果工具调用失败，尝试其他方法或向用户说明问题
-- 当PG查询失败时，优先优化查询条件而不是切换工具
+{IMPORTANT_REMINDERS}
+
+{TASK_PLANNING}
+
+{ERROR_RECOVERY}
 """
 
 
@@ -540,6 +376,10 @@ class AgentRuntime:
             await stream.emit_thinking_start(step.id, "正在思考...")
 
             # 调用LLM (流式)
+            # 自动压缩上下文：防止对话历史过长导致 token 超限
+            if iteration > 0 and iteration % 3 == 0:
+                messages = ContextManager.auto_compress(messages)
+
             logger.info(f"[AgentRuntime._execute_loop] 准备调用LLM | 当前消息数: {len(messages)}")
             try:
                 response_start = datetime.utcnow()
@@ -734,7 +574,12 @@ class AgentRuntime:
                 await stream.emit_assistant_message(full_content.strip())
                 logger.info(f"[AgentRuntime._execute_loop] 发送中间回复（长度: {len(full_content)}）")
 
-            # 执行工具调用
+            # 执行工具调用（支持并行执行独立工具）
+            # 1. 解析所有工具调用，分离委派工具和普通工具
+            DELEGATION_TOOLS = ("delegate_fill_table", "delegate_document_edit")
+            parsed_calls = []
+            skipped_calls = []  # 被跳过的重复委派调用
+
             for tool_call in tool_calls_buffer:
                 tool_name = tool_call["function"]["name"]
                 try:
@@ -743,86 +588,22 @@ class AgentRuntime:
                     tool_args = {}
                 total_tool_calls += 1
 
-                # 检查委派工具调用限制：每次用户消息只能委派一次子Agent
-                is_delegation_tool = tool_name in ("delegate_fill_table", "delegate_document_edit")
+                # 检查委派工具调用限制
+                is_delegation_tool = tool_name in DELEGATION_TOOLS
                 if is_delegation_tool and delegation_called:
                     logger.warning(f"[AgentRuntime._execute_loop] 跳过重复委派调用: {tool_name}（本次消息已委派过）")
-                    # 注入提示，告诉LLM不要重复委派，直接汇报结果
-                    messages.append({
-                        "role": "assistant",
-                        "content": full_content if full_content else None,
-                        "reasoning_content": full_reasoning,
-                        "tool_calls": [tool_call]
-                    })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": "该子Agent已经执行过了，不要重复调用。请直接根据之前的执行结果向用户汇报。"
-                    })
+                    skipped_calls.append(tool_call)
                     continue
 
-                logger.info(f"[AgentRuntime._execute_loop] 执行工具: {tool_name}")
+                parsed_calls.append({
+                    "tool_call": tool_call,
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "is_delegation": is_delegation_tool,
+                })
 
-                # 创建工具调用步骤
-                tool_step = tracker.create_step(
-                    step_type=StepType.TOOL_CALL,
-                    name=f"调用 {tool_name}",
-                    description=f"调用工具: {tool_name}",
-                    tool_name=tool_name,
-                    tool_params=tool_args
-                )
-                tracker.start_step(tool_step.id)
-                await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
-                await stream.emit_tool_call(tool_name, tool_args)
-
-                # 执行工具前检查是否已关闭
-                if stream.is_closed():
-                    logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止工具执行")
-                    return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
-
-                # 执行工具
-                logger.info(f"[AgentRuntime._execute_loop] 调用executor.execute: {tool_name}")
-                tool_start = datetime.utcnow()
-                result = await self.executor.execute(
-                    tool_name=tool_name,
-                    tool_params=tool_args,
-                    context=context,
-                    max_retries=self.max_tool_retries
-                )
-                tool_time = (datetime.utcnow() - tool_start).total_seconds()
-
-                # 标记委派工具已调用
-                if is_delegation_tool:
-                    delegation_called = True
-
-                # 记录结果
-                if result.success:
-                    logger.info(f"[AgentRuntime._execute_loop] 工具 {tool_name} 成功 | 耗时: {tool_time:.2f}s")
-                    tracker.complete_step(
-                        tool_step.id,
-                        result=result.data if isinstance(result.data, dict) else {"data": result.data}
-                    )
-                    await stream.emit_tool_result(
-                        tool_name=tool_name,
-                        result=result.data if isinstance(result.data, dict) else {"data": str(result.data)},
-                        execution_time_ms=result.execution_time_ms
-                    )
-                    await stream.emit_step_end(tool_step.id, "工具执行成功")
-
-                    # 汇总子agent的token统计到父agent
-                    if isinstance(result.data, dict) and result.data.get("sub_agent_usage"):
-                        sub = result.data["sub_agent_usage"]
-                        for key in accumulated_usage:
-                            accumulated_usage[key] += sub.get(key, 0)
-                        logger.info(f"[AgentRuntime._execute_loop] 已汇总子agent({tool_name})统计 | "
-                                    f"tokens={sub.get('total_tokens', 0)} calls={sub.get('llm_calls', 0)}")
-                else:
-                    logger.error(f"[AgentRuntime._execute_loop] 工具 {tool_name} 失败 | 耗时: {tool_time:.2f}s | 错误: {result.error}")
-                    tracker.fail_step(tool_step.id, result.error)
-                    await stream.emit_tool_error(tool_name, result.error)
-                    await stream.emit_step_end(tool_step.id, f"工具执行失败: {result.error}")
-
-                # 添加工具调用和结果到对话历史
+            # 处理被跳过的委派调用
+            for tool_call in skipped_calls:
                 messages.append({
                     "role": "assistant",
                     "content": full_content if full_content else None,
@@ -832,10 +613,107 @@ class AgentRuntime:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": json.dumps(result.data, ensure_ascii=False) if result.success else result.error
+                    "content": "该子Agent已经执行过了，不要重复调用。请直接根据之前的执行结果向用户汇报。"
                 })
-                logger.debug(f"[AgentRuntime._execute_loop] 已添加工具结果到对话历史 | 当前消息数: {len(messages)}")
 
+            # 2. 将工具调用分组：委派工具（串行）+ 普通工具（可并行）
+            regular_calls = [c for c in parsed_calls if not c["is_delegation"]]
+            delegation_calls = [c for c in parsed_calls if c["is_delegation"]]
+
+            # 3. 先并行执行所有普通工具
+            if regular_calls:
+                if stream.is_closed():
+                    return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+
+                if len(regular_calls) == 1:
+                    # 单个工具，直接串行执行（避免不必要的并行开销）
+                    tc_info = regular_calls[0]
+                    tool_call = tc_info["tool_call"]
+                    tool_name = tc_info["tool_name"]
+                    tool_args = tc_info["tool_args"]
+
+                    tool_step = tracker.create_step(
+                        step_type=StepType.TOOL_CALL, name=f"调用 {tool_name}",
+                        description=f"调用工具: {tool_name}", tool_name=tool_name, tool_params=tool_args
+                    )
+                    tracker.start_step(tool_step.id)
+                    await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
+                    await stream.emit_tool_call(tool_name, tool_args)
+
+                    tool_start = datetime.utcnow()
+                    result = await self.executor.execute(tool_name, tool_args, context, self.max_tool_retries)
+                    tool_time = (datetime.utcnow() - tool_start).total_seconds()
+
+                    await self._process_tool_result(
+                        result, tool_name, tool_call, tool_step, tool_time,
+                        messages, tracker, stream, accumulated_usage, full_content, full_reasoning
+                    )
+                    final_result = result
+                else:
+                    # 多个工具，并行执行
+                    logger.info(f"[AgentRuntime._execute_loop] 并行执行 {len(regular_calls)} 个工具")
+
+                    # 先发送所有工具的 step_start 和 tool_call 事件
+                    tool_steps = []
+                    for tc_info in regular_calls:
+                        tool_name = tc_info["tool_name"]
+                        tool_args = tc_info["tool_args"]
+                        tool_step = tracker.create_step(
+                            step_type=StepType.TOOL_CALL, name=f"调用 {tool_name}",
+                            description=f"调用工具: {tool_name}", tool_name=tool_name, tool_params=tool_args
+                        )
+                        tracker.start_step(tool_step.id)
+                        await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
+                        await stream.emit_tool_call(tool_name, tool_args)
+                        tool_steps.append(tool_step)
+
+                    # 并行执行
+                    tool_start = datetime.utcnow()
+                    parallel_tool_calls = [
+                        {"tool_name": c["tool_name"], "tool_params": c["tool_args"]}
+                        for c in regular_calls
+                    ]
+                    results = await self.executor.execute_parallel(
+                        parallel_tool_calls, context, self.max_tool_retries
+                    )
+                    tool_time = (datetime.utcnow() - tool_start).total_seconds()
+                    logger.info(f"[AgentRuntime._execute_loop] 并行执行完成 | 总耗时: {tool_time:.2f}s")
+
+                    # 处理结果
+                    for i, (tc_info, result) in enumerate(zip(regular_calls, results)):
+                        await self._process_tool_result(
+                            result, tc_info["tool_name"], tc_info["tool_call"], tool_steps[i], tool_time,
+                            messages, tracker, stream, accumulated_usage, full_content, full_reasoning
+                        )
+                        final_result = result
+
+            # 4. 再串行执行委派工具（依赖 delegation_called 状态）
+            for tc_info in delegation_calls:
+                tool_call = tc_info["tool_call"]
+                tool_name = tc_info["tool_name"]
+                tool_args = tc_info["tool_args"]
+
+                tool_step = tracker.create_step(
+                    step_type=StepType.TOOL_CALL, name=f"调用 {tool_name}",
+                    description=f"调用工具: {tool_name}", tool_name=tool_name, tool_params=tool_args
+                )
+                tracker.start_step(tool_step.id)
+                await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
+                await stream.emit_tool_call(tool_name, tool_args)
+
+                if stream.is_closed():
+                    return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+
+                tool_start = datetime.utcnow()
+                result = await self.executor.execute(tool_name, tool_args, context, self.max_tool_retries)
+                tool_time = (datetime.utcnow() - tool_start).total_seconds()
+
+                delegation_called = True
+
+                await self._process_tool_result(
+                    result, tool_name, tool_call, tool_step, tool_time,
+                    messages, tracker, stream, accumulated_usage, full_content, full_reasoning
+                )
                 final_result = result
 
             logger.info(f"[AgentRuntime._execute_loop] 迭代 {iteration + 1} 完成 | 调用 {len(tool_calls_buffer)} 个工具")
@@ -854,6 +732,73 @@ class AgentRuntime:
             "steps": tracker.to_dict(),
             "reached_max_iterations": True
         }
+
+    async def _process_tool_result(
+        self,
+        result,
+        tool_name: str,
+        tool_call: Dict,
+        tool_step,
+        tool_time: float,
+        messages: List[Dict],
+        tracker: StepTracker,
+        stream: StreamManager,
+        accumulated_usage: Dict,
+        full_content: str,
+        full_reasoning: str,
+    ):
+        """处理单个工具调用的结果（更新 tracker、stream、messages）"""
+        if result.success:
+            logger.info(f"[AgentRuntime] 工具 {tool_name} 成功 | 耗时: {tool_time:.2f}s")
+            tracker.complete_step(
+                tool_step.id,
+                result=result.data if isinstance(result.data, dict) else {"data": result.data}
+            )
+            await stream.emit_tool_result(
+                tool_name=tool_name,
+                result=result.data if isinstance(result.data, dict) else {"data": str(result.data)},
+                execution_time_ms=result.execution_time_ms
+            )
+            await stream.emit_step_end(tool_step.id, "工具执行成功")
+
+            # 汇总子agent的token统计到父agent
+            if isinstance(result.data, dict) and result.data.get("sub_agent_usage"):
+                sub = result.data["sub_agent_usage"]
+                for key in accumulated_usage:
+                    accumulated_usage[key] += sub.get(key, 0)
+                logger.info(f"[AgentRuntime] 已汇总子agent({tool_name})统计 | "
+                            f"tokens={sub.get('total_tokens', 0)} calls={sub.get('llm_calls', 0)}")
+        else:
+            logger.error(f"[AgentRuntime] 工具 {tool_name} 失败 | 耗时: {tool_time:.2f}s | 错误: {result.error}")
+            tracker.fail_step(tool_step.id, result.error)
+            await stream.emit_tool_error(tool_name, result.error)
+            await stream.emit_step_end(tool_step.id, f"工具执行失败: {result.error}")
+
+            # 错误恢复：生成降级建议（注入到 tool result 中，引导 LLM 重试）
+            # 获取原始工具参数
+            try:
+                original_params = json.loads(tool_call["function"]["arguments"]) if isinstance(tool_call.get("function", {}).get("arguments"), str) else tool_call.get("function", {}).get("arguments", {})
+            except (json.JSONDecodeError, AttributeError):
+                original_params = {}
+
+            recovery = ErrorRecoveryStrategy.build_fallback_suggestion(tool_name, result.error, original_params)
+            if recovery:
+                # 将降级建议附加到错误信息中
+                result.error = f"{result.error}\n\n[恢复建议] {recovery['reason']}。请尝试使用 {recovery['tool_name']} 工具。"
+
+        # 添加工具调用和结果到对话历史
+        messages.append({
+            "role": "assistant",
+            "content": full_content if full_content else None,
+            "reasoning_content": full_reasoning,
+            "tool_calls": [tool_call]
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": json.dumps(result.data, ensure_ascii=False) if result.success else result.error
+        })
+        logger.debug(f"[AgentRuntime] 已添加工具结果到对话历史 | 当前消息数: {len(messages)}")
 
     async def _build_user_context(self, context: ToolContext) -> str:
         """构建用户上下文信息（选择的文件）

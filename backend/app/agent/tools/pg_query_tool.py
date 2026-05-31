@@ -185,24 +185,53 @@ class PGQueryTool(BaseTool):
 
             service = get_sql_query_service()
 
-            # 使用新的重试机制查询所有文档
+            # 批量查询所有文档（一次传入所有 doc_ids，避免逐文档查询的开销）
             all_records = []
             all_sqls = []
 
-            for doc_id in doc_ids:
-                try:
-                    result = await service.generate_and_execute(
-                        question=query,
-                        doc_ids=[doc_id],
-                        max_retries=3
-                    )
+            try:
+                result = await service.generate_and_execute(
+                    question=query,
+                    doc_ids=doc_ids,
+                    max_retries=3
+                )
 
-                    if result.get("error") is None:
-                        records = result.get("records", [])
-                        all_records.extend(records)
-                        all_sqls.append(result.get("sql", ""))
-                except Exception as e:
-                    logger.warning(f"[PGQueryTool] 查询doc {doc_id} 失败: {e}")
+                if result.get("error") is None:
+                    records = result.get("records", [])
+                    all_records.extend(records)
+                    all_sqls.append(result.get("sql", ""))
+                else:
+                    logger.warning(f"[PGQueryTool] 批量查询失败: {result.get('error')}，尝试逐文档查询")
+                    # 降级：逐文档查询
+                    for doc_id in doc_ids:
+                        try:
+                            result = await service.generate_and_execute(
+                                question=query,
+                                doc_ids=[doc_id],
+                                max_retries=3
+                            )
+                            if result.get("error") is None:
+                                records = result.get("records", [])
+                                all_records.extend(records)
+                                all_sqls.append(result.get("sql", ""))
+                        except Exception as e:
+                            logger.warning(f"[PGQueryTool] 查询doc {doc_id} 失败: {e}")
+            except Exception as e:
+                logger.warning(f"[PGQueryTool] 批量查询异常: {e}，尝试逐文档查询")
+                # 降级：逐文档查询
+                for doc_id in doc_ids:
+                    try:
+                        result = await service.generate_and_execute(
+                            question=query,
+                            doc_ids=[doc_id],
+                            max_retries=3
+                        )
+                        if result.get("error") is None:
+                            records = result.get("records", [])
+                            all_records.extend(records)
+                            all_sqls.append(result.get("sql", ""))
+                    except Exception as e:
+                        logger.warning(f"[PGQueryTool] 查询doc {doc_id} 失败: {e}")
 
             # 去重
             seen = set()

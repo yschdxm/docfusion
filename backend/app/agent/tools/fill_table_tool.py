@@ -381,8 +381,30 @@ fill_mode 详解（针对指定表格的操作）：
             source_columns = list(source_records[0].keys())
             from app.services.llm_service import llm_service
             header_mapping = await llm_service.map_columns(template_headers, source_columns)
-            if header_mapping:
+
+            # AI 映射失败时，使用智能匹配降级
+            if not header_mapping:
+                header_mapping = self._fallback_column_mapping(template_headers, source_columns)
+                if header_mapping:
+                    logger.info(f"[FillTableTool] AI映射失败，使用降级匹配: {header_mapping}")
+                else:
+                    logger.warning("[FillTableTool] 列名映射完全失败，将使用原始列名")
+            else:
+                # 验证映射结果：确保映射的列名确实存在于源数据中
+                validated_mapping = {}
+                for k, v in header_mapping.items():
+                    if v in source_columns:
+                        validated_mapping[k] = v
+                    else:
+                        # 尝试降级匹配该列
+                        fallback = self._fallback_column_mapping([k], source_columns)
+                        if fallback.get(k):
+                            validated_mapping[k] = fallback[k]
+                            logger.warning(f"[FillTableTool] AI映射列 '{v}' 不存在，降级为 '{fallback[k]}'")
+                header_mapping = validated_mapping
                 logger.info(f"[FillTableTool] AI列名映射: {header_mapping}")
+
+            if header_mapping:
                 source_records = [
                     {header_mapping.get(k, k): v for k, v in record.items()}
                     for record in source_records
@@ -493,8 +515,29 @@ fill_mode 详解（针对指定表格的操作）：
             source_columns = list(source_records[0].keys())
             from app.services.llm_service import llm_service
             header_mapping = await llm_service.map_columns(template_headers, source_columns)
-            if header_mapping:
+
+            # AI 映射失败时，使用智能匹配降级
+            if not header_mapping:
+                header_mapping = self._fallback_column_mapping(template_headers, source_columns)
+                if header_mapping:
+                    logger.info(f"[FillTableTool][confirmed] AI映射失败，使用降级匹配: {header_mapping}")
+                else:
+                    logger.warning("[FillTableTool][confirmed] 列名映射完全失败，将使用原始列名")
+            else:
+                # 验证映射结果
+                validated_mapping = {}
+                for k, v in header_mapping.items():
+                    if v in source_columns:
+                        validated_mapping[k] = v
+                    else:
+                        fallback = self._fallback_column_mapping([k], source_columns)
+                        if fallback.get(k):
+                            validated_mapping[k] = fallback[k]
+                            logger.warning(f"[FillTableTool][confirmed] AI映射列 '{v}' 不存在，降级为 '{fallback[k]}'")
+                header_mapping = validated_mapping
                 logger.info(f"[FillTableTool][confirmed] AI列名映射: {header_mapping}")
+
+            if header_mapping:
                 source_records = [
                     {header_mapping.get(k, k): v for k, v in record.items()}
                     for record in source_records
@@ -852,10 +895,9 @@ fill_mode 详解（针对指定表格的操作）：
 
             # 处理填写模式
             if fill_mode == "overwrite":
-                # 清空数据行，保留表头
-                # 删除现有数据行
-                for row in range(ws.max_row, 1, -1):
-                    ws.delete_rows(row)
+                # 清空数据行，保留表头（一次性删除，避免逐行删除的 O(n²) 开销）
+                if ws.max_row > 1:
+                    ws.delete_rows(2, ws.max_row - 1)
 
             # 填写数据
             for row_data in data:
@@ -873,6 +915,58 @@ fill_mode 详解（针对指定表格的操作）：
         except Exception as e:
             print(f"填写Excel失败: {e}")
             return False
+
+    @staticmethod
+    def _fallback_column_mapping(template_headers: List[str], source_columns: List[str]) -> Dict[str, str]:
+        """列名映射降级策略：当 AI map_columns 失败时使用智能匹配。
+
+        匹配优先级：精确 → 大小写不敏感+去空格 → 包含匹配 → 编辑距离相似度
+        """
+        import difflib
+
+        mapping = {}
+        source_lower_map = {col.strip().lower(): col for col in source_columns}
+
+        for header in template_headers:
+            header_clean = header.strip()
+            header_lower = header_clean.lower()
+
+            # 1. 精确匹配
+            if header_clean in source_columns:
+                mapping[header] = header_clean
+                continue
+
+            # 2. 大小写不敏感 + 去空格匹配
+            if header_lower in source_lower_map:
+                mapping[header] = source_lower_map[header_lower]
+                continue
+
+            # 3. 包含匹配（header 包含 source 或 source 包含 header）
+            best_match = None
+            best_score = 0
+            for col in source_columns:
+                col_lower = col.strip().lower()
+                if header_lower in col_lower or col_lower in header_lower:
+                    # 取包含匹配中相似度最高的
+                    score = len(header_lower) / max(len(col_lower), len(header_lower))
+                    if score > best_score:
+                        best_score = score
+                        best_match = col
+
+            if best_match and best_score > 0.3:
+                mapping[header] = best_match
+                continue
+
+            # 4. 编辑距离相似度匹配（阈值 0.6）
+            close_matches = difflib.get_close_matches(header_lower, [c.strip().lower() for c in source_columns], n=1, cutoff=0.6)
+            if close_matches:
+                matched_lower = close_matches[0]
+                for col in source_columns:
+                    if col.strip().lower() == matched_lower:
+                        mapping[header] = col
+                        break
+
+        return mapping
 
     def _get_value_for_header(self, row_data: Dict, header: str) -> str:
         """智能列名匹配：精确匹配 → 大小写不敏感匹配 → 包含匹配"""

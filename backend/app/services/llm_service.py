@@ -931,16 +931,26 @@ class LLMService:
         template_headers: List[str],
         db_columns: List[str],
     ) -> Dict[str, str]:
-        """用 AI 建立模板表头到数据库列名的映射。"""
+        """用 AI 建立模板表头到数据库列名的映射。
+
+        返回 {模板表头: 数据库列名} 的映射字典。
+        映射结果经过验证：确保映射的列名确实存在于 db_columns 中。
+        """
         prompt = f"""请建立模板表头和数据库列名之间的映射关系。
 
 模板表头：{template_headers}
 数据库列名：{db_columns}
 
 要求：
-1. 每个模板表头对应一个数据库列名
+1. 每个模板表头对应一个数据库列名（必须是 db_columns 中存在的列名）
 2. 如果名称有差异但含义相同（如 PM2.5监测值 和 PM2_5监测值），建立映射
 3. 如果找不到对应关系，不返回该表头
+4. 映射的值必须是 db_columns 中的原始列名，不要修改
+
+示例：
+模板表头：["城市", "GDP(亿元)", "人口"]
+数据库列名：["city", "gdp_billion", "population", "area"]
+输出：{{"城市": "city", "GDP(亿元)": "gdp_billion", "人口": "population"}}
 
 输出格式（JSON）：
 {{"模板表头1": "数据库列名1", "模板表头2": "数据库列名2"}}
@@ -953,10 +963,22 @@ class LLMService:
             response = await self.chat_completion(
                 messages,
                 temperature=0.1,
-                # max_tokens 使用模型默认值
                 enable_thinking=False
             )
-            return self._extract_json(response)
+            raw_mapping = self._extract_json(response)
+
+            # 验证映射结果：确保值存在于 db_columns 中
+            if raw_mapping and isinstance(raw_mapping, dict):
+                db_columns_set = set(db_columns)
+                validated = {}
+                for k, v in raw_mapping.items():
+                    if v in db_columns_set:
+                        validated[k] = v
+                    else:
+                        logger.warning("[MAP-COLUMNS] 映射值 '%s' 不存在于 db_columns 中，跳过", v)
+                return validated
+
+            return raw_mapping or {}
         except LLMError as e:
             logger.warning("[MAP-COLUMNS] LLM调用失败: %s", e)
             return {}
