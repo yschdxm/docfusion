@@ -24,11 +24,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <App />
         <Toaster
-          position="top-right"
+          position="top-center"
           toastOptions={{
             className: 'glass-dark text-white',
             duration: 3000,
           }}
+          containerStyle={{ top: 60 }}
         />
       </BrowserRouter>
     </QueryClientProvider>

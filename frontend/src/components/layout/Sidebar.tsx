@@ -5,11 +5,27 @@ import { sidebarI18n } from '../../services/i18n'
 import { useState, useEffect } from 'react'
 import api from '../../services/api'
 import Dropdown from '../ui/Dropdown'
+import { getTheme } from '../../services/theme'
 
-export default function Sidebar() {
+interface SidebarProps {
+  isMobile?: boolean
+  onClose?: () => void
+}
+
+export default function Sidebar({ isMobile, onClose }: SidebarProps) {
   const { language } = useI18n()
   const t = sidebarI18n[language]
   const [currentProvider, setCurrentProvider] = useState<string>('deepseek')
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+
+  // 监听主题变化
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   // 获取当前模型配置
   useEffect(() => {
@@ -52,15 +68,24 @@ export default function Sidebar() {
   ]
 
   return (
-    <aside className="flex w-60 flex-col overflow-hidden border-r border-slate-200 bg-white">
-      <div className="relative border-b border-slate-200/80 px-6 py-6">
-        <div className="relative flex items-center gap-3">
-          <img src="/logo.png" alt="logo" className="h-12 w-12 object-contain drop-shadow-sm" />
-          <div className="min-w-0">
-            <h1 className="truncate text-2xl font-bold leading-none tracking-tight text-[#0d5fb0]">{t.systemName}</h1>
-            <p className="mt-1 text-sm text-slate-500">{t.systemSub}</p>
-          </div>
+    <aside className={`flex w-60 flex-col overflow-hidden border-r border-slate-200 bg-white h-full ${isMobile ? 'shadow-2xl' : ''}`}>
+      <div className="relative border-b border-slate-200/80 px-5 py-5">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="logo" className="h-10 w-10 shrink-0 object-contain drop-shadow-sm" />
+          <h1 className="flex-1 min-w-0 text-xl font-bold leading-tight tracking-tight text-[#0d5fb0]">{t.systemName}</h1>
+          {isMobile && onClose && (
+            <button
+              onClick={onClose}
+              className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              aria-label="关闭菜单"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </div>
+        <p className="mt-1.5 pl-[52px] text-xs text-slate-500">{t.systemSub}</p>
       </div>
 
       <nav className="flex-1 space-y-1.5 px-4 py-5">
@@ -99,7 +124,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="border-t border-slate-200/80 px-4 py-4">
-        <div className="rounded-xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff,#f6f9ff)] px-4 py-3">
+        <div className={`rounded-xl border border-slate-200 px-4 py-3 ${isDarkMode ? 'night-mode-gradient-bg' : 'bg-[linear-gradient(180deg,#ffffff,#f6f9ff)]'}`}>
           <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Engine</p>
           <Dropdown
             value={currentProvider}

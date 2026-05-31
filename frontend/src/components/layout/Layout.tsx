@@ -1,4 +1,4 @@
-﻿import { type ChangeEvent, useEffect, useRef, useState } from 'react'
+﻿import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import Sidebar from './Sidebar'
@@ -7,6 +7,17 @@ import { useDocumentStore } from '../../stores/documentStore'
 import { useI18n } from '../../hooks/useI18n'
 import { PREFERENCES_CHANGED_EVENT, getStoredPreferences } from '../../services/preferences'
 import { PENDING_WORKLOG_EXPORT_KEY, WORKLOG_EXPORT_EVENT } from '../../services/shortcuts'
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const mql = window.matchMedia(query)
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches)
+    mql.addEventListener('change', handler)
+    return () => mql.removeEventListener('change', handler)
+  }, [query])
+  return matches
+}
 
 export default function Layout() {
   const navigate = useNavigate()
@@ -17,6 +28,16 @@ export default function Layout() {
   const sourceInputRef = useRef<HTMLInputElement>(null)
   const templateInputRef = useRef<HTMLInputElement>(null)
   const [shortcutsEnabled, setShortcutsEnabled] = useState(() => getStoredPreferences().keyboardShortcuts)
+
+  // 响应式：移动端检测 & 侧边栏状态
+  const isMobile = useMediaQuery('(max-width: 1023px)')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const closeSidebar = useCallback(() => setSidebarOpen(false), [])
+
+  // 路由切换时自动关闭移动端侧边栏
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false)
+  }, [location.pathname, isMobile])
 
   const uploadFiles = async (files: File[], category: 'source' | 'template') => {
     if (files.length === 0) return
@@ -130,10 +151,30 @@ export default function Layout() {
         accept=".docx,.xlsx"
         onChange={onSelectTemplateFiles}
       />
-      <Sidebar />
+
+      {/* 移动端侧边栏遮罩 */}
+      {isMobile && sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm animate-fade-in lg:hidden"
+          onClick={closeSidebar}
+        />
+      )}
+
+      {/* 侧边栏：移动端抽屉 / 平板端折叠图标 / 桌面端完整 */}
+      <div
+        className={`
+          ${isMobile
+            ? `fixed inset-y-0 left-0 z-40 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+            : 'shrink-0'
+          }
+        `}
+      >
+        <Sidebar isMobile={isMobile} onClose={closeSidebar} />
+      </div>
+
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        <Header />
-        <main className="flex-1 p-6 min-h-0">
+        <Header isMobile={isMobile} onToggleSidebar={() => setSidebarOpen(prev => !prev)} sidebarOpen={sidebarOpen} />
+        <main className="flex-1 p-3 sm:p-4 lg:p-6 min-h-0">
           <div className="animate-in h-full flex flex-col min-h-0">
             <Outlet />
           </div>

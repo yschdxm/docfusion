@@ -85,20 +85,54 @@ class KnowledgeGraphService:
             for batch_start in range(0, len(entities_list), batch_size):
                 batch = entities_list[batch_start:batch_start + batch_size]
                 try:
-                    # 为每个实体单独处理，确保所有属性都被写入
+                    # UNWIND 批量写入，减少数据库往返
+                    # 1. 收集所有属性键
+                    all_keys = set()
                     for ent in batch:
-                        # 构建属性字典（排除name和doc_id）
-                        props = {k: v for k, v in ent.items() if k not in ['name', 'doc_id']}
+                        all_keys.update(k for k in ent.keys() if k not in ['name', 'doc_id'])
+                    prop_keys = sorted(all_keys)
+
+                    if prop_keys:
+                        # 有属性时：统一属性结构，使用 UNWIND + 动态属性设置
+                        normalized_batch = []
+                        for ent in batch:
+                            item = {"name": ent['name'], "doc_id": ent['doc_id']}
+                            for key in prop_keys:
+                                item[key] = ent.get(key)
+                            normalized_batch.append(item)
+
+                        # 构建属性设置子句（跳过 null 值）
+                        create_set_parts = ["n.name = item.name", "n.document_ids = [item.doc_id]"]
+                        match_set_parts = ["n.document_ids = CASE WHEN item.doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + item.doc_id END"]
+                        for key in prop_keys:
+                            create_set_parts.append(f"n.{key} = item.{key}")
+                            match_set_parts.append(f"n.{key} = CASE WHEN item.{key} IS NOT NULL THEN item.{key} ELSE n.{key} END")
+
+                        create_set = ", ".join(create_set_parts)
+                        match_set = ", ".join(match_set_parts)
 
                         await run_cypher(
                             f"""
-                            MERGE (n:{label} {{name: $name}})
-                            ON CREATE SET n = $props, n.name = $name, n.document_ids = [$doc_id]
-                            ON MATCH SET n += $props, n.document_ids = CASE WHEN $doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + $doc_id END
+                            UNWIND $entities AS item
+                            MERGE (n:{label} {{name: item.name}})
+                            ON CREATE SET {create_set}
+                            ON MATCH SET {match_set}
                             """,
-                            {"name": ent['name'], "doc_id": ent['doc_id'], "props": props}
+                            {"entities": normalized_batch}
                         )
-                    logger.debug("[KG-BUILD] 成功写入 %d 个 %s 类型实体", len(batch), label)
+                    else:
+                        # 无属性时：只写入 name 和 document_ids
+                        simple_batch = [{"name": ent['name'], "doc_id": ent['doc_id']} for ent in batch]
+                        await run_cypher(
+                            f"""
+                            UNWIND $entities AS item
+                            MERGE (n:{label} {{name: item.name}})
+                            ON CREATE SET n.document_ids = [item.doc_id]
+                            ON MATCH SET n.document_ids = CASE WHEN item.doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + item.doc_id END
+                            """,
+                            {"entities": simple_batch}
+                        )
+                    logger.debug("[KG-BUILD] 批量写入 %d 个 %s 类型实体", len(batch), label)
                 except Exception as ex:
                     logger.warning(f"批量写入实体失败 (label={label}): {ex}")
 

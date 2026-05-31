@@ -5,7 +5,11 @@
 - PostgreSQL 入库使用单连接 + 单事务提交
 - 流式读取 + 分批处理，内存占用 O(BATCH_SIZE)
 - 索引延迟到最后统一创建
+- 向量化与NER并行执行（docx/md/txt），充分利用不同API的并发能力
+- Neo4j实体批量写入，减少数据库往返
+- Embeding批次并行化，提升向量化吞吐量
 """
+import asyncio
 import logging
 from typing import Dict, Any, Optional, Callable, List
 from app.services.document_processor import DocxParser, XlsxParser, MdParser, TxtParser
@@ -85,125 +89,137 @@ async def preprocess_document(
             for c in rag_chunks
         ]
 
-    # ── Step 2: xlsx 双轨处理 ──
+    # ── Step 2: xlsx 双轨处理（并行优化）──
     schema_info = []
     if file_type == "xlsx":
-        # Track 1: 元数据摘要 chunks（复用 workbook）
         if progress_callback:
-            await progress_callback("正在生成表格摘要...", f"{base_progress + 5}%")
-        try:
-            summary_chunks = XlsxParser.generate_metadata_summary(workbook=workbook, doc_id=doc_id)
-            chunks = summary_chunks + chunks  # 摘要在前
-        except Exception as e:
-            logger.warning(f"生成 xlsx 元数据摘要失败: {e}")
+            await progress_callback("正在并行处理表格数据...", f"{base_progress + 5}%")
 
-        # Track 2: 入 PostgreSQL（复用 workbook，单连接 + 单事务）
-        if progress_callback:
-            await progress_callback("正在导入表格数据...", f"{base_progress + 10}%")
-        try:
-            from app.db.postgres import engine
-            from sqlalchemy import text as sa_text
+        async def _generate_summary():
+            """Track 1: 生成元数据摘要 chunks"""
+            try:
+                summary_chunks = XlsxParser.generate_metadata_summary(workbook=workbook, doc_id=doc_id)
+                return summary_chunks
+            except Exception as e:
+                logger.warning(f"生成 xlsx 元数据摘要失败: {e}")
+                return []
 
-            # 使用单连接 + 单事务提交
-            async with engine.connect() as conn:
-                async def db_execute_in_conn(sql: str, params=None):
-                    if params:
-                        await conn.execute(sa_text(sql), params)
-                    else:
-                        await conn.execute(sa_text(sql))
+        async def _load_to_postgres():
+            """Track 2: 入 PostgreSQL"""
+            try:
+                from app.db.postgres import engine
+                from sqlalchemy import text as sa_text
 
-                async def db_execute_many_in_conn(sql: str, param_list: list):
-                    await conn.execute(sa_text(sql), param_list)
-
-                schema_info = await XlsxParser.load_to_postgres(
-                    workbook=workbook,
-                    doc_id=doc_id,
-                    db_execute=db_execute_in_conn,
-                    db_execute_many=db_execute_many_in_conn,
-                    conn=conn,
-                )
-
-                # 统一提交事务
-                await conn.commit()
-
-            if schema_info:
-                _xlsx_schema_store[doc_id] = schema_info
-                logger.info(f"xlsx schema 已存储: doc_id={doc_id}, tables={len(schema_info)}")
-
-                # 立即保存 xlsx_schema 到数据库，确保删除时能找到表名
-                try:
-                    from app.models.document import DocumentExtraction
-                    from sqlalchemy import select
-                    from sqlalchemy.ext.asyncio import async_sessionmaker
-                    from app.db.postgres import engine
-                    from uuid import UUID
-
-                    AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-                    async with AsyncSessionLocal() as session:
-                        # 将字符串 doc_id 转换为 UUID
-                        doc_uuid = UUID(doc_id) if isinstance(doc_id, str) else doc_id
-
-                        result = await session.execute(
-                            select(DocumentExtraction).where(DocumentExtraction.document_id == doc_uuid)
-                        )
-                        existing = result.scalar_one_or_none()
-
-                        if existing:
-                            existing.xlsx_schema = schema_info
-                            existing.updated_at = None
+                async with engine.connect() as conn:
+                    async def db_execute_in_conn(sql: str, params=None):
+                        if params:
+                            await conn.execute(sa_text(sql), params)
                         else:
-                            extraction = DocumentExtraction(
-                                document_id=doc_uuid,
-                                entities_count=0,
-                                relations_count=0,
-                                chunks_count=0,
-                                xlsx_schema=schema_info,
-                            )
-                            session.add(extraction)
+                            await conn.execute(sa_text(sql))
 
-                        await session.commit()
-                        logger.info(f"xlsx_schema 已提前保存到数据库: doc_id={doc_id}")
-                except Exception as e:
-                    logger.warning(f"提前保存 xlsx_schema 失败: {e}")
-        except Exception as e:
-            logger.error(f"xlsx 入 PostgreSQL 失败: {e}")
-        finally:
-            # 关闭 workbook
-            if workbook:
-                workbook.close()
-                workbook = None
+                    async def db_execute_many_in_conn(sql: str, param_list: list):
+                        await conn.execute(sa_text(sql), param_list)
 
-    # ── Step 3: 嵌入 + 入向量库 ──
-    if progress_callback:
-        await progress_callback(f"正在向量化 {len(chunks)} 个文本块...", f"{base_progress + 20}%")
+                    result = await XlsxParser.load_to_postgres(
+                        workbook=workbook,
+                        doc_id=doc_id,
+                        db_execute=db_execute_in_conn,
+                        db_execute_many=db_execute_many_in_conn,
+                        conn=conn,
+                    )
 
+                    await conn.commit()
+                    return result
+            except Exception as e:
+                logger.error(f"xlsx 入 PostgreSQL 失败: {e}")
+                return []
+
+        # 并行执行摘要生成和PostgreSQL入库
+        summary_task = asyncio.create_task(_generate_summary())
+        postgres_task = asyncio.create_task(_load_to_postgres())
+
+        # 等待两个任务都完成
+        await asyncio.gather(summary_task, postgres_task)
+
+        summary_chunks = summary_task.result()
+        schema_info = postgres_task.result()
+
+        # 合并摘要chunks
+        if summary_chunks:
+            chunks = summary_chunks + chunks  # 摘要在前
+
+        # 关闭 workbook（两个任务都已完成）
+        if workbook:
+            workbook.close()
+            workbook = None
+
+        # 保存 schema 到内存和数据库
+        if schema_info:
+            _xlsx_schema_store[doc_id] = schema_info
+            logger.info(f"xlsx schema 已存储: doc_id={doc_id}, tables={len(schema_info)}")
+
+            try:
+                from app.models.document import DocumentExtraction
+                from sqlalchemy import select
+                from sqlalchemy.ext.asyncio import async_sessionmaker
+                from app.db.postgres import engine
+                from uuid import UUID
+
+                AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+                async with AsyncSessionLocal() as session:
+                    doc_uuid = UUID(doc_id) if isinstance(doc_id, str) else doc_id
+
+                    result = await session.execute(
+                        select(DocumentExtraction).where(DocumentExtraction.document_id == doc_uuid)
+                    )
+                    existing = result.scalar_one_or_none()
+
+                    if existing:
+                        existing.xlsx_schema = schema_info
+                        existing.updated_at = None
+                    else:
+                        extraction = DocumentExtraction(
+                            document_id=doc_uuid,
+                            entities_count=0,
+                            relations_count=0,
+                            chunks_count=0,
+                            xlsx_schema=schema_info,
+                        )
+                        session.add(extraction)
+
+                    await session.commit()
+                    logger.info(f"xlsx_schema 已提前保存到数据库: doc_id={doc_id}")
+            except Exception as e:
+                logger.warning(f"提前保存 xlsx_schema 失败: {e}")
+
+    # ── Step 3 & 4: 向量化 + 实体关系提取 ──
     base_metadata = {
         "filename": original_filename,
         "file_type": file_type,
     }
 
-    try:
-        await rag_service.add_chunks(
-            doc_id=doc_id,
-            chunks=chunks,
-            base_metadata=base_metadata,
-        )
-    except Exception as e:
-        logger.error(f"向量化失败: doc_id={doc_id}, error={e}")
-        # 向量化失败不中断流程，但记录错误
-
-    # ── Step 4: 实体关系提取 ──
-    if progress_callback:
-        await progress_callback("正在提取实体关系...", f"{base_progress + 50}%")
-
     all_entities = []
     all_relations = []
 
     if file_type == "xlsx":
+        # ── xlsx 路线：先向量化，再规则提取 ──
+        if progress_callback:
+            await progress_callback(f"正在向量化 {len(chunks)} 个文本块...", f"{base_progress + 20}%")
+
+        try:
+            await rag_service.add_chunks(
+                doc_id=doc_id,
+                chunks=chunks,
+                base_metadata=base_metadata,
+            )
+        except Exception as e:
+            logger.error(f"向量化失败: doc_id={doc_id}, error={e}")
+
         # xlsx 用规则提取
+        if progress_callback:
+            await progress_callback("正在提取实体关系...", f"{base_progress + 50}%")
         try:
             sheets = parsed_data.get("sheets", [])
-            # 使用文件名作为文档标题
             document_title = original_filename
             if document_title and "." in document_title:
                 document_title = document_title.rsplit(".", 1)[0]
@@ -211,26 +227,57 @@ async def preprocess_document(
         except Exception as e:
             logger.error(f"xlsx 规则提取失败: {e}")
     else:
-        # 非 xlsx 用 LLM 提取
-        chunk_batches = _merge_chunks_for_ner(chunks, max_chars=60000)
+        # ── docx/md/txt 路线：向量化与NER并行执行 ──
+        if progress_callback:
+            await progress_callback(
+                f"正在并行处理向量化和实体提取...", f"{base_progress + 20}%"
+            )
 
-        for batch_idx, batch_text in enumerate(chunk_batches):
-            progress_pct = base_progress + 50 + int((batch_idx / max(len(chunk_batches), 1)) * 30)
-            if progress_callback:
-                await progress_callback(
-                    f"正在提取实体关系 ({batch_idx + 1}/{len(chunk_batches)})...",
-                    f"{progress_pct}%"
-                )
+        async def _do_embedding():
+            """向量化任务"""
             try:
-                result = await llm_service.extract_entities_and_relations(batch_text)
-                batch_entities = result.get("entities", [])
-                batch_relations = result.get("relations", [])
-                all_entities.extend(batch_entities)
-                all_relations.extend(batch_relations)
-                logger.info("[PREPROCESS] Batch %d: 提取 %d 实体, %d 关系",
-                           batch_idx, len(batch_entities), len(batch_relations))
+                await rag_service.add_chunks(
+                    doc_id=doc_id,
+                    chunks=chunks,
+                    base_metadata=base_metadata,
+                )
+                logger.info(f"[PREPROCESS] 向量化完成: doc_id={doc_id}")
             except Exception as e:
-                logger.error(f"NER 提取失败: batch={batch_idx}, error={e}")
+                logger.error(f"向量化失败: doc_id={doc_id}, error={e}")
+
+        async def _do_ner():
+            """NER提取任务"""
+            entities = []
+            relations = []
+            chunk_batches = _merge_chunks_for_ner(chunks, max_chars=60000)
+
+            for batch_idx, batch_text in enumerate(chunk_batches):
+                progress_pct = base_progress + 50 + int((batch_idx / max(len(chunk_batches), 1)) * 30)
+                if progress_callback:
+                    await progress_callback(
+                        f"正在提取实体关系 ({batch_idx + 1}/{len(chunk_batches)})...",
+                        f"{progress_pct}%"
+                    )
+                try:
+                    result = await llm_service.extract_entities_and_relations(batch_text)
+                    batch_entities = result.get("entities", [])
+                    batch_relations = result.get("relations", [])
+                    entities.extend(batch_entities)
+                    relations.extend(batch_relations)
+                    logger.info("[PREPROCESS] Batch %d: 提取 %d 实体, %d 关系",
+                               batch_idx, len(batch_entities), len(batch_relations))
+                except Exception as e:
+                    logger.error(f"NER 提取失败: batch={batch_idx}, error={e}")
+
+            return entities, relations
+
+        # 并行执行向量化和NER
+        embedding_task = asyncio.create_task(_do_embedding())
+        ner_task = asyncio.create_task(_do_ner())
+
+        # 等待两个任务都完成
+        await asyncio.gather(embedding_task, ner_task)
+        all_entities, all_relations = ner_task.result()
 
     # ── Step 5: 入知识图谱 ──
     if progress_callback:

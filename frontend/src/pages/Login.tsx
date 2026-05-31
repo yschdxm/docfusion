@@ -55,8 +55,8 @@ export default function Login() {
       <div className="auth-orb auth-orb-two -right-28 top-1/3 h-80 w-80 bg-cyan-400/20" />
       <div className="auth-orb auth-orb-three bottom-0 left-1/3 h-72 w-72 bg-emerald-400/20" />
 
-      <div className="relative z-10 mx-auto grid max-w-6xl grid-cols-1 overflow-hidden rounded-[28px] border border-white/15 bg-white/10 shadow-[0_30px_80px_rgba(15,23,42,.55)] backdrop-blur-xl lg:grid-cols-2">
-        <section className="relative p-8 text-white md:p-10 lg:p-12">
+      <div className="relative z-10 mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/15 bg-white/10 shadow-[0_30px_80px_rgba(15,23,42,.55)] backdrop-blur-xl lg:grid lg:grid-cols-2">
+        <section className="relative p-8 text-white md:p-10 lg:p-12 hidden lg:block">
           <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium">
             <Sparkles className="h-4 w-4" />
             知融云枢 智能办公平台
@@ -93,7 +93,7 @@ export default function Login() {
           </div>
         </section>
 
-        <section className="bg-white p-8 md:p-10 lg:p-12 lg:flex lg:items-center">
+        <section className="bg-white p-6 sm:p-8 md:p-10 lg:p-12 lg:flex lg:items-center">
           <div className="mx-auto w-full max-w-md">
             <h2 className="text-2xl font-semibold text-slate-900">登录系统</h2>
             <p className="mt-2 text-sm text-slate-500">欢迎回来，请输入账号信息继续。</p>

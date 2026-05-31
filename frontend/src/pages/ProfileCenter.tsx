@@ -208,9 +208,9 @@ export default function ProfileCenter() {
             </div>
           </label>
 
-          <div className="mt-1 flex items-center justify-between gap-3 pr-24 md:col-span-2">
+          <div className="mt-1 flex items-center justify-between gap-3 md:col-span-2">
             <p className="text-xs text-slate-500">{t.passwordTip}</p>
-            <button type="submit" className="btn-secondary mr-20 px-4 py-2 text-xs md:mr-24">{t.updatePassword}</button>
+            <button type="submit" className="btn-secondary px-4 py-2 text-xs shrink-0">{t.updatePassword}</button>
           </div>
         </form>
       </section>

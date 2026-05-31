@@ -6,6 +6,7 @@ import { getStoredTheme, setTheme, type ThemeMode } from '../../services/theme'
 import { getStoredLanguage, I18N_CHANGED_EVENT, languageLabelMap, setLanguage, type LanguageCode } from '../../services/i18n'
 import { type PreferenceState, getStoredPreferences, setStoredPreferences } from '../../services/preferences'
 import { SHORTCUTS } from '../../services/shortcuts'
+import { getTheme } from '../../services/theme'
 
 type SettingsTab = 'preferences' | 'theme' | 'language'
 const NOTICE_KEY = 'header_desktop_notices'
@@ -77,9 +78,15 @@ const i18n = {
   },
 } as const
 
-const themeOptions: Array<{ value: ThemeMode }> = [{ value: 'business-blue' }, { value: 'night-mode' }]
+const themeOptions: Array<{ value: ThemeMode }> = [{ value: 'system' }, { value: 'business-blue' }, { value: 'night-mode' }]
 
-export default function Header() {
+interface HeaderProps {
+  isMobile?: boolean
+  onToggleSidebar?: () => void
+  sidebarOpen?: boolean
+}
+
+export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: HeaderProps) {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -102,9 +109,19 @@ export default function Header() {
       return []
     }
   })
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
   const settingsRef = useRef<HTMLDivElement>(null)
   const noticeRef = useRef<HTMLDivElement>(null)
   const helpRef = useRef<HTMLDivElement>(null)
+
+  // 监听主题变化
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   const dict = i18n[language]
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
@@ -200,11 +217,16 @@ export default function Header() {
   const handleThemeChange = (value: ThemeMode) => {
     setTheme(value)
     setThemeState(value)
+
+    const themeName = value === 'business-blue'
+      ? tr('商务蓝', 'Business Blue', 'ビジネスブルー')
+      : value === 'night-mode'
+        ? tr('夜间模式', 'Night Mode', 'ナイトモード')
+        : tr('跟随系统', 'System', 'システム')
+
     pushNotice(
       tr('主题已切换', 'Theme updated', 'テーマを更新しました'),
-      value === 'business-blue'
-        ? tr('当前主题：商务蓝。', 'Current theme: Business Blue.', '現在のテーマ: Business Blue')
-        : tr('当前主题：夜间模式。', 'Current theme: Night Mode.', '現在のテーマ: Night Mode')
+      tr('当前主题：', 'Current theme: ', '現在のテーマ: ') + themeName
     )
   }
 
@@ -238,11 +260,29 @@ export default function Header() {
   }
 
   return (
-    <header className="glass-dark !rounded-none border-b border-slate-200 px-4 py-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
-          <p className="text-xs text-slate-500">{dateText}</p>
+    <header className="glass-dark !rounded-none border-b border-slate-200 px-3 sm:px-4 py-2.5">
+      <div className="flex items-center justify-between gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          {/* 移动端汉堡菜单 */}
+          {isMobile && onToggleSidebar && (
+            <button
+              onClick={onToggleSidebar}
+              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0"
+              aria-label={sidebarOpen ? '关闭菜单' : '打开菜单'}
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                {sidebarOpen ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                )}
+              </svg>
+            </button>
+          )}
+          <div className="min-w-0">
+            <h2 className="text-base sm:text-xl font-semibold text-slate-900 truncate">{title}</h2>
+            <p className="text-[10px] sm:text-xs text-slate-500 truncate">{dateText}</p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -252,7 +292,11 @@ export default function Header() {
                 setShowNoticePanel((prev) => !prev)
               }}
               aria-label={tr('打开通知中心', 'Open notifications', '通知を開く')}
-              className="relative rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+              className={`relative rounded-lg border p-1.5 transition-colors ${
+                isDarkMode
+                  ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
             >
               <Bell className="h-4 w-4" />
               {unreadCount > 0 && (
@@ -263,26 +307,34 @@ export default function Header() {
             </button>
 
             {showNoticePanel && (
-              <div role="region" aria-label={tr('通知面板', 'Notifications panel', '通知パネル')} className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+              <div role="region" aria-label={tr('通知面板', 'Notifications panel', '通知パネル')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
+                isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+              }`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-800">{tr('桌面通知', 'Desktop Notifications', 'デスクトップ通知')}</p>
+                  <p className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{tr('桌面通知', 'Desktop Notifications', 'デスクトップ通知')}</p>
                   <button onClick={markAllRead} className="text-xs text-primary-600 hover:text-primary-700">
                     {tr('全部已读', 'Mark all read', 'すべて既読')}
                   </button>
                 </div>
                 <div className="max-h-72 space-y-2 overflow-y-auto scrollbar-thin">
                   {notices.length === 0 ? (
-                    <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+                    <p className={`rounded-lg border px-3 py-6 text-center text-sm ${
+                      isDarkMode ? 'border-slate-600 bg-slate-700 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-500'
+                    }`}>
                       {tr('暂无通知', 'No notifications', '通知はありません')}
                     </p>
                   ) : (
                     notices.map((notice) => (
                       <div
                         key={notice.id}
-                        className={`rounded-lg border px-3 py-2 ${notice.read ? 'border-slate-200 bg-slate-50' : 'border-blue-200 bg-blue-50'}`}
+                        className={`rounded-lg border px-3 py-2 ${
+                          notice.read
+                            ? isDarkMode ? 'border-slate-600 bg-slate-700' : 'border-slate-200 bg-slate-50'
+                            : isDarkMode ? 'border-blue-500/40 bg-blue-900/30' : 'border-blue-200 bg-blue-50'
+                        }`}
                       >
-                        <p className="text-sm font-medium text-slate-800">{notice.title}</p>
-                        <p className="mt-0.5 text-xs text-slate-600">{notice.message}</p>
+                        <p className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{notice.title}</p>
+                        <p className={`mt-0.5 text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>{notice.message}</p>
                         <p className="mt-1 text-[11px] text-slate-500">{new Date(notice.time).toLocaleString(language)}</p>
                       </div>
                     ))
@@ -296,30 +348,48 @@ export default function Header() {
             <button
               onClick={() => setShowSettings((prev) => !prev)}
               aria-label={tr('打开系统设置', 'Open settings', '設定を開く')}
-              className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+              className={`rounded-lg border p-1.5 transition-colors ${
+                isDarkMode
+                  ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
               title={dict.settings}
             >
               <Settings className="h-4 w-4" />
             </button>
 
             {showSettings && (
-              <div role="dialog" aria-modal="false" aria-label={tr('系统设置', 'System settings', 'システム設定')} className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
-                <div className="mb-2 flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+              <div role="dialog" aria-modal="false" aria-label={tr('系统设置', 'System settings', 'システム設定')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
+                isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+              }`}>
+                <div className={`mb-2 flex items-center gap-1 rounded-lg p-1 ${isDarkMode ? 'bg-slate-700' : 'bg-slate-100'}`}>
                   <button
                     onClick={() => setSettingsTab('preferences')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs ${settingsTab === 'preferences' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-600'}`}
+                    className={`flex-1 rounded-md px-2 py-1 text-xs ${
+                      settingsTab === 'preferences'
+                        ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
+                        : isDarkMode ? 'text-slate-300' : 'text-slate-600'
+                    }`}
                   >
                     {dict.settingsTabs.preferences}
                   </button>
                   <button
                     onClick={() => setSettingsTab('theme')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs ${settingsTab === 'theme' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-600'}`}
+                    className={`flex-1 rounded-md px-2 py-1 text-xs ${
+                      settingsTab === 'theme'
+                        ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
+                        : isDarkMode ? 'text-slate-300' : 'text-slate-600'
+                    }`}
                   >
                     {dict.settingsTabs.theme}
                   </button>
                   <button
                     onClick={() => setSettingsTab('language')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs ${settingsTab === 'language' ? 'bg-white text-primary-600 shadow-sm' : 'text-slate-600'}`}
+                    className={`flex-1 rounded-md px-2 py-1 text-xs ${
+                      settingsTab === 'language'
+                        ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
+                        : isDarkMode ? 'text-slate-300' : 'text-slate-600'
+                    }`}
                   >
                     {dict.settingsTabs.language}
                   </button>
@@ -345,12 +415,16 @@ export default function Header() {
                         key={item.key}
                         type="button"
                         onClick={() => togglePreference(item.key as keyof PreferenceState)}
-                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left transition-colors hover:bg-slate-100"
+                        className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                          isDarkMode
+                            ? 'border-slate-600 bg-slate-700 hover:bg-slate-600'
+                            : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
+                        }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <item.icon className="h-4 w-4 text-slate-500" />
-                            <span className="text-sm text-slate-800">{item.label}</span>
+                            <item.icon className={`h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`} />
+                            <span className={`text-sm ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{item.label}</span>
                           </div>
                           <span
                             className="text-xs px-2 py-0.5 rounded"
@@ -364,7 +438,7 @@ export default function Header() {
                             {preferences[item.key as keyof PreferenceState] ? dict.pref.on : dict.pref.off}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-slate-500">{item.hint}</p>
+                        <p className={`mt-1 text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{item.hint}</p>
                       </button>
                     ))}
                   </div>
@@ -373,22 +447,31 @@ export default function Header() {
                 {settingsTab === 'theme' && (
                   <div className="space-y-1">
                     {themeOptions.map((option) => {
-                      const label = option.value === 'business-blue' ? tr('商务蓝', 'Business Blue', 'ビジネスブルー') : tr('夜间模式', 'Night Mode', 'ナイトモード')
-                      const desc =
-                        option.value === 'business-blue'
-                          ? tr('默认商务蓝风格主题', 'Default business-friendly blue style', '標準のビジネス向けブルースタイル')
-                          : tr('适合暗光环境的低亮度界面', 'Low-light interface for dark environments', '暗い環境向けの低輝度インターフェース')
+                      const label = option.value === 'business-blue'
+                        ? tr('商务蓝', 'Business Blue', 'ビジネスブルー')
+                        : option.value === 'night-mode'
+                          ? tr('夜间模式', 'Night Mode', 'ナイトモード')
+                          : tr('跟随系统', 'System', 'システム')
+                      const desc = option.value === 'business-blue'
+                        ? tr('默认商务蓝风格主题', 'Default business-friendly blue style', '標準のビジネス向けブルースタイル')
+                        : option.value === 'night-mode'
+                          ? tr('适合暗光环境的低亮度界面', 'Low-light interface for dark environments', '暗い環境向けの低輝度インターフェース')
+                          : tr('自动跟随系统设置切换明暗模式', 'Auto switch based on system settings', 'システム設定に自動切替')
                       return (
                         <button
                           key={option.value}
                           onClick={() => handleThemeChange(option.value)}
-                          className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${theme === option.value ? 'bg-primary-50' : 'hover:bg-slate-50'}`}
+                          className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
+                            theme === option.value
+                              ? isDarkMode ? 'bg-blue-900/40' : 'bg-primary-50'
+                              : isDarkMode ? 'hover:bg-slate-700' : 'hover:bg-slate-50'
+                          }`}
                         >
                           <div className="flex items-start gap-2">
-                            <Palette className="mt-0.5 h-4 w-4 text-slate-500" />
+                            <Palette className={`mt-0.5 h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`} />
                             <div>
-                              <div className="text-sm text-slate-800">{label}</div>
-                              <div className="text-xs text-slate-500">{desc}</div>
+                              <div className={`text-sm ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{label}</div>
+                              <div className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{desc}</div>
                             </div>
                           </div>
                           {theme === option.value && <Check className="h-4 w-4 text-primary-600" />}
@@ -404,11 +487,15 @@ export default function Header() {
                       <button
                         key={item}
                         onClick={() => handleLanguageChange(item)}
-                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${language === item ? 'bg-primary-50' : 'hover:bg-slate-50'}`}
+                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
+                          language === item
+                            ? isDarkMode ? 'bg-blue-900/40' : 'bg-primary-50'
+                            : isDarkMode ? 'hover:bg-slate-700' : 'hover:bg-slate-50'
+                        }`}
                       >
                         <div className="flex items-center gap-2">
-                          <Languages className="h-4 w-4 text-slate-500" />
-                          <span className="text-sm text-slate-800">{languageLabelMap[item]}</span>
+                          <Languages className={`h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`} />
+                          <span className={`text-sm ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{languageLabelMap[item]}</span>
                         </div>
                         {language === item && <Check className="h-4 w-4 text-primary-600" />}
                       </button>
@@ -429,15 +516,21 @@ export default function Header() {
                 })
               }
               aria-label={tr('打开使用帮助', 'Open help', 'ヘルプを開く')}
-              className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+              className={`rounded-lg border p-1.5 transition-colors ${
+                isDarkMode
+                  ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
               title={tr('使用帮助', 'Help', 'ヘルプ')}
             >
               <CircleHelp className="h-4 w-4" />
             </button>
 
             {showHelp && (
-              <div role="dialog" aria-modal="false" aria-label={tr('使用帮助', 'Help', 'ヘルプ')} className="absolute right-0 z-50 mt-2 w-[22rem] rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
-                <h4 className="text-sm font-semibold text-slate-900">{tr('帮助中心', 'Help Center', 'ヘルプセンター')}</h4>
+              <div role="dialog" aria-modal="false" aria-label={tr('使用帮助', 'Help', 'ヘルプ')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
+                isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+              }`}>
+                <h4 className={`text-sm font-semibold ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>{tr('帮助中心', 'Help Center', 'ヘルプセンター')}</h4>
 
                 <div className="mt-3 space-y-2">
                   {[
@@ -446,18 +539,18 @@ export default function Header() {
                     { key: 'shortcuts', title: tr('快捷键', 'Keyboard Shortcuts', 'キーボードショートカット') },
                     { key: 'faq', title: tr('常见问题', 'FAQ', 'よくある質問') },
                   ].map((section) => (
-                    <div key={section.key} className="rounded-lg border border-slate-200 bg-slate-50">
+                    <div key={section.key} className={`rounded-lg border ${isDarkMode ? 'border-slate-600 bg-slate-700' : 'border-slate-200 bg-slate-50'}`}>
                       <button
                         type="button"
                         onClick={() => setActiveHelpSection((prev) => (prev === section.key ? null : (section.key as 'modules' | 'workflow' | 'shortcuts' | 'faq')))}
-                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium text-slate-800 hover:bg-slate-100"
+                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium ${isDarkMode ? 'text-slate-200 hover:bg-slate-600' : 'text-slate-800 hover:bg-slate-100'}`}
                       >
                         <span>{section.title}</span>
-                        <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${activeHelpSection === section.key ? 'rotate-180' : ''}`} />
+                        <ChevronDown className={`h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'} transition-transform ${activeHelpSection === section.key ? 'rotate-180' : ''}`} />
                       </button>
 
                       {activeHelpSection === section.key && (
-                        <div className="space-y-1.5 border-t border-slate-200 px-3 py-2 text-xs text-slate-600">
+                        <div className={`space-y-1.5 border-t px-3 py-2 text-xs ${isDarkMode ? 'border-slate-600 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
                           {section.key === 'modules' && (
                             <>
                               <p>{tr('文档管理：上传、检索、预览、下载文档。', 'Documents: upload, search, preview, and download files.', '文書管理: アップロード・検索・プレビュー・ダウンロード。')}</p>
@@ -504,18 +597,22 @@ export default function Header() {
 
           <button
             onClick={() => navigate('/profile')}
-            className="hidden items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 transition-colors hover:bg-slate-50 md:flex"
+            className={`flex items-center gap-2 rounded-lg border p-1.5 transition-colors ${
+              isDarkMode
+                ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+            }`}
             title={dict.enterProfile}
           >
             <div className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-br from-primary-500 to-blue-500">
               <User className="h-3 w-3 text-white" />
             </div>
-            <span className="text-sm text-slate-700">{user?.username || dict.userFallback}</span>
+            <span className="hidden sm:inline text-sm text-slate-700">{user?.username || dict.userFallback}</span>
           </button>
 
           <button onClick={handleLogout} className="btn-secondary px-2 py-1 text-sm" title={dict.logout}>
             <LogOut className="h-4 w-4" />
-            {dict.logout}
+            <span className="hidden sm:inline">{dict.logout}</span>
           </button>
         </div>
       </div>

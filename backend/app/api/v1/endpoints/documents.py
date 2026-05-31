@@ -993,6 +993,17 @@ async def delete_document(
         except Exception as e:
             logger.warning(f"取消任务失败: {e}")
 
+        # 0.5. 删除 template_usage_events 表中的相关记录
+        try:
+            from app.models.document import TemplateUsageEvent
+            await db.execute(
+                text("DELETE FROM template_usage_events WHERE template_id = :doc_id OR output_file_id = :doc_id"),
+                {"doc_id": document_id}
+            )
+            logger.info(f"已删除文档 {doc_id_str} 的 template_usage_events 记录")
+        except Exception as e:
+            logger.warning(f"删除 template_usage_events 记录失败: {e}")
+
         # 1. 删除 PostgreSQL extraction_tasks
         await db.execute(
             text("DELETE FROM extraction_tasks WHERE input_files::text LIKE :doc_id"),

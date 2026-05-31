@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { TaskStats } from '../services/agentStreamService'
+import { getTheme } from '../services/theme'
 
 interface TaskStatsBadgeProps {
   stats: TaskStats
@@ -59,6 +60,15 @@ function AnimatedNumber({ value, formatter }: { value: number; formatter: (n: nu
 
 export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: TaskStatsBadgeProps) {
   const [expanded, setExpanded] = useState(false)
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   const displayDuration = isLive && liveDuration !== undefined ? liveDuration : stats.duration_ms
 
@@ -68,8 +78,12 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
       <div
         className={`flex items-center gap-3 px-2.5 py-1 text-xs rounded-md cursor-pointer transition-colors ${
           isLive
-            ? 'text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100'
-            : 'text-slate-500 bg-slate-50 border border-slate-200 hover:bg-slate-100'
+            ? isDarkMode
+              ? 'text-blue-300 bg-blue-900/30 border border-blue-500/40 hover:bg-blue-800/30'
+              : 'text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100'
+            : isDarkMode
+              ? 'text-slate-400 bg-slate-800/80 border border-slate-600 hover:bg-slate-700/80'
+              : 'text-slate-500 bg-slate-50 border border-slate-200 hover:bg-slate-100'
         }`}
         onClick={() => setExpanded(!expanded)}
       >
@@ -81,7 +95,7 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
           <span className={isLive ? 'tabular-nums' : ''}>{formatDuration(displayDuration)}</span>
         </div>
 
-        <span className={isLive ? 'text-blue-300' : 'text-slate-300'}>|</span>
+        <span className={isLive ? (isDarkMode ? 'text-blue-500' : 'text-blue-300') : (isDarkMode ? 'text-slate-600' : 'text-slate-300')}>|</span>
 
         {/* Token数 */}
         <div className="flex items-center gap-1">
@@ -91,7 +105,7 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
           <AnimatedNumber value={stats.total_tokens} formatter={formatTokens} /> tokens
         </div>
 
-        <span className={isLive ? 'text-blue-300' : 'text-slate-300'}>|</span>
+        <span className={isLive ? (isDarkMode ? 'text-blue-500' : 'text-blue-300') : (isDarkMode ? 'text-slate-600' : 'text-slate-300')}>|</span>
 
         {/* LLM调用次数 */}
         <div className="flex items-center gap-1">
@@ -116,28 +130,32 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
       {expanded && (
         <div className={`mt-1 px-2.5 py-2 text-xs rounded-md ${
           isLive
-            ? 'text-blue-600 bg-blue-50 border border-blue-200'
-            : 'text-slate-500 bg-slate-50 border border-slate-200'
+            ? isDarkMode
+              ? 'text-blue-300 bg-blue-900/30 border border-blue-500/40'
+              : 'text-blue-600 bg-blue-50 border border-blue-200'
+            : isDarkMode
+              ? 'text-slate-400 bg-slate-800/80 border border-slate-600'
+              : 'text-slate-500 bg-slate-50 border border-slate-200'
         }`}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
             <div className="flex justify-between">
-              <span className={isLive ? 'text-blue-400' : 'text-slate-400'}>输入tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>输入tokens:</span>
               <AnimatedNumber value={stats.prompt_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? 'text-blue-400' : 'text-slate-400'}>输出tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>输出tokens:</span>
               <AnimatedNumber value={stats.completion_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? 'text-blue-400' : 'text-slate-400'}>缓存tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>缓存tokens:</span>
               <AnimatedNumber value={stats.cached_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? 'text-blue-400' : 'text-slate-400'}>思考tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>思考tokens:</span>
               <AnimatedNumber value={stats.reasoning_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? 'text-blue-400' : 'text-slate-400'}>迭代次数:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>迭代次数:</span>
               <AnimatedNumber value={stats.iterations} formatter={(n) => n.toString()} />
             </div>
           </div>

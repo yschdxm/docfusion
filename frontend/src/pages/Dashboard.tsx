@@ -233,69 +233,69 @@ export default function Dashboard() {
   ]
 
   return (
-    <div className="flex flex-col h-full min-h-0 gap-3">
-      {/* Hero */}
-      <section className="glass relative overflow-hidden px-5 py-3.5 shrink-0">
-        <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-blue-100 blur-2xl" />
-        <div className="absolute right-20 top-8 h-24 w-24 rounded-full bg-emerald-100 blur-2xl" />
-        <div className="relative z-10 flex items-center justify-between gap-6">
+    <div className="flex flex-col h-full min-h-0 gap-2">
+      {/* Hero — 紧凑单行 */}
+      <section className="glass relative overflow-hidden px-4 py-2.5 shrink-0">
+        <div className="absolute -right-10 -top-10 h-36 w-36 rounded-full bg-blue-100 blur-2xl" />
+        <div className="absolute right-20 top-8 h-20 w-20 rounded-full bg-emerald-100 blur-2xl" />
+        <div className="relative z-10 flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold text-slate-900">
+            <h1 className="text-base lg:text-lg font-semibold text-slate-900">
               {t.welcome} <span className="gradient-text">知融云枢</span>
             </h1>
-            <p className="mt-1 max-w-2xl text-[11px] leading-5 text-slate-600">{t.heroDesc}</p>
-            <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600">
-              <TrendingUp className="h-3 w-3 text-primary-600" />
-              <span key={tipIndex} className="inline-block animate-in">{rotatingTips[tipIndex] || t.suggestion}</span>
+            <p className="mt-0.5 max-w-2xl text-[10px] lg:text-[11px] leading-4 text-slate-500 line-clamp-1">{t.heroDesc}</p>
+            <div className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-500">
+              <TrendingUp className="h-2.5 w-2.5 text-primary-600" />
+              <span key={tipIndex} className="inline-block animate-in truncate">{rotatingTips[tipIndex] || t.suggestion}</span>
             </div>
           </div>
           <div className="hidden lg:block shrink-0">
-            <img src="/logo.png" alt={t.logoAlt} className="h-14 w-14 object-contain" />
+            <img src="/logo.png" alt={t.logoAlt} className="h-12 w-12 object-contain" />
           </div>
         </div>
       </section>
 
-      {/* Stats */}
-      <section className="grid grid-cols-2 gap-3 xl:grid-cols-4 shrink-0">
+      {/* Stats — 精简一行式 */}
+      <section className="grid grid-cols-4 gap-2 shrink-0">
         {statCards.map((stat) => (
-          <div key={stat.label} className="glass px-4 py-3 lg:px-5 lg:py-4">
-            <div className="flex items-center gap-3 lg:gap-4">
-              <div className={`flex h-9 w-9 lg:h-11 lg:w-11 items-center justify-center rounded-lg ${stat.bg} shrink-0`}>
-                <stat.icon className={`h-4 w-4 lg:h-5 lg:w-5 ${stat.color}`} />
+          <div key={stat.label} className="glass px-2.5 py-2 lg:px-4 lg:py-2.5 overflow-hidden">
+            <div className="flex items-center gap-2">
+              <div className={`flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-lg ${stat.bg} shrink-0`}>
+                <stat.icon className={`h-3.5 w-3.5 lg:h-4 lg:w-4 ${stat.color}`} />
               </div>
               <div className="min-w-0">
-                <div className="text-xl lg:text-2xl font-bold text-slate-900 leading-tight">{stat.value}</div>
-                <div className="text-xs lg:text-sm text-slate-500 mt-0.5">{stat.label}</div>
+                <div className="text-base lg:text-lg font-bold text-slate-900 leading-tight">{stat.value}</div>
+                <div className="text-[10px] lg:text-xs text-slate-500 leading-tight">{stat.label}</div>
               </div>
             </div>
           </div>
         ))}
       </section>
 
-      {/* Main: Features (left) + Recent Docs (right) */}
-      <section className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-3">
+      {/* Main: Features (left) + Recent Docs (right) — 占据剩余空间 */}
+      <section className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-2">
         {/* Features - primary area */}
-        <div className="xl:col-span-8 min-h-0 flex flex-col gap-3">
+        <div className="xl:col-span-8 min-h-0 flex flex-col gap-2">
           <div className="flex items-center justify-between shrink-0">
-            <h2 className="text-sm font-semibold text-slate-900">{t.core}</h2>
+            <h2 className="text-xs lg:text-sm font-semibold text-slate-900">{t.core}</h2>
             <span className="text-[10px] text-slate-500">{t.modules}</span>
           </div>
-          <div className="flex-1 min-h-0 grid grid-cols-2 gap-3 auto-rows-fr">
+          <div className="flex-1 min-h-0 grid grid-cols-2 gap-2 auto-rows-fr">
             {features.map((feature) => (
-              <Link key={feature.path} to={feature.path} className="card !p-4 lg:!p-6 card-hover-lift group flex flex-col items-center justify-center text-center">
-                <div className={`flex h-12 w-12 lg:h-16 lg:w-16 xl:h-20 xl:w-20 items-center justify-center rounded-2xl bg-gradient-to-br ${feature.color} mb-3 lg:mb-4 transition-transform group-hover:scale-110`}>
-                  <feature.icon className="h-6 w-6 lg:h-8 lg:w-8 xl:h-10 xl:w-10 text-white" />
+              <Link key={feature.path} to={feature.path} className="card !p-2.5 lg:!p-4 card-hover-lift group flex flex-col items-center justify-center text-center overflow-hidden">
+                <div className={`flex h-9 w-9 lg:h-12 lg:w-12 xl:h-14 xl:w-14 items-center justify-center rounded-xl bg-gradient-to-br ${feature.color} mb-1.5 lg:mb-2 transition-transform group-hover:scale-110`}>
+                  <feature.icon className="h-4 w-4 lg:h-6 lg:w-6 xl:h-7 xl:w-7 text-white" />
                 </div>
-                <h3 className="text-sm lg:text-base font-semibold text-slate-900 group-hover:text-primary-600">{feature.title}</h3>
-                <p className="mt-1 text-[11px] lg:text-xs leading-4 text-slate-500 line-clamp-2">{feature.description}</p>
+                <h3 className="text-xs lg:text-sm font-semibold text-slate-900 group-hover:text-primary-600">{feature.title}</h3>
+                <p className="mt-0.5 text-[9px] lg:text-[10px] leading-3.5 text-slate-500 line-clamp-2">{feature.description}</p>
               </Link>
             ))}
           </div>
-          <div className="glass px-4 py-2.5 shrink-0 flex items-center gap-3">
-            <h3 className="text-xs font-semibold text-slate-900 shrink-0">{t.formats}</h3>
-            <div className="flex flex-wrap gap-1.5">
+          <div className="glass px-3 py-1.5 shrink-0 flex items-center gap-2 overflow-hidden">
+            <h3 className="text-[11px] font-semibold text-slate-900 shrink-0">{t.formats}</h3>
+            <div className="flex flex-wrap gap-1">
               {['DOCX', 'XLSX', 'MD', 'TXT'].map((format) => (
-                <span key={format} className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                <span key={format} className="rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
                   {format}
                 </span>
               ))}
@@ -306,17 +306,17 @@ export default function Dashboard() {
         {/* Recent Docs - sidebar */}
         <div className="xl:col-span-4 min-h-0 flex flex-col">
           <div className="glass rounded-xl flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <Clock className="w-3.5 h-3.5 text-slate-500" />
-                <h2 className="text-sm font-semibold text-slate-900">{t.recentDocs}</h2>
+            <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3 h-3 text-slate-500" />
+                <h2 className="text-xs lg:text-sm font-semibold text-slate-900">{t.recentDocs}</h2>
               </div>
-              <Link to="/documents" className="text-[11px] text-primary-600 hover:text-primary-700">{t.viewAll} →</Link>
+              <Link to="/documents" className="text-[10px] lg:text-[11px] text-primary-600 hover:text-primary-700">{t.viewAll} →</Link>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
               {recentDocs.length === 0 ? (
                 <div className="flex items-center justify-center h-full px-4">
-                  <p className="text-xs text-slate-400 text-center">{t.noDocs}</p>
+                  <p className="text-[11px] text-slate-400 text-center">{t.noDocs}</p>
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100">
@@ -326,14 +326,14 @@ export default function Dashboard() {
                       <button
                         key={doc.id}
                         onClick={() => setPreviewDoc(doc)}
-                        className="flex items-center gap-2.5 px-4 py-2 hover:bg-slate-50/60 transition-colors w-full text-left"
+                        className="flex items-center gap-2 px-3 py-1.5 lg:py-2 hover:bg-slate-50/60 transition-colors w-full text-left"
                       >
-                        <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <FileText className="w-3 h-3 text-slate-400 shrink-0" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs text-slate-700 truncate">{doc.original_filename}</p>
-                          <p className="text-[10px] text-slate-400">{new Date(doc.created_at).toLocaleDateString(language)}</p>
+                          <p className="text-[11px] lg:text-xs text-slate-700 truncate">{doc.original_filename}</p>
+                          <p className="text-[9px] lg:text-[10px] text-slate-400">{new Date(doc.created_at).toLocaleDateString(language)}</p>
                         </div>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${meta.cls}`}>{meta.label}</span>
+                        <span className={`text-[9px] lg:text-[10px] px-1.5 py-0.5 rounded shrink-0 ${meta.cls}`}>{meta.label}</span>
                       </button>
                     )
                   })}
