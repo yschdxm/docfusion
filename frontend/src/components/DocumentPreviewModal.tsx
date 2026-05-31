@@ -4,6 +4,7 @@ import toast from 'react-hot-toast'
 import api from '../services/api'
 import type { DocumentInfo } from '../stores/documentStore'
 import { useI18n } from '../hooks/useI18n'
+import { getTheme } from '../services/theme'
 
 interface PreviewSheet {
   name: string
@@ -45,9 +46,19 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
   const [officeMode, setOfficeMode] = useState<'view' | 'edit'>('view')
   const [officeLoading, setOfficeLoading] = useState(false)
   const [officeError, setOfficeError] = useState('')
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
 
   const officeEditorRef = useRef<{ destroyEditor?: () => void } | null>(null)
   const loadedScriptRef = useRef<string | null>(null)
+
+  // 监听主题变化
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
   const officeContainerRef = useRef<HTMLDivElement | null>(null)
   const [officeHost] = useState(() => {
     const el = document.createElement('div')
@@ -201,9 +212,13 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
 
     if (previewData.preview_type === 'onlyoffice') {
       return (
-        <div className="h-[68vh] overflow-hidden rounded-xl border border-slate-200 bg-white">
-          {officeLoading && <div className="p-4 text-sm text-slate-500">正在加载 OnlyOffice...</div>}
-          {officeError && <div className="border-b border-red-100 bg-red-50 p-4 text-sm text-red-600">{officeError}</div>}
+        <div className={`h-[68vh] overflow-hidden rounded-xl border ${
+          isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+        }`}>
+          {officeLoading && <div className={`p-4 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>正在加载 OnlyOffice...</div>}
+          {officeError && <div className={`border-b p-4 text-sm ${
+            isDarkMode ? 'border-red-500/40 bg-red-900/30 text-red-300' : 'border-red-100 bg-red-50 text-red-600'
+          }`}>{officeError}</div>}
           <div ref={officeContainerRef} className="h-full w-full" />
         </div>
       )
@@ -215,7 +230,11 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
           value={editContent}
           onChange={(e) => setEditContent(e.target.value)}
           spellCheck={false}
-          className="h-full min-h-[420px] w-full rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-7 text-slate-800 outline-none"
+          className={`h-full min-h-[420px] w-full rounded-xl border p-4 font-mono text-sm leading-7 outline-none ${
+            isDarkMode
+              ? 'border-slate-600 bg-slate-700 text-slate-200'
+              : 'border-slate-200 bg-slate-50 text-slate-800'
+          }`}
         />
       )
     }
@@ -225,7 +244,9 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
         <iframe
           title="document-preview"
           src={`/api/v1/documents/${doc?.id}/inline`}
-          className="h-[68vh] w-full rounded-xl border border-slate-200 bg-white"
+          className={`h-[68vh] w-full rounded-xl border ${
+            isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+          }`}
         />
       )
     }
@@ -234,18 +255,20 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
       return (
         <div className="space-y-5">
           {previewData.sheets?.map((sheet) => (
-            <div key={sheet.name} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-              <div className="border-b border-slate-200 px-4 py-3">
-                <div className="text-sm font-medium text-slate-900">{sheet.name}</div>
+            <div key={sheet.name} className={`overflow-hidden rounded-xl border ${
+              isDarkMode ? 'border-slate-600 bg-slate-700' : 'border-slate-200 bg-slate-50'
+            }`}>
+              <div className={`border-b px-4 py-3 ${isDarkMode ? 'border-slate-600' : 'border-slate-200'}`}>
+                <div className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>{sheet.name}</div>
                 <div className="text-xs text-slate-400">{sheet.rows} rows · {sheet.cols} cols</div>
               </div>
               <div className="max-h-72 overflow-auto scrollbar-thin">
                 <table className="min-w-full text-left text-xs">
                   <tbody>
                     {sheet.data.slice(0, 20).map((row, rowIndex) => (
-                      <tr key={`${sheet.name}-${rowIndex}`} className="border-b border-slate-100">
+                      <tr key={`${sheet.name}-${rowIndex}`} className={`border-b ${isDarkMode ? 'border-slate-600' : 'border-slate-100'}`}>
                         {row.map((cell, colIndex) => (
-                          <td key={`${sheet.name}-${rowIndex}-${colIndex}`} className="px-3 py-1.5 text-slate-700">{cell || '-'}</td>
+                          <td key={`${sheet.name}-${rowIndex}-${colIndex}`} className={`px-3 py-1.5 ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{cell || '-'}</td>
                         ))}
                       </tr>
                     ))}
@@ -254,7 +277,9 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
               </div>
             </div>
           ))}
-          <pre className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-600">{previewData.content}</pre>
+          <pre className={`whitespace-pre-wrap rounded-xl border p-4 text-xs leading-6 ${
+            isDarkMode ? 'border-slate-600 bg-slate-700 text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-600'
+          }`}>{previewData.content}</pre>
         </div>
       )
     }
@@ -263,19 +288,27 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
       return (
         <div className="space-y-4">
           <div
-            className="prose max-w-none rounded-xl border border-slate-200 bg-slate-50 p-5 prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-code:text-blue-300"
+            className={`prose max-w-none rounded-xl border p-5 ${
+              isDarkMode
+                ? 'border-slate-600 bg-slate-700 prose-headings:text-slate-200 prose-p:text-slate-300 prose-strong:text-slate-200 prose-code:text-blue-300'
+                : 'border-slate-200 bg-slate-50 prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-code:text-blue-300'
+            }`}
             dangerouslySetInnerHTML={{ __html: previewData.html_content }}
           />
-          <details className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <summary className="cursor-pointer text-sm text-slate-600">{tr('查看原始 Markdown', 'View raw Markdown', '生のMarkdownを表示')}</summary>
-            <pre className="mt-4 whitespace-pre-wrap text-xs leading-6 text-slate-600">{previewData.content}</pre>
+          <details className={`rounded-xl border p-4 ${
+            isDarkMode ? 'border-slate-600 bg-slate-700' : 'border-slate-200 bg-slate-50'
+          }`}>
+            <summary className={`cursor-pointer text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{tr('查看原始 Markdown', 'View raw Markdown', '生のMarkdownを表示')}</summary>
+            <pre className={`mt-4 whitespace-pre-wrap text-xs leading-6 ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>{previewData.content}</pre>
           </details>
         </div>
       )
     }
 
     return (
-      <pre className="min-h-[420px] whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
+      <pre className={`min-h-[420px] whitespace-pre-wrap rounded-xl border p-4 text-sm leading-7 ${
+        isDarkMode ? 'border-slate-600 bg-slate-700 text-slate-200' : 'border-slate-200 bg-slate-50 text-slate-700'
+      }`}>
         {previewData.content}
       </pre>
     )
@@ -292,9 +325,11 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4 py-6 backdrop-blur-sm">
       <div role="dialog" aria-modal="true" aria-labelledby="document-preview-title" className="glass-dark flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px]">
-        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+        <div className={`flex items-center justify-between border-b px-6 py-4 ${
+          isDarkMode ? 'border-slate-600' : 'border-slate-200'
+        }`}>
           <div className="min-w-0">
-            <h3 id="document-preview-title" className="truncate text-lg font-semibold text-slate-900">{doc.original_filename}</h3>
+            <h3 id="document-preview-title" className={`truncate text-lg font-semibold ${isDarkMode ? 'text-slate-100' : 'text-slate-900'}`}>{doc.original_filename}</h3>
             <p className="mt-1 text-sm text-slate-400">
               {doc.file_type.toUpperCase()} · {categoryLabel}
               {previewData?.truncated ? tr(' · 当前为截断预览', ' · Truncated preview', ' · 省略プレビュー') : ''}
@@ -329,7 +364,11 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
                 {saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')}
               </button>
             )}
-            <button onClick={onClose} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900">
+            <button onClick={onClose} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`rounded-full p-2 transition-colors ${
+              isDarkMode
+                ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+            }`}>
               <X className="h-5 w-5" />
             </button>
           </div>

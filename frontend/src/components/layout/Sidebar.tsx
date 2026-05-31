@@ -5,11 +5,22 @@ import { sidebarI18n } from '../../services/i18n'
 import { useState, useEffect } from 'react'
 import api from '../../services/api'
 import Dropdown from '../ui/Dropdown'
+import { getTheme } from '../../services/theme'
 
 export default function Sidebar() {
   const { language } = useI18n()
   const t = sidebarI18n[language]
   const [currentProvider, setCurrentProvider] = useState<string>('deepseek')
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+
+  // 监听主题变化
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   // 获取当前模型配置
   useEffect(() => {
@@ -99,7 +110,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="border-t border-slate-200/80 px-4 py-4">
-        <div className="rounded-xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff,#f6f9ff)] px-4 py-3">
+        <div className={`rounded-xl border border-slate-200 px-4 py-3 ${isDarkMode ? 'night-mode-gradient-bg' : 'bg-[linear-gradient(180deg,#ffffff,#f6f9ff)]'}`}>
           <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Engine</p>
           <Dropdown
             value={currentProvider}

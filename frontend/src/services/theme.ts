@@ -1,9 +1,28 @@
-﻿export type ThemeMode = 'business-blue' | 'night-mode'
+﻿export type ThemeMode = 'business-blue' | 'night-mode' | 'system'
+
+export type ResolvedTheme = 'business-blue' | 'night-mode'
 
 const THEME_STORAGE_KEY = 'docfusion_theme'
 
+// 系统主题变化事件
+export const SYSTEM_THEME_CHANGE_EVENT = 'system-theme-change'
+
 const isThemeMode = (value: string): value is ThemeMode => {
-  return value === 'business-blue' || value === 'night-mode'
+  return value === 'business-blue' || value === 'night-mode' || value === 'system'
+}
+
+// 获取系统主题偏好
+const getSystemTheme = (): ResolvedTheme => {
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    return 'night-mode'
+  }
+  return 'business-blue'
+}
+
+// 解析主题：如果是 system 则返回系统主题
+const resolveTheme = (theme: ThemeMode): ResolvedTheme => {
+  if (theme === 'system') return getSystemTheme()
+  return theme
 }
 
 export const getStoredTheme = (): ThemeMode => {
@@ -20,18 +39,66 @@ export const getStoredTheme = (): ThemeMode => {
   }
 
   if (saved && isThemeMode(saved)) return saved
+  return 'system'  // 默认跟随系统
+}
+
+export const getTheme = (): ResolvedTheme => {
+  const current = document.documentElement.getAttribute('data-theme')
+  if (current === 'night-mode') return 'night-mode'
   return 'business-blue'
 }
 
-export const applyTheme = (theme: ThemeMode) => {
+export const applyTheme = (theme: ResolvedTheme) => {
   document.documentElement.setAttribute('data-theme', theme)
 }
 
 export const setTheme = (theme: ThemeMode) => {
   localStorage.setItem(THEME_STORAGE_KEY, theme)
-  applyTheme(theme)
+  const resolved = resolveTheme(theme)
+  applyTheme(resolved)
+
+  // 触发主题变化事件
+  window.dispatchEvent(new CustomEvent(SYSTEM_THEME_CHANGE_EVENT, { detail: { theme, resolved } }))
+}
+
+// 初始化系统主题监听
+let systemThemeCleanup: (() => void) | null = null
+
+const setupSystemThemeListener = () => {
+  if (systemThemeCleanup) {
+    systemThemeCleanup()
+  }
+
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+
+  const handleChange = () => {
+    const storedTheme = getStoredTheme()
+    if (storedTheme === 'system') {
+      const resolved = getSystemTheme()
+      applyTheme(resolved)
+      window.dispatchEvent(new CustomEvent(SYSTEM_THEME_CHANGE_EVENT, {
+        detail: { theme: 'system', resolved }
+      }))
+    }
+  }
+
+  mediaQuery.addEventListener('change', handleChange)
+
+  systemThemeCleanup = () => {
+    mediaQuery.removeEventListener('change', handleChange)
+  }
 }
 
 export const initTheme = () => {
-  applyTheme(getStoredTheme())
+  const storedTheme = getStoredTheme()
+  const resolved = resolveTheme(storedTheme)
+  applyTheme(resolved)
+
+  // 设置系统主题监听
+  setupSystemThemeListener()
+}
+
+// 获取当前实际应用的主题（用于 UI 显示）
+export const getCurrentTheme = (): ThemeMode => {
+  return getStoredTheme()
 }

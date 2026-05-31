@@ -14,6 +14,7 @@ import { useDocumentPreview, getFileType } from '../hooks/useDocumentPreview'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
 import { useI18n } from '../hooks/useI18n'
+import { getTheme } from '../services/theme'
 
 // 自定义 Markdown 链接组件：对 API 下载链接使用带 token 的请求
 function DownloadLink({ href, children }: { href?: string; children?: React.ReactNode }) {
@@ -104,6 +105,17 @@ export default function DocumentOperation() {
     loadSessions,
     setMinimized,
   } = useChatStore()
+
+  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+
+  // 监听主题变化
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
@@ -805,14 +817,16 @@ export default function DocumentOperation() {
             <div
               key={session.id}
               onClick={() => handleRestoreSession(session.id)}
-              className={`p-3 cursor-pointer hover:bg-slate-50 border-b border-slate-100 flex items-center justify-between group transition-all ${
-                activeSessionId === session.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''
+              className={`p-3 cursor-pointer border-b flex items-center justify-between group transition-all ${
+                isDarkMode
+                  ? `hover:bg-slate-700/80 border-slate-700 ${activeSessionId === session.id ? 'bg-blue-900/40 border-l-4 border-l-blue-500' : ''}`
+                  : `hover:bg-slate-50 border-slate-100 ${activeSessionId === session.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''}`
               }`}
             >
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900 truncate">
+                  <p className={`text-sm font-medium truncate ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>
                     {(session as any).title || session.documentName || tr('新对话', 'New Chat', '新しい会話')}
                   </p>
                   <p className="text-xs text-slate-500">
@@ -976,7 +990,11 @@ export default function DocumentOperation() {
             {/* 消息气泡 */}
             {message.content ? (
               <div className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] p-4 rounded-2xl ${message.role === 'user' ? 'bg-primary-500/15 text-slate-900' : 'bg-slate-50 text-slate-700'}`}>
+                <div className={`max-w-[80%] p-4 rounded-2xl ${
+                  message.role === 'user'
+                    ? isDarkMode ? 'bg-blue-900/30 text-slate-200' : 'bg-primary-500/15 text-slate-900'
+                    : isDarkMode ? 'bg-slate-800/80 text-slate-200' : 'bg-slate-50 text-slate-700'
+                }`}>
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm max-w-none">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -1001,7 +1019,11 @@ export default function DocumentOperation() {
                   <div className="mt-2 flex">
                     <button
                       onClick={() => openPreview(message.action!)}
-                      className="btn-secondary px-3 py-2 text-sm text-blue-700 border-blue-300 hover:bg-blue-50"
+                      className={`btn-secondary px-3 py-2 text-sm ${
+                        isDarkMode
+                          ? 'text-blue-300 border-blue-500/50 hover:bg-blue-900/30'
+                          : 'text-blue-700 border-blue-300 hover:bg-blue-50'
+                      }`}
                     >
                       <Eye className="w-4 h-4" />
                       {tr('预览修改结果', 'Preview Changes', '変更プレビュー')}
@@ -1032,7 +1054,9 @@ export default function DocumentOperation() {
         {/* 流式内容 */}
         {isStreaming && streamingContent && (
           <div className="flex justify-start">
-            <div className="max-w-[80%] p-4 rounded-2xl bg-slate-50 text-slate-700">
+            <div className={`max-w-[80%] p-4 rounded-2xl ${
+              isDarkMode ? 'bg-slate-800/80 text-slate-200' : 'bg-slate-50 text-slate-700'
+            }`}>
               <div className="prose prose-sm max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {streamingContent}
@@ -1058,7 +1082,7 @@ export default function DocumentOperation() {
 
         {isLoading && !isStreaming && (
           <div className="flex justify-start">
-            <div className="bg-slate-50 p-4 rounded-2xl">
+            <div className={`p-4 rounded-2xl ${isDarkMode ? 'bg-slate-800/80' : 'bg-slate-50'}`}>
               <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
             </div>
           </div>
@@ -1068,37 +1092,51 @@ export default function DocumentOperation() {
 
       {previewState && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-6 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className={`max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl border shadow-2xl ${
+            isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+          }`}>
+            <div className={`flex items-start justify-between border-b px-6 py-4 ${
+              isDarkMode ? 'border-slate-600' : 'border-slate-200'
+            }`}>
               <div>
-                <h3 id="doc-op-preview-title" className="text-lg font-semibold text-slate-900">{previewState.title}</h3>
-                <p className="mt-1 text-sm text-slate-600">{previewState.description}</p>
+                <h3 id="doc-op-preview-title" className={`text-lg font-semibold ${isDarkMode ? 'text-slate-100' : 'text-slate-900'}`}>{previewState.title}</h3>
+                <p className={`mt-1 text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{previewState.description}</p>
                 <p className="mt-2 text-xs text-slate-500">
                   {tr('共', 'Total', '合計')} {previewState.totalChanges} {tr('处修改', 'changes', '件の変更')}{previewState.outputFilename ? ` · ${previewState.outputFilename}` : ''}
                 </p>
               </div>
-              <button onClick={() => setPreviewState(null)} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900">
+              <button onClick={() => setPreviewState(null)} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`rounded-lg p-2 transition-colors ${
+                isDarkMode
+                  ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                  : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+              }`}>
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             <div className="max-h-[calc(85vh-88px)] space-y-4 overflow-y-auto p-6 scrollbar-thin">
               {previewState.items.map((item, index) => (
-                <div key={`${item.op}-${item.paragraph_index}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div key={`${item.op}-${item.paragraph_index}-${index}`} className={`rounded-xl border p-4 ${
+                  isDarkMode ? 'border-slate-600 bg-slate-700/80' : 'border-slate-200 bg-slate-50'
+                }`}>
                   <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
                     <span className="rounded-full bg-primary-500/20 px-2.5 py-1 text-primary-700">{item.op}</span>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-slate-600">段落 {item.paragraph_index >= 0 ? item.paragraph_index : '-'}</span>
+                    <span className={`rounded-full px-2.5 py-1 ${isDarkMode ? 'bg-slate-600 text-slate-300' : 'bg-white text-slate-600'}`}>段落 {item.paragraph_index >= 0 ? item.paragraph_index : '-'}</span>
                     {item.reason && <span className="text-slate-500">{item.reason}</span>}
                   </div>
 
                   <div className="grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-                      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-red-700">{tr('修改前', 'Before', '変更前')}</div>
-                      <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-slate-700">{item.before || tr('无', 'None', 'なし')}</pre>
+                    <div className={`rounded-xl border p-4 ${
+                      isDarkMode ? 'border-red-500/40 bg-red-900/30' : 'border-red-200 bg-red-50'
+                    }`}>
+                      <div className={`mb-2 text-xs font-medium uppercase tracking-wide ${isDarkMode ? 'text-red-300' : 'text-red-700'}`}>{tr('修改前', 'Before', '変更前')}</div>
+                      <pre className={`whitespace-pre-wrap break-words font-sans text-sm leading-6 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{item.before || tr('无', 'None', 'なし')}</pre>
                     </div>
-                    <div className="rounded-xl border border-green-200 bg-green-50 p-4">
-                      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-green-700">{tr('修改后', 'After', '変更後')}</div>
-                      <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-slate-800">{item.after || tr('无', 'None', 'なし')}</pre>
+                    <div className={`rounded-xl border p-4 ${
+                      isDarkMode ? 'border-green-500/40 bg-green-900/30' : 'border-green-200 bg-green-50'
+                    }`}>
+                      <div className={`mb-2 text-xs font-medium uppercase tracking-wide ${isDarkMode ? 'text-green-300' : 'text-green-700'}`}>{tr('修改后', 'After', '変更後')}</div>
+                      <pre className={`whitespace-pre-wrap break-words font-sans text-sm leading-6 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{item.after || tr('无', 'None', 'なし')}</pre>
                     </div>
                   </div>
                 </div>
@@ -1108,7 +1146,7 @@ export default function DocumentOperation() {
         </div>
       )}
 
-      <div className="p-4 border-t border-slate-200">
+      <div className={`p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
         <div className="flex gap-3">
           <input
             type="text"
@@ -1120,7 +1158,11 @@ export default function DocumentOperation() {
             disabled={isLoading}
           />
           {isStreaming ? (
-            <button onClick={handleStop} className="btn-secondary px-4 py-2 text-red-500 border-red-300 hover:bg-red-50">
+            <button onClick={handleStop} className={`btn-secondary px-4 py-2 ${
+              isDarkMode
+                ? 'text-red-400 border-red-500/50 hover:bg-red-900/30'
+                : 'text-red-500 border-red-300 hover:bg-red-50'
+            }`}>
               <Square className="w-5 h-5" />
               {tr('停止', 'Stop', '停止')}
             </button>
@@ -1132,13 +1174,25 @@ export default function DocumentOperation() {
         </div>
         {/* 快捷提示 */}
         <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-thin">
-          <button onClick={() => setInputValue(tr('帮我分析这些文档', 'Help me analyze these documents', 'これらの文書を分析してください'))} className="px-3 py-1.5 text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-full text-slate-600 whitespace-nowrap transition-colors">
+          <button onClick={() => setInputValue(tr('帮我分析这些文档', 'Help me analyze these documents', 'これらの文書を分析してください'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+            isDarkMode
+              ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
+              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
+          }`}>
             {tr('分析文档', 'Analyze docs', '文書分析')}
           </button>
-          <button onClick={() => setInputValue(tr('填写汇总表', 'Fill summary table', 'まとめ表を記入'))} className="px-3 py-1.5 text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-full text-slate-600 whitespace-nowrap transition-colors">
+          <button onClick={() => setInputValue(tr('填写汇总表', 'Fill summary table', 'まとめ表を記入'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+            isDarkMode
+              ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
+              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
+          }`}>
             {tr('填写表格', 'Fill table', '表記入')}
           </button>
-          <button onClick={() => setInputValue(tr('查询关键信息', 'Query key information', '重要情報を検索'))} className="px-3 py-1.5 text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-full text-slate-600 whitespace-nowrap transition-colors">
+          <button onClick={() => setInputValue(tr('查询关键信息', 'Query key information', '重要情報を検索'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+            isDarkMode
+              ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
+              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
+          }`}>
             {tr('查询信息', 'Query info', '情報検索')}
           </button>
         </div>
