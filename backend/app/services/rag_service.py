@@ -1,4 +1,5 @@
 from typing import List, Dict, Any
+import asyncio
 import logging
 from app.services.embedding_service import embedding_service
 from app.services.rerank_service import rerank_service
@@ -112,13 +113,17 @@ class RAGService:
         doc_id: str,
         chunks: List[Dict[str, Any]],
         base_metadata: Dict[str, Any] = None,
+        max_concurrent: int = 3,
     ):
         """将预处理好的 chunks 批量添加到向量存储。
+
+        优化：多个 embedding 批次并行执行，使用信号量控制并发数。
 
         Args:
             doc_id: 文档 ID
             chunks: [{"content": str, "chunk_index": int, "chunk_type": str, "section_path": str}, ...]
             base_metadata: 基础元数据（filename, file_type 等）
+            max_concurrent: 最大并发数（默认3，避免API限流）
         """
         try:
             await vector_store_service.init_collection()
@@ -127,17 +132,39 @@ class RAGService:
                 return
 
             import uuid
-            documents_to_add = []
             batch_size = 20  # 每批最多 20 个文本嵌入
+            semaphore = asyncio.Semaphore(max_concurrent)
 
+            # 分批
+            batch_groups = []
             for batch_start in range(0, len(chunks), batch_size):
                 batch_chunks = chunks[batch_start:batch_start + batch_size]
-                texts = [c["content"] for c in batch_chunks]
+                batch_groups.append(batch_chunks)
 
-                try:
-                    embeddings = await embedding_service.embed(texts)
-                except Exception as emb_err:
-                    logger.warning(f"嵌入批次 {batch_start // batch_size} 失败: {emb_err}")
+            async def _embed_batch(batch_idx: int, batch_chunks: List[Dict[str, Any]]):
+                """单个批次的嵌入处理"""
+                async with semaphore:
+                    texts = [c["content"] for c in batch_chunks]
+                    try:
+                        embeddings = await embedding_service.embed(texts)
+                        return batch_idx, batch_chunks, embeddings
+                    except Exception as emb_err:
+                        logger.warning(f"嵌入批次 {batch_idx} 失败: {emb_err}")
+                        return batch_idx, batch_chunks, None
+
+            # 并行执行所有批次
+            tasks = [_embed_batch(i, batch) for i, batch in enumerate(batch_groups)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 收集结果
+            documents_to_add = []
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(f"嵌入批次异常: {result}")
+                    continue
+
+                batch_idx, batch_chunks, embeddings = result
+                if embeddings is None:
                     continue
 
                 for chunk, embedding in zip(batch_chunks, embeddings):
