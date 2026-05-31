@@ -42,15 +42,18 @@ async def get_doc_file_types(doc_ids: List[str]) -> Dict[str, str]:
         Dict[str, str]: {doc_id: file_type}
     """
     result = {}
+    if not doc_ids:
+        return result
     try:
         Document = get_document_model()
         from app.db.postgres import async_session
-        from sqlalchemy import select
-        from sqlalchemy.dialects.postgresql import UUID
+        from sqlalchemy import select, cast, String
 
         async with async_session() as session:
+            # 使用 cast 将 UUID 转为字符串进行比较，避免 SQLAlchemy IN 子句的兼容性问题
+            uuid_list = [str(did) for did in doc_ids]
             stmt = select(Document.id, Document.file_type).where(
-                Document.id.in_([UUID(did) if isinstance(did, str) else did for did in doc_ids])
+                cast(Document.id, String).in_(uuid_list)
             )
             rows = await session.execute(stmt)
             for row in rows:
