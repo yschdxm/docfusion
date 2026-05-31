@@ -100,10 +100,10 @@ export function useDocumentPreview() {
 
   // currentFile 变化时重建编辑器
   useEffect(() => {
-    if (!currentFile || !onlyofficeReady || !isPanelOpen) return
+    if (!currentFile || !onlyofficeReady) return
     const timer = setTimeout(() => createEditor(currentFile), 50)
     return () => clearTimeout(timer)
-  }, [currentFile, onlyofficeReady, isPanelOpen, createEditor])
+  }, [currentFile, onlyofficeReady, createEditor])
 
   // 组件卸载时清理
   useEffect(() => {
@@ -144,6 +144,31 @@ export function useDocumentPreview() {
     setCurrentFileState(null)
   }, [])
 
+  // 独立请求预览（不依赖 isPanelOpen，用于手机端）
+  const requestPreview = useCallback(() => {
+    if (!window.DocsAPI && !scriptLoadAttempted.current) {
+      scriptLoadAttempted.current = true
+      loadScript().catch(err => {
+        console.error('[DocumentPreview]', err.message)
+        scriptLoadAttempted.current = false
+      })
+    } else if (window.DocsAPI) {
+      setOnlyofficeReady(true)
+    }
+  }, [loadScript])
+
+  // 手机端 overlay 打开后手动触发编辑器创建
+  const ensureEditor = useCallback(() => {
+    if (currentFile && window.DocsAPI) {
+      // 销毁旧实例
+      if (editorInstanceRef.current) {
+        try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
+        editorInstanceRef.current = null
+      }
+      createEditor(currentFile)
+    }
+  }, [currentFile, createEditor])
+
   return {
     isPanelOpen,
     togglePanel,
@@ -152,6 +177,8 @@ export function useDocumentPreview() {
     setCurrentFile,
     addOperatedFile,
     clearPreview,
+    requestPreview,
+    ensureEditor,
     isLoading,
   }
 }

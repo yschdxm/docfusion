@@ -80,7 +80,13 @@ const i18n = {
 
 const themeOptions: Array<{ value: ThemeMode }> = [{ value: 'system' }, { value: 'business-blue' }, { value: 'night-mode' }]
 
-export default function Header() {
+interface HeaderProps {
+  isMobile?: boolean
+  onToggleSidebar?: () => void
+  sidebarOpen?: boolean
+}
+
+export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: HeaderProps) {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -254,11 +260,29 @@ export default function Header() {
   }
 
   return (
-    <header className="glass-dark !rounded-none border-b border-slate-200 px-4 py-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
-          <p className="text-xs text-slate-500">{dateText}</p>
+    <header className="glass-dark !rounded-none border-b border-slate-200 px-3 sm:px-4 py-2.5">
+      <div className="flex items-center justify-between gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          {/* 移动端汉堡菜单 */}
+          {isMobile && onToggleSidebar && (
+            <button
+              onClick={onToggleSidebar}
+              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0"
+              aria-label={sidebarOpen ? '关闭菜单' : '打开菜单'}
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                {sidebarOpen ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                )}
+              </svg>
+            </button>
+          )}
+          <div className="min-w-0">
+            <h2 className="text-base sm:text-xl font-semibold text-slate-900 truncate">{title}</h2>
+            <p className="text-[10px] sm:text-xs text-slate-500 truncate">{dateText}</p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -283,7 +307,7 @@ export default function Header() {
             </button>
 
             {showNoticePanel && (
-              <div role="region" aria-label={tr('通知面板', 'Notifications panel', '通知パネル')} className={`absolute right-0 z-50 mt-2 w-80 rounded-xl border p-3 shadow-xl ${
+              <div role="region" aria-label={tr('通知面板', 'Notifications panel', '通知パネル')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
                 isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
               }`}>
                 <div className="mb-2 flex items-center justify-between">
@@ -335,7 +359,7 @@ export default function Header() {
             </button>
 
             {showSettings && (
-              <div role="dialog" aria-modal="false" aria-label={tr('系统设置', 'System settings', 'システム設定')} className={`absolute right-0 z-50 mt-2 w-80 rounded-xl border p-3 shadow-xl ${
+              <div role="dialog" aria-modal="false" aria-label={tr('系统设置', 'System settings', 'システム設定')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
                 isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
               }`}>
                 <div className={`mb-2 flex items-center gap-1 rounded-lg p-1 ${isDarkMode ? 'bg-slate-700' : 'bg-slate-100'}`}>
@@ -492,15 +516,21 @@ export default function Header() {
                 })
               }
               aria-label={tr('打开使用帮助', 'Open help', 'ヘルプを開く')}
-              className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+              className={`rounded-lg border p-1.5 transition-colors ${
+                isDarkMode
+                  ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+              }`}
               title={tr('使用帮助', 'Help', 'ヘルプ')}
             >
               <CircleHelp className="h-4 w-4" />
             </button>
 
             {showHelp && (
-              <div role="dialog" aria-modal="false" aria-label={tr('使用帮助', 'Help', 'ヘルプ')} className="absolute right-0 z-50 mt-2 w-[22rem] rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
-                <h4 className="text-sm font-semibold text-slate-900">{tr('帮助中心', 'Help Center', 'ヘルプセンター')}</h4>
+              <div role="dialog" aria-modal="false" aria-label={tr('使用帮助', 'Help', 'ヘルプ')} className={`${isMobile ? 'fixed left-1/2 -translate-x-1/2 top-14' : 'absolute right-0 mt-2'} z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-xl ${
+                isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+              }`}>
+                <h4 className={`text-sm font-semibold ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>{tr('帮助中心', 'Help Center', 'ヘルプセンター')}</h4>
 
                 <div className="mt-3 space-y-2">
                   {[
@@ -509,18 +539,18 @@ export default function Header() {
                     { key: 'shortcuts', title: tr('快捷键', 'Keyboard Shortcuts', 'キーボードショートカット') },
                     { key: 'faq', title: tr('常见问题', 'FAQ', 'よくある質問') },
                   ].map((section) => (
-                    <div key={section.key} className="rounded-lg border border-slate-200 bg-slate-50">
+                    <div key={section.key} className={`rounded-lg border ${isDarkMode ? 'border-slate-600 bg-slate-700' : 'border-slate-200 bg-slate-50'}`}>
                       <button
                         type="button"
                         onClick={() => setActiveHelpSection((prev) => (prev === section.key ? null : (section.key as 'modules' | 'workflow' | 'shortcuts' | 'faq')))}
-                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium text-slate-800 hover:bg-slate-100"
+                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium ${isDarkMode ? 'text-slate-200 hover:bg-slate-600' : 'text-slate-800 hover:bg-slate-100'}`}
                       >
                         <span>{section.title}</span>
-                        <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${activeHelpSection === section.key ? 'rotate-180' : ''}`} />
+                        <ChevronDown className={`h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'} transition-transform ${activeHelpSection === section.key ? 'rotate-180' : ''}`} />
                       </button>
 
                       {activeHelpSection === section.key && (
-                        <div className="space-y-1.5 border-t border-slate-200 px-3 py-2 text-xs text-slate-600">
+                        <div className={`space-y-1.5 border-t px-3 py-2 text-xs ${isDarkMode ? 'border-slate-600 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
                           {section.key === 'modules' && (
                             <>
                               <p>{tr('文档管理：上传、检索、预览、下载文档。', 'Documents: upload, search, preview, and download files.', '文書管理: アップロード・検索・プレビュー・ダウンロード。')}</p>
@@ -567,18 +597,22 @@ export default function Header() {
 
           <button
             onClick={() => navigate('/profile')}
-            className="hidden items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 transition-colors hover:bg-slate-50 md:flex"
+            className={`flex items-center gap-2 rounded-lg border p-1.5 transition-colors ${
+              isDarkMode
+                ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+            }`}
             title={dict.enterProfile}
           >
             <div className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-br from-primary-500 to-blue-500">
               <User className="h-3 w-3 text-white" />
             </div>
-            <span className="text-sm text-slate-700">{user?.username || dict.userFallback}</span>
+            <span className="hidden sm:inline text-sm text-slate-700">{user?.username || dict.userFallback}</span>
           </button>
 
           <button onClick={handleLogout} className="btn-secondary px-2 py-1 text-sm" title={dict.logout}>
             <LogOut className="h-4 w-4" />
-            {dict.logout}
+            <span className="hidden sm:inline">{dict.logout}</span>
           </button>
         </div>
       </div>

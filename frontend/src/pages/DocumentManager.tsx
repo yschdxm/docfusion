@@ -3,7 +3,6 @@ import { useDropzone } from 'react-dropzone'
 import {
   CheckCircle,
   Download,
-  Edit3,
   Eye,
   FileText,
   Filter,
@@ -447,127 +446,167 @@ export default function DocumentManager() {
   }
 
   return (
-    <div className="h-full flex flex-col gap-4 min-h-0">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 shrink-0">
-        <div className="glass p-4">
-          <div className="mb-3 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/20">
-              <FileText className="h-4 w-4 text-blue-400" />
-            </div>
-            <div>
-              <h3 className="text-sm font-medium text-slate-900">{tr('上传源文档', 'Upload Source Docs', 'ソース文書をアップロード')}</h3>
-              <p className="text-xs text-slate-400">{tr('支持 docx、xlsx、md、txt', 'Supports docx, xlsx, md, txt', 'docx/xlsx/md/txt 対応')}</p>
-            </div>
-          </div>
-          <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
+    <div className="h-full flex flex-col gap-2 sm:gap-2.5 min-h-0">
+      {/* 上传区域：手机端两按钮一行，桌面端并排卡片 */}
+      <div className="shrink-0">
+        {/* 手机端：紧凑双按钮 */}
+        <div className="grid grid-cols-2 gap-2 md:hidden">
+          <div {...getSourceRootProps()} className={`glass px-3 py-2.5 cursor-pointer transition-all ${isSourceDragActive ? 'ring-2 ring-blue-400' : ''}`}>
             <input {...getSourceInputProps()} />
             {uploadProgress !== null ? (
-              <div className="flex flex-col items-center gap-2">
-                <span className="text-sm text-blue-400">{tr('上传中...', 'Uploading...', 'アップロード中...')}</span>
-                <div className="h-2 w-48 overflow-hidden rounded-full bg-slate-700">
-                  <div
-                    className="h-full rounded-full bg-blue-500 transition-all duration-300"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[11px] text-blue-400">{tr('上传中...', 'Uploading...', '...')}</span>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
+                  <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
                 </div>
-                <span className="text-xs text-slate-400">{uploadProgress}%</span>
+                <span className="text-[10px] text-slate-400">{uploadProgress}%</span>
               </div>
             ) : (
-              <div className="flex items-center justify-center gap-2">
-                <Plus className="h-4 w-4 text-slate-400" />
-                <span className="text-sm text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/20 shrink-0">
+                  <FileText className="h-3.5 w-3.5 text-blue-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-slate-900 truncate">{tr('上传源文档', 'Source Docs', 'ソース文書')}</p>
+                  <p className="text-[10px] text-slate-400">docx xlsx md txt</p>
+                </div>
+                <Plus className="h-4 w-4 text-slate-400 shrink-0 ml-auto" />
               </div>
             )}
           </div>
-        </div>
-
-        <div className="glass p-4">
-          <div className="mb-3 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-500/20">
-              <Table className="h-4 w-4 text-green-400" />
-            </div>
-            <div>
-              <h3 className="text-sm font-medium text-slate-900">{tr('上传模板', 'Upload Templates', 'テンプレートをアップロード')}</h3>
-              <p className="text-xs text-slate-400">{tr('支持 docx、xlsx', 'Supports docx, xlsx', 'docx/xlsx 対応')}</p>
+          <div {...getTemplateRootProps()} className={`glass px-3 py-2.5 cursor-pointer transition-all ${isTemplateDragActive ? 'ring-2 ring-green-400' : ''}`}>
+            <input {...getTemplateInputProps()} />
+            <div className="flex items-center gap-2">
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-green-500/20 shrink-0">
+                <Table className="h-3.5 w-3.5 text-green-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-900 truncate">{tr('上传模板', 'Templates', 'テンプレート')}</p>
+                <p className="text-[10px] text-slate-400">docx xlsx</p>
+              </div>
+              <Plus className="h-4 w-4 text-slate-400 shrink-0 ml-auto" />
             </div>
           </div>
-          <div {...getTemplateRootProps()} className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}>
-            <input {...getTemplateInputProps()} />
-            <div className="flex items-center justify-center gap-2">
-              <Plus className="h-4 w-4 text-slate-400" />
-              <span className="text-sm text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
+        </div>
+        {/* 桌面端：完整卡片 */}
+        <div className="hidden md:grid md:grid-cols-2 md:gap-3">
+          <div className="glass p-4">
+            <div className="mb-3 flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/20">
+                <FileText className="h-4 w-4 text-blue-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-slate-900">{tr('上传源文档', 'Upload Source Docs', 'ソース文書をアップロード')}</h3>
+                <p className="text-xs text-slate-400">{tr('支持 docx、xlsx、md、txt', 'Supports docx, xlsx, md, txt', 'docx/xlsx/md/txt 対応')}</p>
+              </div>
+            </div>
+            <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
+              <input {...getSourceInputProps()} />
+              {uploadProgress !== null ? (
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-sm text-blue-400">{tr('上传中...', 'Uploading...', 'アップロード中...')}</span>
+                  <div className="h-2 w-48 overflow-hidden rounded-full bg-slate-700">
+                    <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                  <span className="text-xs text-slate-400">{uploadProgress}%</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center gap-2">
+                  <Plus className="h-4 w-4 text-slate-400" />
+                  <span className="text-sm text-slate-400">{tr('点击或拖拽上传源文档', 'Click or drag to upload source docs', 'クリックまたはドラッグしてソース文書をアップロード')}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="glass p-4">
+            <div className="mb-3 flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-500/20">
+                <Table className="h-4 w-4 text-green-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-slate-900">{tr('上传模板', 'Upload Templates', 'テンプレートをアップロード')}</h3>
+                <p className="text-xs text-slate-400">{tr('支持 docx、xlsx', 'Supports docx, xlsx', 'docx/xlsx 対応')}</p>
+              </div>
+            </div>
+            <div {...getTemplateRootProps()} className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}>
+              <input {...getTemplateInputProps()} />
+              <div className="flex items-center justify-center gap-2">
+                <Plus className="h-4 w-4 text-slate-400" />
+                <span className="text-sm text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-3 shrink-0">
-        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`} onClick={() => setFilter('all')}>
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-500/20">
-              <FileText className="h-4 w-4 text-primary-400" />
+      {/* 统计卡片：手机端 4 列紧凑行 */}
+      <div className="grid grid-cols-4 gap-2 shrink-0">
+        <div className={`glass card-hover-lift cursor-pointer px-2 py-2 transition-all ${filter === 'all' ? 'ring-2 ring-primary-500' : ''}`} onClick={() => setFilter('all')}>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-primary-500/20 shrink-0">
+              <FileText className="h-3 w-3 text-primary-400" />
             </div>
-            <div>
-              <p className="text-lg font-bold text-slate-900">{documents.length}</p>
-              <p className="text-xs text-slate-400">{tr('全部', 'All', 'すべて')}</p>
-            </div>
-          </div>
-        </div>
-        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => setFilter('source')}>
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20">
-              <FileText className="h-4 w-4 text-blue-400" />
-            </div>
-            <div>
-              <p className="text-lg font-bold text-slate-900">{sourceDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('源文档', 'Source', 'ソース')}</p>
+            <div className="min-w-0">
+              <p className="text-sm lg:text-base font-bold text-slate-900 leading-tight">{documents.length}</p>
+              <p className="text-[9px] lg:text-[10px] text-slate-400 leading-tight">{tr('全部', 'All', 'すべて')}</p>
             </div>
           </div>
         </div>
-        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`} onClick={() => setFilter('template')}>
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-500/20">
-              <Table className="h-4 w-4 text-green-400" />
+        <div className={`glass card-hover-lift cursor-pointer px-2 py-2 transition-all ${filter === 'source' ? 'ring-2 ring-blue-500' : ''}`} onClick={() => setFilter('source')}>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-blue-500/20 shrink-0">
+              <FileText className="h-3 w-3 text-blue-400" />
             </div>
-            <div>
-              <p className="text-lg font-bold text-slate-900">{templateDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('模板', 'Template', 'テンプレート')}</p>
+            <div className="min-w-0">
+              <p className="text-sm lg:text-base font-bold text-slate-900 leading-tight">{sourceDocs.length}</p>
+              <p className="text-[9px] lg:text-[10px] text-slate-400 leading-tight">{tr('源文档', 'Source', 'ソース')}</p>
             </div>
           </div>
         </div>
-        <div className={`glass card-hover-lift cursor-pointer p-3 transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`} onClick={() => setFilter('output')}>
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/20">
-              <FolderOpen className="h-4 w-4 text-orange-400" />
+        <div className={`glass card-hover-lift cursor-pointer px-2 py-2 transition-all ${filter === 'template' ? 'ring-2 ring-green-500' : ''}`} onClick={() => setFilter('template')}>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-green-500/20 shrink-0">
+              <Table className="h-3 w-3 text-green-400" />
             </div>
-            <div>
-              <p className="text-lg font-bold text-slate-900">{outputDocs.length}</p>
-              <p className="text-xs text-slate-400">{tr('输出', 'Output', '出力')}</p>
+            <div className="min-w-0">
+              <p className="text-sm lg:text-base font-bold text-slate-900 leading-tight">{templateDocs.length}</p>
+              <p className="text-[9px] lg:text-[10px] text-slate-400 leading-tight">{tr('模板', 'Template', 'テンプレート')}</p>
+            </div>
+          </div>
+        </div>
+        <div className={`glass card-hover-lift cursor-pointer px-2 py-2 transition-all ${filter === 'output' ? 'ring-2 ring-orange-500' : ''}`} onClick={() => setFilter('output')}>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-orange-500/20 shrink-0">
+              <FolderOpen className="h-3 w-3 text-orange-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm lg:text-base font-bold text-slate-900 leading-tight">{outputDocs.length}</p>
+              <p className="text-[9px] lg:text-[10px] text-slate-400 leading-tight">{tr('输出', 'Output', '出力')}</p>
             </div>
           </div>
         </div>
       </div>
 
       <div className="glass flex flex-col min-h-0 flex-1">
-        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-200 shrink-0">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <label className="flex cursor-pointer items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 shrink-0">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <label className="flex cursor-pointer items-center gap-1.5 shrink-0">
               <input
                 type="checkbox"
                 checked={selectedDocs.length === filteredDocs.length && filteredDocs.length > 0}
                 onChange={toggleSelectAll}
-                className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
+                className="h-3.5 w-3.5 rounded border-slate-300 bg-white text-primary-500"
               />
-              <span className="text-xs text-slate-400">{tr('全选', 'Select all', 'すべて選択')}</span>
+              <span className="text-[10px] text-slate-400 hidden sm:inline">{tr('全选', 'Select all', 'すべて選択')}</span>
             </label>
-            <div className="relative flex-1 max-w-xs">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <div className="relative flex-1 min-w-0 sm:max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder={tr('搜索文档...', 'Search documents...', 'ドキュメントを検索...')}
-                className="input h-9 pl-10 text-sm"
+                className="input h-8 pl-8 text-xs"
               />
             </div>
             <Dropdown
@@ -579,18 +618,19 @@ export default function DocumentManager() {
                 { value: 'template', label: tr('模板', 'Templates', 'テンプレート') },
                 { value: 'output', label: tr('输出', 'Output', '出力') },
               ]}
-              icon={<Filter className="h-4 w-4 text-slate-400" />}
-              className="w-32"
+              icon={<Filter className="h-3.5 w-3.5 text-slate-400" />}
+              className="hidden sm:block w-32"
             />
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button onClick={() => fetchDocuments()} className="btn-secondary p-2" title={tr('刷新', 'Refresh', '更新')}>
-              <RefreshCw className="h-4 w-4" />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button onClick={() => fetchDocuments()} className="btn-secondary p-1.5" title={tr('刷新', 'Refresh', '更新')}>
+              <RefreshCw className="h-3.5 w-3.5" />
             </button>
             {selectedDocs.length > 0 && (
-              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-1.5 px-3 py-2 text-red-400 hover:text-red-300 text-sm">
-                <Trash2 className="h-4 w-4" />
-                {tr('删除选中', 'Delete Selected', '選択を削除')} ({selectedDocs.length})
+              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-1 px-2 py-1 text-red-400 hover:text-red-300 text-[11px]">
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">{tr('删除', 'Delete', '削除')}</span>
+                ({selectedDocs.length})
               </button>
             )}
           </div>
@@ -604,7 +644,7 @@ export default function DocumentManager() {
               return (
                 <div
                   key={doc.id}
-                  className={`flex items-center gap-3 border-b border-slate-100 px-4 py-3 transition-colors hover:bg-slate-50 ${
+                  className={`flex items-center gap-2 sm:gap-3 border-b border-slate-100 px-3 sm:px-4 py-2 sm:py-3 transition-colors hover:bg-slate-50 ${
                     selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''
                   }`}
                 >
@@ -612,68 +652,61 @@ export default function DocumentManager() {
                     type="checkbox"
                     checked={selectedDocs.includes(doc.id)}
                     onChange={() => toggleSelect(doc.id)}
-                    className="h-4 w-4 rounded border-slate-300 bg-white text-primary-500"
+                    className="h-3.5 w-3.5 rounded border-slate-300 bg-white text-primary-500 shrink-0"
                   />
 
-                  <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${config.bg}`}>
-                    <Icon className={`h-4 w-4 ${config.color}`} />
+                  <div className={`flex h-7 w-7 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-md ${config.bg}`}>
+                    <Icon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${config.color}`} />
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-900">{doc.original_filename}</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className={`rounded px-2 py-0.5 text-xs ${config.bg} ${config.color}`}>
+                    <p className="truncate text-xs sm:text-sm font-medium text-slate-900">{doc.original_filename}</p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 sm:gap-2">
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] sm:text-xs ${config.bg} ${config.color} hidden sm:inline`}>
                         {doc.doc_category === 'source'
                           ? tr('源文档', 'Source', 'ソース')
                           : doc.doc_category === 'template'
                             ? tr('模板', 'Template', 'テンプレート')
                             : tr('输出', 'Output', '出力')}
                       </span>
-                      <span className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</span>
-                      {formatFileSize(doc.file_size) && <span className="text-xs text-slate-500">{formatFileSize(doc.file_size)}</span>}
-                      <span className="text-xs text-slate-500">{new Date(doc.created_at).toLocaleDateString('zh-CN')}</span>
+                      <span className="text-[10px] sm:text-xs text-slate-500 hidden sm:inline">{doc.file_type.toUpperCase()}</span>
+                      <span className="text-[10px] sm:text-xs text-slate-500">{formatFileSize(doc.file_size)}</span>
+                      <span className="text-[10px] sm:text-xs text-slate-500">{new Date(doc.created_at).toLocaleString(language, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                      {doc.doc_category === 'source' && (
+                        <span className="md:hidden">{renderExtractionStatus(doc)}</span>
+                      )}
                     </div>
                   </div>
 
-                  {doc.doc_category === 'source' && <div className="w-56 shrink-0">{renderExtractionStatus(doc)}</div>}
+                  {doc.doc_category === 'source' && <div className="hidden md:block w-56 shrink-0">{renderExtractionStatus(doc)}</div>}
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
                     <button
                       onClick={() => openPreview(doc)}
                       aria-label={tr('预览文档', 'Preview document', '文書をプレビュー')}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                      title="预览"
+                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                      title={tr('预览', 'Preview', 'プレビュー')}
                     >
-                      <Eye className="h-4 w-4" />
+                      <Eye className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
-                    {(doc.file_type === 'txt' || doc.file_type === 'md') && (
-                      <button
-                        onClick={() => openPreview(doc)}
-                        aria-label={tr('编辑文档', 'Edit document', '文書を編集')}
-                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
-                        title="编辑"
-                      >
-                        <Edit3 className="h-4 w-4" />
-                      </button>
-                    )}
-                    <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
-                      <Download className="h-4 w-4" />
+                    <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
+                      <Download className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
                     <button
                       onClick={() => handleDelete(doc.id, doc.original_filename)}
                       aria-label={tr('删除文档', 'Delete document', '文書を削除')}
-                      className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
+                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
                   </div>
                 </div>
               )
             })
           ) : (
-            <div className="p-12 text-center">
-              <FileText className="mx-auto mb-4 h-16 w-16 text-slate-600" />
-              <p className="text-slate-400">{searchTerm ? tr('没有匹配的文档', 'No matching documents', '一致する文書がありません') : tr('暂无文档', 'No documents', '文書がありません')}</p>
+            <div className="p-8 sm:p-12 text-center">
+              <FileText className="mx-auto mb-3 h-10 w-10 sm:h-16 sm:w-16 text-slate-600" />
+              <p className="text-xs sm:text-slate-400 text-slate-400">{searchTerm ? tr('没有匹配的文档', 'No matching documents', '一致する文書がありません') : tr('暂无文档', 'No documents', '文書がありません')}</p>
             </div>
           )}
         </div>

@@ -90,9 +90,21 @@ interface PreviewState {
   items: PreviewItem[]
 }
 
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const mql = window.matchMedia(query)
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches)
+    mql.addEventListener('change', handler)
+    return () => mql.removeEventListener('change', handler)
+  }, [query])
+  return matches
+}
+
 export default function DocumentOperation() {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
+  const isMobile = useMediaQuery('(max-width: 767px)')
   const { documents, fetchDocuments } = useDocumentStore()
   const {
     sessions,
@@ -143,6 +155,8 @@ export default function DocumentOperation() {
   const currentConnectionSessionRef = useRef<string | null>(null)
   const docDropdownRef = useRef<HTMLDivElement>(null)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
+  const [isCompactToolbar, setIsCompactToolbar] = useState(false)
 
   // 预览面板宽度与拖动
   const PREVIEW_DEFAULT = 640
@@ -150,6 +164,7 @@ export default function DocumentOperation() {
   const HANDLE_WIDTH = 16
   const [previewWidth, setPreviewWidth] = useState(PREVIEW_DEFAULT)
   const previewWidthRef = useRef(PREVIEW_DEFAULT)
+  const [showMobilePreview, setShowMobilePreview] = useState(false)
   const dragStartRef = useRef<{ x: number; width: number } | null>(null)
   const [isDragging, setIsDragging] = useState(false)
 
@@ -162,6 +177,8 @@ export default function DocumentOperation() {
     setCurrentFile: setPreviewCurrentFile,
     addOperatedFile,
     clearPreview,
+    requestPreview,
+    ensureEditor,
     isLoading: previewIsLoading,
   } = useDocumentPreview()
 
@@ -269,6 +286,26 @@ export default function DocumentOperation() {
     }
   }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 手机端 overlay 打开后触发编辑器创建（DOM 元素已就绪）
+  useEffect(() => {
+    if (isMobile && showMobilePreview) {
+      const timer = setTimeout(() => ensureEditor(), 100)
+      return () => clearTimeout(timer)
+    }
+  }, [isMobile, showMobilePreview, ensureEditor])
+
+  // 监听聊天区域宽度，窄时切换紧凑工具栏
+  useEffect(() => {
+    const el = chatContainerRef.current
+    if (!el) return
+    const observer = new ResizeObserver(([entry]) => {
+      const w = entry.contentRect.width
+      setIsCompactToolbar(w < 600)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (docDropdownRef.current && !docDropdownRef.current.contains(event.target as Node)) {
@@ -286,14 +323,14 @@ export default function DocumentOperation() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [localMessages, currentSteps])
 
-  // 预览面板拖动调整宽度
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
+  // 预览面板拖动调整宽度（支持鼠标 + 触摸）
+  const handleDragStart = useCallback((clientX: number) => {
     setIsDragging(true)
-    dragStartRef.current = { x: e.clientX, width: previewWidthRef.current }
+    dragStartRef.current = { x: clientX, width: previewWidthRef.current }
 
-    const handleMouseMove = (ev: MouseEvent) => {
+    const handleMove = (ev: MouseEvent | TouchEvent) => {
       if (!dragStartRef.current) return
+      const x = 'touches' in ev ? ev.touches[0].clientX : ev.clientX
       const container = document.querySelector('[data-doc-op-container]')
       if (!container) return
       const containerWidth = container.clientWidth
@@ -301,23 +338,27 @@ export default function DocumentOperation() {
       const availableWidth = containerWidth - historyWidth - HANDLE_WIDTH
       const chatMinWidth = availableWidth / 3
       const maxPreview = availableWidth - chatMinWidth
-      const delta = dragStartRef.current.x - ev.clientX
+      const delta = dragStartRef.current.x - x
       const newWidth = Math.min(maxPreview, Math.max(PREVIEW_MIN, dragStartRef.current.width + delta))
       previewWidthRef.current = newWidth
       setPreviewWidth(newWidth)
     }
 
-    const handleMouseUp = () => {
+    const handleEnd = () => {
       setIsDragging(false)
       dragStartRef.current = null
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleEnd)
+      document.removeEventListener('touchmove', handleMove)
+      document.removeEventListener('touchend', handleEnd)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
 
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleEnd)
+    document.addEventListener('touchmove', handleMove, { passive: false })
+    document.addEventListener('touchend', handleEnd)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }, [showHistory])
@@ -811,82 +852,135 @@ export default function DocumentOperation() {
   return (
     <div data-doc-op-container className="flex h-full">
       {/* 左侧历史会话面板 */}
-      <div className={`${showHistory ? 'w-64 mr-4' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass shrink-0`}>
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
-          {sessions.map(session => (
-            <div
-              key={session.id}
-              onClick={() => handleRestoreSession(session.id)}
-              className={`p-3 cursor-pointer border-b flex items-center justify-between group transition-all ${
-                isDarkMode
-                  ? `hover:bg-slate-700/80 border-slate-700 ${activeSessionId === session.id ? 'bg-blue-900/40 border-l-4 border-l-blue-500' : ''}`
-                  : `hover:bg-slate-50 border-slate-100 ${activeSessionId === session.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''}`
-              }`}
-            >
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-medium truncate ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>
-                    {(session as any).title || session.documentName || tr('新对话', 'New Chat', '新しい会話')}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    {new Date(session.updatedAt).toLocaleDateString()}
-                  </p>
-                </div>
+      {isMobile ? (
+        /* 移动端：全屏 overlay */
+        showHistory && (
+          <>
+            <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowHistory(false)} />
+            <div className="fixed inset-y-0 left-0 z-50 w-72 flex flex-col glass shadow-2xl animate-fade-in">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                <p className="text-sm font-semibold text-slate-900">{tr('历史记录', 'History', '履歴')}</p>
+                <button onClick={() => setShowHistory(false)} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <button
-                onClick={(e) => handleDeleteSession(session.id, e)}
-                className="p-1 text-slate-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex-1 overflow-y-auto scrollbar-thin">
+                {sessions.map(session => (
+                  <div
+                    key={session.id}
+                    onClick={() => handleRestoreSession(session.id)}
+                    className={`p-3 cursor-pointer border-b flex items-center justify-between group transition-all ${
+                      isDarkMode
+                        ? `hover:bg-slate-700/80 border-slate-700 ${activeSessionId === session.id ? 'bg-blue-900/40 border-l-4 border-l-blue-500' : ''}`
+                        : `hover:bg-slate-50 border-slate-100 ${activeSessionId === session.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''}`
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-medium truncate ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>
+                          {(session as any).title || session.documentName || tr('新对话', 'New Chat', '新しい会話')}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {new Date(session.updatedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => handleDeleteSession(session.id, e)}
+                      className="p-1 text-slate-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
+          </>
+        )
+      ) : (
+        /* 桌面端：侧边折叠面板 */
+        <div className={`${showHistory ? 'w-64 mr-4' : 'w-0'} transition-all duration-300 overflow-hidden flex flex-col glass shrink-0`}>
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
+            {sessions.map(session => (
+              <div
+                key={session.id}
+                onClick={() => handleRestoreSession(session.id)}
+                className={`p-3 cursor-pointer border-b flex items-center justify-between group transition-all ${
+                  isDarkMode
+                    ? `hover:bg-slate-700/80 border-slate-700 ${activeSessionId === session.id ? 'bg-blue-900/40 border-l-4 border-l-blue-500' : ''}`
+                    : `hover:bg-slate-50 border-slate-100 ${activeSessionId === session.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''}`
+                }`}
+              >
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-medium truncate ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>
+                      {(session as any).title || session.documentName || tr('新对话', 'New Chat', '新しい会話')}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {new Date(session.updatedAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={(e) => handleDeleteSession(session.id, e)}
+                  className="p-1 text-slate-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 主聊天区域 */}
-      <div className="glass relative flex flex-col flex-1 min-w-[33%]">
-      <div className="p-4 border-b border-slate-200">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              aria-label={tr('切换历史记录', 'Toggle history', '履歴を切替')}
-              className={`p-2 rounded-lg transition-colors shrink-0 ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
-              title={tr('历史记录', 'History', '履歴')}
-            >
-              <History className="w-4 h-4" />
-            </button>
-            <div className="relative min-w-0 flex-1" ref={docDropdownRef}>
+      <div ref={chatContainerRef} className="glass relative flex flex-col flex-1 min-w-0">
+      <div className="p-3 sm:p-4 border-b border-slate-200">
+        {/* 窄屏：历史按钮+操作按钮一行，选择器各占一行 */}
+        {isMobile || isCompactToolbar ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
               <button
-                onClick={() => {
-                  setShowDocDropdown(!showDocDropdown)
-                  setShowTemplateDropdown(false)
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                onClick={() => setShowHistory(!showHistory)}
+                aria-label={tr('切换历史记录', 'Toggle history', '履歴を切替')}
+                className={`p-2 rounded-lg transition-colors shrink-0 ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
               >
-                <FileText className="w-4 h-4 text-blue-400" />
-                <span className="text-sm text-slate-900 truncate flex-1 text-left">
-                  {selectedDocIds.length > 0 ? `${tr('已选', 'Selected', '選択済み')} ${selectedDocIds.length} ${tr('个源文档', 'source docs', '件のソース文書')}` : tr('选择源文档（可多选）', 'Select source docs (multi-select)', 'ソース文書を選択（複数可）')}
-                </span>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showDocDropdown ? 'rotate-180' : ''}`} />
+                <History className="w-4 h-4" />
               </button>
+              <div className="flex items-center gap-2">
+                <button onClick={handleNewChat} className="btn-secondary px-3 py-1.5 text-xs">
+                  <Plus className="w-3 h-3" />
+                  {tr('新建', 'New', '新規')}
+                </button>
+                <button
+                  onClick={() => { requestPreview(); setShowMobilePreview(true) }}
+                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 border border-transparent"
+                  title={tr('文档预览', 'Preview', 'プレビュー')}
+                >
+                  <Eye className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
 
+            <div className="relative" ref={docDropdownRef}>
+              <button
+                onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+                <span className="text-sm text-slate-900 truncate flex-1 text-left">
+                  {selectedDocIds.length > 0 ? `${tr('已选', 'Sel.', '選済')} ${selectedDocIds.length} ${tr('个源文档', 'docs', '件')}` : tr('选择源文档（可多选）', 'Select source docs', 'ソース文書を選択')}
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${showDocDropdown ? 'rotate-180' : ''}`} />
+              </button>
               {showDocDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
                   {sourceDocs.length > 0 ? (
                     sourceDocs.map((doc) => (
-                      <div
-                        key={doc.id}
-                        onClick={() => toggleDocSelection(doc.id)}
-                        className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}
-                      >
-                        <div
-                          className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${
-                            selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'
-                          }`}
-                        >
+                      <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
+                        <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
                           {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
                         </div>
                         <FileText className="w-4 h-4 text-blue-400 shrink-0" />
@@ -897,36 +991,28 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source docs', 'ソース文書なし')}</div>
                   )}
                 </div>
               )}
             </div>
 
-            <div className="relative min-w-0 flex-1" ref={templateDropdownRef}>
+            <div className="relative" ref={templateDropdownRef}>
               <button
-                onClick={() => {
-                  setShowTemplateDropdown(!showTemplateDropdown)
-                  setShowDocDropdown(false)
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
               >
-                <Table className="w-4 h-4 text-green-400" />
+                <Table className="w-4 h-4 text-green-400 shrink-0" />
                 <span className="text-sm text-slate-900 truncate flex-1 text-left">
-                  {templateDocs.find((d) => d.id === selectedTemplateId)?.original_filename || tr('选择模板（可选）', 'Select template (optional)', 'テンプレートを選択（任意）')}
+                  {templateDocs.find((d) => d.id === selectedTemplateId)?.original_filename || tr('选择模板（可选）', 'Select template', 'テンプレートを選択')}
                 </span>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} />
               </button>
-
               {showTemplateDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
                   {templateDocs.length > 0 ? (
                     templateDocs.map((doc) => (
-                      <div
-                        key={doc.id}
-                        onClick={() => handleTemplateSelect(doc.id)}
-                        className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}
-                      >
+                      <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
                         <Table className="w-4 h-4 text-green-400 shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-slate-900 truncate">{doc.original_filename}</p>
@@ -936,32 +1022,108 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートなし')}</div>
                   )}
                 </div>
               )}
             </div>
+            <p className="text-[11px] text-slate-500">{getSelectionHint()}</p>
           </div>
+        ) : (
+        /* 桌面端/平板端 */
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                aria-label={tr('切换历史记录', 'Toggle history', '履歴を切替')}
+                className={`p-2 rounded-lg transition-colors shrink-0 ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                title={tr('历史记录', 'History', '履歴')}
+              >
+                <History className="w-4 h-4" />
+              </button>
+              <div className="relative min-w-0 flex-1" ref={docDropdownRef}>
+                <button
+                  onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                  className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span className="text-sm text-slate-900 truncate flex-1 text-left">
+                    {selectedDocIds.length > 0 ? `${tr('已选', 'Selected', '選択済み')} ${selectedDocIds.length} ${tr('个源文档', 'source docs', '件のソース文書')}` : tr('选择源文档（可多选）', 'Select source docs (multi-select)', 'ソース文書を選択（複数可）')}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${showDocDropdown ? 'rotate-180' : ''}`} />
+                </button>
+                {showDocDropdown && (
+                  <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
+                    {sourceDocs.length > 0 ? (
+                      sourceDocs.map((doc) => (
+                        <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
+                          <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
+                            {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                          <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-slate-900 truncate">{doc.original_filename}</p>
+                            <p className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</p>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
+                    )}
+                  </div>
+                )}
+              </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleNewChat}
-              className="btn-secondary px-3 py-1.5 text-xs"
-            >
-              <Plus className="w-3 h-3" />
-              {tr('新建对话', 'New Chat', '新しい会話')}
-            </button>
-            <button
-              onClick={togglePanel}
-              className={`p-2 rounded-lg transition-colors ${isPanelOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
-              title={tr('文档预览', 'Document Preview', '文書プレビュー')}
-            >
-              <Eye className="w-4 h-4" />
-            </button>
+              <div className="relative min-w-0 flex-1" ref={templateDropdownRef}>
+                <button
+                  onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                  className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  <Table className="w-4 h-4 text-green-400 shrink-0" />
+                  <span className="text-sm text-slate-900 truncate flex-1 text-left">
+                    {templateDocs.find((d) => d.id === selectedTemplateId)?.original_filename || tr('选择模板（可选）', 'Select template (optional)', 'テンプレートを選択（任意）')}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} />
+                </button>
+                {showTemplateDropdown && (
+                  <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
+                    {templateDocs.length > 0 ? (
+                      templateDocs.map((doc) => (
+                        <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
+                          <Table className="w-4 h-4 text-green-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-slate-900 truncate">{doc.original_filename}</p>
+                            <p className="text-xs text-slate-500">{doc.file_type.toUpperCase()}</p>
+                          </div>
+                          {selectedTemplateId === doc.id && <Check className="w-4 h-4 text-green-400 shrink-0" />}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={handleNewChat} className="btn-secondary px-3 py-1.5 text-xs">
+                <Plus className="w-3 h-3" />
+                {tr('新建对话', 'New Chat', '新しい会話')}
+              </button>
+              <button
+                onClick={togglePanel}
+                className={`p-2 rounded-lg transition-colors ${isPanelOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                title={tr('文档预览', 'Document Preview', '文書プレビュー')}
+              >
+                <Eye className="w-4 h-4" />
+              </button>
+            </div>
           </div>
+          <p className="text-xs text-slate-500">{getSelectionHint()}</p>
         </div>
-
-        <p className="text-xs text-slate-500">{getSelectionHint()}</p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
@@ -1146,15 +1308,15 @@ export default function DocumentOperation() {
         </div>
       )}
 
-      <div className={`p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
-        <div className="flex gap-3">
+      <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
+        <div className="flex gap-2 sm:gap-3">
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder={pendingAction ? tr('操作待确认，请先点击上方卡片完成确认。', 'Action pending confirmation, please confirm above first.', '操作は確認待ちです。先に上のカードで確認してください。') : tr('输入你的问题或指令...', 'Enter your question or instruction...', '質問または指示を入力してください...')}
-            className="input flex-1"
+            className="input flex-1 min-w-0"
             disabled={isLoading}
           />
           {isStreaming ? (
@@ -1199,30 +1361,59 @@ export default function DocumentOperation() {
       </div>
       </div>
 
-      {/* 拖动手柄 */}
-      {isPanelOpen && (
-        <div
-          onMouseDown={handleDragStart}
-          className="shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-primary-100/50 transition-colors"
-          style={{ width: HANDLE_WIDTH }}
-          title="拖动调整宽度"
-        >
-          <div className="w-1 h-8 rounded-full bg-slate-300 group-hover:bg-primary-400 transition-colors" />
-        </div>
+      {/* 拖动手柄 + 右侧文档预览面板（移动端隐藏） */}
+      {!isMobile && (
+        <>
+          {isPanelOpen && (
+            <div
+              onMouseDown={(e) => handleDragStart(e.clientX)}
+              onTouchStart={(e) => handleDragStart(e.touches[0].clientX)}
+              className="shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-primary-100/50 transition-colors"
+              style={{ width: HANDLE_WIDTH }}
+              title="拖动调整宽度"
+            >
+              <div className="w-1 h-8 rounded-full bg-slate-300 group-hover:bg-primary-400 transition-colors" />
+            </div>
+          )}
+          {/* 拖动时的透明遮罩，防止 iframe 抢夺事件 */}
+          {isDragging && (
+            <div className="fixed inset-0 z-30 cursor-col-resize" />
+          )}
+          <div
+            className={`shrink-0 overflow-hidden ${isDragging ? '' : 'transition-[width] duration-300 ease-in-out'}`}
+            style={{ width: isPanelOpen ? previewWidth : 0 }}
+          >
+            <DocumentPreviewPanel
+              previewFiles={previewFiles}
+              currentFile={previewCurrentFile}
+              onFileSelect={setPreviewCurrentFile}
+              isLoading={previewIsLoading}
+            />
+          </div>
+        </>
       )}
 
-      {/* 右侧文档预览面板 */}
-      <div
-        className={`shrink-0 overflow-hidden ${isDragging ? '' : 'transition-[width] duration-300 ease-in-out'}`}
-        style={{ width: isPanelOpen ? previewWidth : 0 }}
-      >
-        <DocumentPreviewPanel
-          previewFiles={previewFiles}
-          currentFile={previewCurrentFile}
-          onFileSelect={setPreviewCurrentFile}
-          isLoading={previewIsLoading}
-        />
-      </div>
+      {/* 手机端全屏文档预览 */}
+      {isMobile && showMobilePreview && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowMobilePreview(false)} />
+          <div className="fixed inset-0 z-50 flex flex-col animate-fade-in">
+            <div className={`flex items-center justify-end px-3 py-2 backdrop-blur-sm border-b ${isDarkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-white/90 border-slate-200'}`}>
+              <button onClick={() => setShowMobilePreview(false)} className={`p-1.5 rounded-lg ${isDarkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}`}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <DocumentPreviewPanel
+                previewFiles={previewFiles}
+                currentFile={previewCurrentFile}
+                onFileSelect={setPreviewCurrentFile}
+                isLoading={previewIsLoading}
+              />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

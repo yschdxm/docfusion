@@ -503,8 +503,60 @@ export default function WorkLog() {
   const hasAnyDayData = (source: number, template: number, output: number) => source > 0 || template > 0 || output > 0
 
   return (
-    <div className="flex flex-col h-full min-h-0 gap-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 shrink-0">
+    <div className="flex flex-col h-full min-h-0 gap-2.5">
+      {/* 手机端：紧凑统计 + 待办 */}
+      <div className="lg:hidden shrink-0 space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          <div className="glass px-2.5 py-2 rounded-lg flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-blue-100 flex items-center justify-center shrink-0">
+              <FileText className="w-3 h-3 text-blue-600" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-slate-900 leading-tight">{sourceDocs.length}</p>
+              <p className="text-[9px] text-slate-500 leading-tight truncate">{tr('源文档', 'Source', 'ソース')}</p>
+            </div>
+          </div>
+          <div className="glass px-2.5 py-2 rounded-lg flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-emerald-100 flex items-center justify-center shrink-0">
+              <Table className="w-3 h-3 text-emerald-600" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-slate-900 leading-tight">{templateDocs.length}</p>
+              <p className="text-[9px] text-slate-500 leading-tight truncate">{tr('模板', 'Template', 'テンプレート')}</p>
+            </div>
+          </div>
+          <div className="glass px-2.5 py-2 rounded-lg flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-amber-100 flex items-center justify-center shrink-0">
+              <FileOutput className="w-3 h-3 text-amber-600" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-slate-900 leading-tight">{outputDocs.length}</p>
+              <p className="text-[9px] text-slate-500 leading-tight truncate">{tr('输出', 'Output', '出力')}</p>
+            </div>
+          </div>
+        </div>
+        <div className="glass px-3 py-2 rounded-lg flex items-center gap-2">
+          <div className="w-6 h-6 rounded bg-violet-100 flex items-center justify-center shrink-0">
+            <ClipboardList className="w-3 h-3 text-violet-600" />
+          </div>
+          <input
+            value={todoInput}
+            onChange={(e) => setTodoInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') addTodo() }}
+            placeholder={tr('输入待办任务', 'Add todo', 'TODO入力')}
+            className="input h-7 text-[11px] flex-1 min-w-0"
+          />
+          <button onClick={addTodo} className="btn-secondary p-1">
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={() => setShowTodoModal(true)} className="text-[10px] text-primary-600 shrink-0">
+            {pendingTodos.length} {tr('项待办', 'todo', '件')}
+          </button>
+        </div>
+      </div>
+
+      {/* 桌面端：四列卡片 */}
+      <div className="hidden lg:grid grid-cols-4 gap-3 shrink-0">
         <div className="glass p-3 rounded-xl flex flex-col">
           <div className="mb-2 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 min-w-0">
@@ -612,38 +664,38 @@ export default function WorkLog() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-4">
+      <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-12 gap-2.5">
         <div className="xl:col-span-9 min-h-0 flex flex-col">
           <div className="glass rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col">
-            <div className="px-4 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
-              <div className="flex flex-wrap items-center gap-1.5">
+            <div className="px-3 sm:px-4 py-2 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-1">
                 <button
                   onClick={() => setActiveTab('calendar')}
-                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'calendar' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2 py-1 rounded-lg text-[11px] sm:text-xs ${activeTab === 'calendar' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {tr('日历总览', 'Calendar Overview', 'カレンダー概要')}</span>
+                  <span className="inline-flex items-center gap-1"><CalendarDays className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> {tr('日历', 'Calendar', 'カレンダー')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('funnel')}
-                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'funnel' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2 py-1 rounded-lg text-[11px] sm:text-xs ${activeTab === 'funnel' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1"><LayoutGrid className="w-3.5 h-3.5" /> {tr('完成率漏斗', 'Completion Funnel', '完了率ファネル')}</span>
+                  <span className="inline-flex items-center gap-1"><LayoutGrid className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> {tr('漏斗', 'Funnel', 'ファネル')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('templatePie')}
-                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'templatePie' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2 py-1 rounded-lg text-[11px] sm:text-xs ${activeTab === 'templatePie' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1"><PieChart className="w-3.5 h-3.5" /> {tr('模板使用排行', 'Template Usage Ranking', 'テンプレート利用ランキング')}</span>
+                  <span className="inline-flex items-center gap-1"><PieChart className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> {tr('模板排行', 'Templates', 'テンプレート')}</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('uploadTrend')}
-                  className={`px-2.5 py-1 rounded-lg text-xs ${activeTab === 'uploadTrend' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`px-2 py-1 rounded-lg text-[11px] sm:text-xs ${activeTab === 'uploadTrend' ? 'bg-primary-500/15 text-primary-600' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
-                  <span className="inline-flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5" /> {tr('上传量趋势', 'Upload Trend', 'アップロード推移')}</span>
+                  <span className="inline-flex items-center gap-1"><TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> {tr('趋势', 'Trend', '推移')}</span>
                 </button>
               </div>
 
-              <button onClick={exportWorkLog} className="btn-secondary px-2.5 py-1 text-xs">
+              <button onClick={exportWorkLog} className="btn-secondary px-2 py-1 sm:px-2.5 sm:py-1 text-[11px] sm:text-xs">
                 <Download className="w-3.5 h-3.5" />
                 {tr('导出工作日志', 'Export Work Log', '作業ログをエクスポート')}
               </button>
@@ -651,7 +703,7 @@ export default function WorkLog() {
 
             <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col">
             {activeTab === 'calendar' && (
-              <div className="p-4 flex-1 min-h-0 flex flex-col gap-3">
+              <div className="p-3 sm:p-4 flex-1 min-h-0 flex flex-col gap-2.5 sm:gap-3">
                 <div className="flex items-center justify-between gap-3 flex-wrap shrink-0">
                   <div className="flex items-center gap-2">
                     <button

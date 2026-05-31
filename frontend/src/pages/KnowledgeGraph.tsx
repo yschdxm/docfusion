@@ -206,9 +206,86 @@ export default function KnowledgeGraph() {
   const entityTypes = Array.from(new Set(allNodes.map((n) => n.type)))
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-0">
-        <div className="lg:col-span-1 flex flex-col gap-4 min-h-0 overflow-y-auto scrollbar-thin">
+    <div className="h-full flex flex-col gap-2.5 min-h-0">
+      {/* 手机端：紧凑筛选栏 */}
+      <div className="lg:hidden shrink-0 space-y-2">
+        <div className="glass px-3 py-2">
+          <div className="flex items-center gap-2">
+            <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span className="text-[11px] text-slate-500 shrink-0">{tr('文档', 'Docs', '文書')}</span>
+            <div className="flex-1 min-w-0 overflow-x-auto scrollbar-thin flex gap-1.5">
+              {sourceDocs.map((doc) => (
+                <label
+                  key={doc.id}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md cursor-pointer shrink-0 text-[11px] transition-colors ${
+                    selectedDocs.includes(doc.id)
+                      ? 'bg-blue-50 border border-blue-200 text-blue-700'
+                      : 'bg-slate-50 border border-transparent text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDocs.includes(doc.id)}
+                    onChange={() => toggleDocSelection(doc.id)}
+                    className="w-3 h-3 rounded border-slate-300 bg-white text-primary-500"
+                  />
+                  <span className="truncate max-w-[100px]">{doc.original_filename}</span>
+                </label>
+              ))}
+              {sourceDocs.length === 0 && <span className="text-[11px] text-slate-400 py-1">{tr('暂无文档', 'No docs', 'なし')}</span>}
+            </div>
+            {selectedDocs.length > 0 && (
+              <button onClick={() => setSelectedDocs([])} className="text-[10px] text-primary-500 shrink-0">清除</button>
+            )}
+          </div>
+        </div>
+        <div className="glass px-3 py-2 flex items-center gap-2">
+          <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <span className="text-[11px] text-slate-500 shrink-0">{tr('类型', 'Type', '種別')}</span>
+          <div className="flex-1 min-w-0">
+            <Dropdown
+              value={entityTypeFilter}
+              onChange={setEntityTypeFilter}
+              options={[{ value: 'all', label: tr('全部', 'All', 'すべて') }, ...entityTypes.map((type) => ({ value: type, label: type }))]}
+              placeholder={tr('全部类型', 'All Types', 'すべて')}
+            />
+          </div>
+          <div className="flex items-center gap-3 text-[11px] text-slate-500 shrink-0">
+            <span>{tr('节点', 'Nodes', 'ノード')} <b className="text-slate-700">{filteredNodes.length}</b></span>
+            <span>{tr('关系', 'Edges', 'エッジ')} <b className="text-slate-700">{filteredEdges.length}</b></span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setViewMode('graph')}
+              className={`px-2.5 py-1.5 rounded-lg text-[11px] flex items-center gap-1.5 transition-colors ${
+                viewMode === 'graph' ? 'bg-white text-slate-900 border border-slate-300 shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <NetworkIcon className="w-3.5 h-3.5" />
+              {tr('图谱', 'Graph', 'グラフ')}
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-2.5 py-1.5 rounded-lg text-[11px] flex items-center gap-1.5 transition-colors ${
+                viewMode === 'list' ? 'bg-white text-slate-900 border border-slate-300 shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <List className="w-3.5 h-3.5" />
+              {tr('列表', 'List', 'リスト')}
+            </button>
+          </div>
+          <button onClick={fetchGraph} disabled={isLoading} className="btn-secondary px-2.5 py-1.5 text-[11px] flex items-center gap-1">
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            {tr('刷新', 'Refresh', '更新')}
+          </button>
+        </div>
+      </div>
+
+      {/* 桌面端：左侧栏 + 右侧内容 */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-4 min-h-0">
+        <div className="hidden lg:flex lg:col-span-1 flex-col gap-4 min-h-0 overflow-y-auto scrollbar-thin">
           <div className="glass p-4">
             <h3 className="text-sm font-medium text-slate-500 mb-3 flex items-center gap-2">
               <FileText className="w-4 h-4" />
@@ -272,8 +349,9 @@ export default function KnowledgeGraph() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-4 min-h-0">
-          <div className="flex items-center justify-between shrink-0">
+        <div className="lg:col-span-3 flex flex-col gap-3 min-h-0">
+          {/* 桌面端工具栏 */}
+          <div className="hidden lg:flex items-center justify-between shrink-0">
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setViewMode('graph')}
@@ -323,12 +401,12 @@ export default function KnowledgeGraph() {
               {filteredNodes.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {filteredNodes.map((node) => (
-                    <div key={node.id} className="p-3 rounded-lg bg-slate-50 border border-slate-200 hover:border-primary-200 transition-colors">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="px-2 py-0.5 rounded text-xs border" style={typeBadgeStyle(node.type, isDark)}>{node.type}</span>
+                    <div key={node.id} className="p-2.5 sm:p-3 rounded-lg bg-slate-50 border border-slate-200 hover:border-primary-200 transition-colors">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] sm:text-xs border" style={typeBadgeStyle(node.type, isDark)}>{node.type}</span>
                       </div>
-                      <p className="text-slate-900 font-medium">{node.name}</p>
-                      {node.value && <p className="text-sm text-slate-500 mt-1 truncate">{node.value}</p>}
+                      <p className="text-sm sm:text-slate-900 font-medium">{node.name}</p>
+                      {node.value && <p className="text-[11px] sm:text-sm text-slate-500 mt-0.5 truncate">{node.value}</p>}
                     </div>
                   ))}
                 </div>

@@ -69,8 +69,8 @@ export default function Register() {
       <div className="auth-orb auth-orb-three bottom-[-15%] left-[-8%] h-72 w-72 bg-emerald-500/20" />
 
       <div className="relative z-10 mx-auto max-w-5xl overflow-hidden rounded-[28px] border border-white/15 bg-white/10 shadow-[0_30px_80px_rgba(15,23,42,.55)] backdrop-blur-xl">
-        <div className="grid grid-cols-1 lg:grid-cols-5">
-          <section className="border-b border-white/10 p-8 text-white lg:col-span-2 lg:border-b-0 lg:border-r lg:p-10">
+        <div className="lg:grid lg:grid-cols-5">
+          <section className="border-b border-white/10 p-8 text-white lg:col-span-2 lg:border-b-0 lg:border-r lg:p-10 hidden lg:block">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium">
               <Sparkles className="h-4 w-4" />
               创建你的企业工作空间
@@ -91,7 +91,7 @@ export default function Register() {
             </div>
           </section>
 
-          <section className="bg-white p-8 md:p-10 lg:col-span-3 lg:flex lg:items-center">
+          <section className="bg-white p-6 sm:p-8 md:p-10 lg:col-span-3 lg:flex lg:items-center">
             <div className="w-full">
               <h2 className="text-2xl font-semibold text-slate-900">注册账号</h2>
               <p className="mt-2 text-sm text-slate-500">填写信息后将自动登录并进入系统。</p>
