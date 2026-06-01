@@ -695,20 +695,14 @@ fill_mode 详解（针对指定表格的操作）：
         shutil.copy2(file_path, output_path)
 
         # 根据文件类型填写
-        try:
-            if file_type == "xlsx":
-                success = await self._fill_excel(output_path, data, fill_mode)
-            elif file_type == "docx":
-                success = await self._fill_word(output_path, data, fill_mode, target_table_index)
-            else:
-                return ToolResult(
-                    success=False,
-                    error=f"不支持的文件格式: {file_type}"
-                )
-        except ValueError as e:
+        if file_type == "xlsx":
+            success = await self._fill_excel(output_path, data, fill_mode)
+        elif file_type == "docx":
+            success = await self._fill_word(output_path, data, fill_mode, target_table_index)
+        else:
             return ToolResult(
                 success=False,
-                error=f"列名匹配失败: {str(e)}。请检查数据列名是否与模板表头一致。"
+                error=f"不支持的文件格式: {file_type}"
             )
 
         if not success:
@@ -787,20 +781,14 @@ fill_mode 详解（针对指定表格的操作）：
             )
 
         # 根据 fill_mode 更新数据
-        try:
-            if file_type == "xlsx":
-                success = await self._fill_excel(file_path, data, fill_mode)
-            elif file_type == "docx":
-                success = await self._fill_word(file_path, data, fill_mode, target_table_index)
-            else:
-                return ToolResult(
-                    success=False,
-                    error=f"不支持的文件格式: {file_type}"
-                )
-        except ValueError as e:
+        if file_type == "xlsx":
+            success = await self._fill_excel(file_path, data, fill_mode)
+        elif file_type == "docx":
+            success = await self._fill_word(file_path, data, fill_mode, target_table_index)
+        else:
             return ToolResult(
                 success=False,
-                error=f"列名匹配失败: {str(e)}。请检查数据列名是否与模板表头一致。"
+                error=f"不支持的文件格式: {file_type}"
             )
 
         if not success:
@@ -862,15 +850,6 @@ fill_mode 详解（针对指定表格的操作）：
             if first_row:
                 headers = [str(cell) if cell else f"Column_{i+1}" for i, cell in enumerate(first_row)]
 
-            # 检查列匹配
-            if headers and data:
-                unmatched_headers = self._check_headers_match(headers, data)
-                if unmatched_headers:
-                    raise ValueError(
-                        f"以下表头列在数据中找不到匹配项: {unmatched_headers}。"
-                        f"数据中的列名: {list(data[0].keys())}"
-                    )
-
             # 处理填写模式
             if fill_mode == "overwrite":
                 # 清空数据行，保留表头
@@ -891,65 +870,27 @@ fill_mode 详解（针对指定表格的操作）：
 
             return True
 
-        except ValueError as e:
-            # 列匹配错误，向上抛出
-            raise e
         except Exception as e:
             print(f"填写Excel失败: {e}")
             return False
 
-    @staticmethod
-    def _normalize_column_name(name: str) -> str:
-        """标准化列名：移除特殊字符（点号、下划线、空格等），转小写"""
-        import re
-        # 移除所有非中文、非字母、非数字的字符，然后转小写
-        return re.sub(r'[._\s\-/\\()（）]', '', name).lower()
-
-    def _find_matching_key(self, row_data: Dict, header: str):
-        """查找匹配的key，返回(key, value)元组，未找到返回(None, None)"""
+    def _get_value_for_header(self, row_data: Dict, header: str) -> str:
+        """智能列名匹配：精确匹配 → 大小写不敏感匹配 → 包含匹配"""
         # 1. 精确匹配
-        if header in row_data:
-            return header, row_data[header]
+        if header in row_data and row_data[header] is not None:
+            return str(row_data[header])
         # 2. 去空格+大小写不敏感匹配
         header_lower = header.strip().lower()
         for key, value in row_data.items():
-            if key.strip().lower() == header_lower:
-                return key, value
-        # 3. 特殊字符标准化匹配（处理 PM2.5 vs PM2_5 等情况）
-        header_normalized = self._normalize_column_name(header)
+            if value is not None and key.strip().lower() == header_lower:
+                return str(value)
+        # 3. 包含匹配（header 包含 key 或 key 包含 header）
         for key, value in row_data.items():
-            if self._normalize_column_name(key) == header_normalized:
-                return key, value
-        # 4. 包含匹配（header 包含 key 或 key 包含 header）
-        for key, value in row_data.items():
-            key_clean = key.strip().lower()
-            if header_lower in key_clean or key_clean in header_lower:
-                return key, value
-        return None, None
-
-    def _get_value_for_header(self, row_data: Dict, header: str) -> str:
-        """智能列名匹配：精确匹配 → 大小写不敏感匹配 → 特殊字符标准化匹配 → 包含匹配"""
-        _, value = self._find_matching_key(row_data, header)
-        return str(value) if value is not None else ""
-
-    def _check_headers_match(self, headers: List[str], data: List[Dict]) -> List[str]:
-        """检查所有表头是否都能匹配到数据，返回未匹配的表头列表"""
-        if not data:
-            return headers
-
-        # 使用第一条数据检查列匹配
-        sample_row = data[0]
-        unmatched = []
-        matched_keys = []
-
-        for header in headers:
-            matched_key, _ = self._find_matching_key(sample_row, header)
-            if matched_key is None:
-                unmatched.append(header)
-            else:
-                matched_keys.append(matched_key)
-
-        return unmatched
+            if value is not None:
+                key_clean = key.strip().lower()
+                if header_lower in key_clean or key_clean in header_lower:
+                    return str(value)
+        return ""
 
     def _is_empty_row(self, row) -> bool:
         """检查表格行是否为空（所有单元格都为空或只有空白字符）"""
@@ -988,15 +929,6 @@ fill_mode 详解（针对指定表格的操作）：
                 headers = [cell.text.strip() if cell.text.strip() else f"Column_{i+1}"
                           for i, cell in enumerate(first_row.cells)]
                 logger.info(f"[FillTableTool] 表头: {headers}")
-
-            # 检查列匹配
-            if headers and data:
-                unmatched_headers = self._check_headers_match(headers, data)
-                if unmatched_headers:
-                    raise ValueError(
-                        f"以下表头列在数据中找不到匹配项: {unmatched_headers}。"
-                        f"数据中的列名: {list(data[0].keys())}"
-                    )
 
             # 确定目标表格
             target_table = None
@@ -1112,9 +1044,6 @@ fill_mode 详解（针对指定表格的操作）：
 
             return True
 
-        except ValueError as e:
-            # 列匹配错误，向上抛出
-            raise e
         except Exception as e:
             logger.exception(f"[FillTableTool] 填写Word失败: {e}")
             return False

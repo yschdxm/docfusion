@@ -125,6 +125,14 @@ class ExtractFromDocsTool(BaseTool):
                     error="所有文档提取均失败:\n" + "\n".join(errors),
                 )
 
+            # 没有记录也没有错误（可能RAG检索为空或归一化/去重过滤掉了所有记录）
+            if not unique_records:
+                logger.warning(
+                    f"[ExtractFromDocsTool] 提取完成但未找到任何记录 | "
+                    f"doc_ids={doc_ids}, fields={fields}, "
+                    f"raw_records={len(all_records)}, errors={errors}"
+                )
+
             return ToolResult(
                 success=True,
                 data={
@@ -166,6 +174,10 @@ class ExtractFromDocsTool(BaseTool):
 
             # 合并检索结果
             contexts = [r.get("content", "") for r in results]
+            logger.info(
+                f"[ExtractFromDocsTool] RAG检索完成 | doc_id={doc_id}, "
+                f"chunks={len(contexts)}, top_k={top_k}"
+            )
 
             if contexts:
                 # 使用LLM批量提取记录
@@ -178,8 +190,16 @@ class ExtractFromDocsTool(BaseTool):
                     max_records=max_records
                 )
                 records.extend(extracted_records)
+                logger.info(
+                    f"[ExtractFromDocsTool] LLM提取完成 | doc_id={doc_id}, "
+                    f"raw_records={len(extracted_records)}"
+                )
+            else:
+                logger.warning(
+                    f"[ExtractFromDocsTool] RAG未检索到任何chunks | doc_id={doc_id}"
+                )
 
         except Exception as e:
-            print(f"RAG提取失败 {doc_id}: {e}")
+            logger.error(f"[ExtractFromDocsTool] RAG提取失败 {doc_id}: {e}")
 
         return records

@@ -917,47 +917,6 @@ class LLMService:
 
             result = self._extract_json(response)
             records = result.get("records", [])
-
-            # 确保每条记录都包含所有表头列（缺失的设为null）
-            # 解析表头列表
-            header_list = [h.strip() for h in table_headers.split(",") if h.strip()]
-            if header_list and records:
-                import re
-                def normalize_col_name(name: str) -> str:
-                    """标准化列名：移除特殊字符，转小写"""
-                    return re.sub(r'[._\s\-/\\()（）]', '', name).lower()
-
-                normalized_records = []
-                for record in records:
-                    normalized = {}
-                    for header in header_list:
-                        # 1. 精确匹配
-                        value = record.get(header)
-                        # 2. 忽略大小写匹配
-                        if value is None:
-                            for key, val in record.items():
-                                if key.strip().lower() == header.strip().lower():
-                                    value = val
-                                    break
-                        # 3. 特殊字符标准化匹配（处理 PM2.5 vs PM2_5 等）
-                        if value is None:
-                            header_norm = normalize_col_name(header)
-                            for key, val in record.items():
-                                if normalize_col_name(key) == header_norm:
-                                    value = val
-                                    break
-                        # 4. 包含匹配
-                        if value is None:
-                            for key, val in record.items():
-                                key_clean = key.strip().lower()
-                                header_clean = header.strip().lower()
-                                if header_clean in key_clean or key_clean in header_clean:
-                                    value = val
-                                    break
-                        normalized[header] = value
-                    normalized_records.append(normalized)
-                records = normalized_records
-
             logger.debug("[BATCH-EXTRACT] 解析成功: %d 条记录", len(records))
             return records
         except LLMError as e:

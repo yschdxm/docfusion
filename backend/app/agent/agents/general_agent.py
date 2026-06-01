@@ -106,6 +106,8 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
 - 委派结果中的 download_url 必须直接告诉用户，不要尝试自行修改或重新执行
 - 汇报文档编辑/填表结果时，**必须输出 Markdown 可点击下载链接**：
   - 格式：`[点击下载编辑后的文档](download_url)` 或 `[点击下载填写完成的文档](download_url)`
+  - **download_url 必须使用工具返回的相对路径（如 `/api/v1/documents/xxx/download`），禁止添加域名前缀**
+  - **绝对禁止**自行编造完整URL（如 `https://xxx.com/api/v1/...`），系统会自动解析域名
   - 禁止省略链接、禁止只写纯文本URL
 """
 
