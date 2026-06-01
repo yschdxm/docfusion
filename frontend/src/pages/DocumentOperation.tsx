@@ -22,11 +22,24 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
     href.includes('/documents/') && href.includes('/download')
   )
 
+  // 规范化下载链接：提取相对路径部分
+  const normalizeDownloadHref = (url: string): string => {
+    // 如果是完整URL（包含域名），提取路径部分
+    try {
+      const urlObj = new URL(url)
+      return urlObj.pathname  // 返回路径部分，如 /api/v1/documents/xxx/download
+    } catch {
+      // 不是完整URL，直接返回原值
+      return url
+    }
+  }
+
   const handleClick = async (e: React.MouseEvent) => {
     if (!isDownloadLink || !href) return
     e.preventDefault()
     try {
-      const response = await api.get(href.replace(/^\/api\/v1/, ''), { responseType: 'blob' })
+      const normalizedPath = normalizeDownloadHref(href)
+      const response = await api.get(normalizedPath.replace(/^\/api\/v1/, ''), { responseType: 'blob' })
       const contentDisposition = response.headers['content-disposition'] as string | undefined
       let filename = 'download'
       if (contentDisposition) {

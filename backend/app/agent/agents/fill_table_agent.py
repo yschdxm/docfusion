@@ -208,6 +208,8 @@ fill_table(
    - 使用 fill_table 返回的 `download_url` 字段
    - 格式：`[点击下载填写完成的文档](download_url)`
    - **必须使用 Markdown 链接格式，确保用户可以点击下载**
+   - **download_url 必须使用工具返回的相对路径（如 `/api/v1/documents/xxx/download`），禁止添加域名前缀**
+   - **绝对禁止**自行编造完整URL（如 `https://xxx.com/api/v1/...`），系统会自动解析域名
 
 ## 多表格文档填写策略
 

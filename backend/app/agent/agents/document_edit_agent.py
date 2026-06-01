@@ -97,6 +97,8 @@ DOCUMENT_EDIT_SYSTEM_PROMPT = """你是一个专业的文档编辑Agent，专注
    - 使用最后一次编辑工具返回的 `download_url` 字段
    - 格式：`[点击下载编辑后的文档](download_url)`
    - **必须使用标准 Markdown 链接格式 `[文字](URL)`**
+   - **download_url 必须使用工具返回的相对路径（如 `/api/v1/documents/xxx/download`），禁止添加域名前缀**
+   - **绝对禁止**自行编造完整URL（如 `https://xxx.com/api/v1/...`），系统会自动解析域名
    - **禁止省略下载链接，禁止只写纯文本URL，禁止写"您可以下载查看"却不给链接**
 
 ## 示例：连续编辑工作流
