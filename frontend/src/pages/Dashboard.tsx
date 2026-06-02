@@ -28,6 +28,7 @@ const dashboardI18n = {
     modules: '共 4 个模块',
     formats: '支持的文件格式',
     logoAlt: '知融云枢Logo',
+    brandName: '知融云枢',
     enter: '进入',
     recentDocs: '最近文档',
     viewAll: '查看全部',
@@ -58,6 +59,7 @@ const dashboardI18n = {
     modules: '4 modules',
     formats: 'Supported Formats',
     logoAlt: 'ZhiRong Hub Logo',
+    brandName: 'ZhiRong Hub',
     enter: 'Enter',
     recentDocs: 'Recent Documents',
     viewAll: 'View All',
@@ -88,6 +90,7 @@ const dashboardI18n = {
     modules: '全4モジュール',
     formats: '対応フォーマット',
     logoAlt: '知融云枢ロゴ',
+    brandName: '知融云枢',
     enter: '入力',
     recentDocs: '最近の文書',
     viewAll: 'すべて表示',
@@ -241,7 +244,7 @@ export default function Dashboard() {
         <div className="relative z-10 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-base lg:text-lg font-semibold text-slate-900">
-              {t.welcome} <span className="gradient-text">知融云枢</span>
+              {t.welcome} <span className="gradient-text">{t.brandName}</span>
             </h1>
             <p className="mt-0.5 max-w-2xl text-[10px] lg:text-[11px] leading-4 text-slate-500 line-clamp-1">{t.heroDesc}</p>
             <div className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-500">
@@ -326,6 +329,7 @@ export default function Dashboard() {
                       <button
                         key={doc.id}
                         onClick={() => setPreviewDoc(doc)}
+                        title={doc.original_filename}
                         className="flex items-center gap-2 px-3 py-1.5 lg:py-2 hover:bg-slate-50/60 transition-colors w-full text-left"
                       >
                         <FileText className="w-3 h-3 text-slate-400 shrink-0" />

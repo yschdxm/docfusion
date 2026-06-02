@@ -304,6 +304,7 @@ export default function DocumentManager() {
           <span>{tr(`“${docName}” 将在 4 秒后删除`, `"${docName}" will be deleted in 4s`, `「${docName}」は4秒後に削除されます`)}</span>
           <button
             className="btn-secondary px-2 py-1 text-xs"
+            title={tr('撤销', 'Undo', '元に戻す')}
             onClick={() => {
               clearPendingDeleteTimer(timerKey)
               toast.dismiss(t.id)
@@ -409,7 +410,7 @@ export default function DocumentManager() {
       return (
         <div className="flex items-center gap-2">
           <span className="status-badge status-pending">{tr('排队中', 'Queued', '待機中')}</span>
-          <span className="text-xs text-slate-500">{status.current_step || '等待处理...'}</span>
+          <span className="text-xs text-slate-500">{status.current_step || tr('等待处理...', 'Waiting...', '処理待ち...')}</span>
         </div>
       )
     }
@@ -453,6 +454,7 @@ export default function DocumentManager() {
               handleRetryExtraction(doc.id, doc.original_filename)
             }}
             className="text-xs text-blue-700 hover:text-blue-800"
+            title={tr('重新提取', 'Retry extraction', '再抽出')}
           >
             {tr('重新提取', 'Retry extraction', '再抽出')}
           </button>
@@ -645,7 +647,7 @@ export default function DocumentManager() {
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
             {selectedDocs.length > 0 && (
-              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-1 px-2 py-1 text-red-400 hover:text-red-300 text-[11px]">
+              <button onClick={handleBatchDelete} className="btn-secondary flex items-center gap-1 px-2 py-1 text-red-400 hover:text-red-300 text-[11px]" title={tr('批量删除', 'Batch Delete', '一括削除')}>
                 <Trash2 className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">{tr('删除', 'Delete', '削除')}</span>
                 ({selectedDocs.length})
@@ -711,13 +713,14 @@ export default function DocumentManager() {
                     >
                       <Eye className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
-                    <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
+                    <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} title={tr('下载', 'Download', 'ダウンロード')} className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
                       <Download className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
                     {canEditDoc(doc) && (
                       <button
                         onClick={() => handleDelete(doc.id, doc.original_filename)}
                         aria-label={tr('删除文档', 'Delete document', '文書を削除')}
+                        title={tr('删除', 'Delete', '削除')}
                         className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
                       >
                         <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />

@@ -235,7 +235,7 @@ export default function KnowledgeGraph() {
               {sourceDocs.length === 0 && <span className="text-[11px] text-slate-400 py-1">{tr('暂无文档', 'No docs', 'なし')}</span>}
             </div>
             {selectedDocs.length > 0 && (
-              <button onClick={() => setSelectedDocs([])} className="text-[10px] text-primary-500 shrink-0">清除</button>
+              <button onClick={() => setSelectedDocs([])} title={tr('清除选择', 'Clear selection', '選択をクリア')} className="text-[10px] text-primary-500 shrink-0">{tr('清除', 'Clear', 'クリア')}</button>
             )}
           </div>
         </div>
@@ -259,6 +259,7 @@ export default function KnowledgeGraph() {
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setViewMode('graph')}
+              title={tr('图谱视图', 'Graph View', 'グラフ表示')}
               className={`px-2.5 py-1.5 rounded-lg text-[11px] flex items-center gap-1.5 transition-colors ${
                 viewMode === 'graph' ? 'bg-white text-slate-900 border border-slate-300 shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
               }`}
@@ -268,6 +269,7 @@ export default function KnowledgeGraph() {
             </button>
             <button
               onClick={() => setViewMode('list')}
+              title={tr('列表视图', 'List View', 'リスト表示')}
               className={`px-2.5 py-1.5 rounded-lg text-[11px] flex items-center gap-1.5 transition-colors ${
                 viewMode === 'list' ? 'bg-white text-slate-900 border border-slate-300 shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-50'
               }`}
@@ -276,7 +278,7 @@ export default function KnowledgeGraph() {
               {tr('列表', 'List', 'リスト')}
             </button>
           </div>
-          <button onClick={fetchGraph} disabled={isLoading} className="btn-secondary px-2.5 py-1.5 text-[11px] flex items-center gap-1">
+          <button onClick={fetchGraph} disabled={isLoading} title={tr('刷新', 'Refresh', '更新')} className="btn-secondary px-2.5 py-1.5 text-[11px] flex items-center gap-1">
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             {tr('刷新', 'Refresh', '更新')}
           </button>
@@ -314,7 +316,7 @@ export default function KnowledgeGraph() {
               {sourceDocs.length === 0 && <p className="text-xs text-slate-500 text-center py-2">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</p>}
             </div>
             {selectedDocs.length > 0 && (
-              <button onClick={() => setSelectedDocs([])} className="mt-3 text-xs text-primary-500 hover:text-primary-600">
+              <button onClick={() => setSelectedDocs([])} title={tr('清除选择（显示全部）', 'Clear selection (show all)', '選択をクリア（すべて表示）')} className="mt-3 text-xs text-primary-500 hover:text-primary-600">
                 {tr('清除选择（显示全部）', 'Clear selection (show all)', '選択をクリア（すべて表示）')}
               </button>
             )}
@@ -355,6 +357,7 @@ export default function KnowledgeGraph() {
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setViewMode('graph')}
+                title={tr('图谱视图', 'Graph View', 'グラフ表示')}
                 className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${
                   viewMode === 'graph'
                     ? 'bg-white text-slate-900 border border-slate-300 shadow-sm'
@@ -366,6 +369,7 @@ export default function KnowledgeGraph() {
               </button>
               <button
                 onClick={() => setViewMode('list')}
+                title={tr('列表视图', 'List View', 'リスト表示')}
                 className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${
                   viewMode === 'list'
                     ? 'bg-white text-slate-900 border border-slate-300 shadow-sm'
@@ -376,7 +380,7 @@ export default function KnowledgeGraph() {
                 {tr('列表视图', 'List View', 'リスト表示')}
               </button>
             </div>
-            <button onClick={fetchGraph} disabled={isLoading} className="btn-secondary flex items-center gap-2">
+            <button onClick={fetchGraph} disabled={isLoading} title={tr('刷新', 'Refresh', '更新')} className="btn-secondary flex items-center gap-2">
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
               {tr('刷新', 'Refresh', '更新')}
             </button>

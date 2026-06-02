@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { TaskStats } from '../services/agentStreamService'
 import { getTheme } from '../services/theme'
+import { useI18n } from '../hooks/useI18n'
 
 interface TaskStatsBadgeProps {
   stats: TaskStats
@@ -59,6 +60,8 @@ function AnimatedNumber({ value, formatter }: { value: number; formatter: (n: nu
 }
 
 export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: TaskStatsBadgeProps) {
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const [expanded, setExpanded] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
 
@@ -102,7 +105,7 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
           </svg>
-          <AnimatedNumber value={stats.total_tokens} formatter={formatTokens} /> tokens
+          <AnimatedNumber value={stats.total_tokens} formatter={formatTokens} /> {tr('tokens', 'tokens', 'トークン')}
         </div>
 
         <span className={isLive ? (isDarkMode ? 'text-blue-500' : 'text-blue-300') : (isDarkMode ? 'text-slate-600' : 'text-slate-300')}>|</span>
@@ -112,7 +115,7 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
           </svg>
-          <AnimatedNumber value={stats.llm_calls} formatter={(n) => n.toString()} /> 次调用
+          <AnimatedNumber value={stats.llm_calls} formatter={(n) => n.toString()} /> {tr('次调用', 'calls', '回呼び出し')}
         </div>
 
         {/* 展开/收起图标 */}
@@ -139,23 +142,23 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
         }`}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
             <div className="flex justify-between">
-              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>输入tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>{tr('输入tokens:', 'Input tokens:', '入力トークン:')}</span>
               <AnimatedNumber value={stats.prompt_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>输出tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>{tr('输出tokens:', 'Output tokens:', '出力トークン:')}</span>
               <AnimatedNumber value={stats.completion_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>缓存tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>{tr('缓存tokens:', 'Cached tokens:', 'キャッシュトークン:')}</span>
               <AnimatedNumber value={stats.cached_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>思考tokens:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>{tr('思考tokens:', 'Reasoning tokens:', '推論トークン:')}</span>
               <AnimatedNumber value={stats.reasoning_tokens} formatter={formatTokens} />
             </div>
             <div className="flex justify-between">
-              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>迭代次数:</span>
+              <span className={isLive ? (isDarkMode ? 'text-blue-400' : 'text-blue-400') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')}>{tr('迭代次数:', 'Iterations:', '反復回数:')}</span>
               <AnimatedNumber value={stats.iterations} formatter={(n) => n.toString()} />
             </div>
           </div>

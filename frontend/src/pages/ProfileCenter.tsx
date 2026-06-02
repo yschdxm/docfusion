@@ -163,7 +163,7 @@ export default function ProfileCenter() {
               </label>
             </div>
 
-            <button type="submit" className="btn-primary px-4 py-2" disabled={isSaving}>
+            <button type="submit" title={t.save} className="btn-primary px-4 py-2" disabled={isSaving}>
               <Save className="h-4 w-4" />
               {isSaving ? t.saving : t.save}
             </button>
@@ -220,7 +220,7 @@ export default function ProfileCenter() {
 
           <div className="mt-1 flex items-center justify-between gap-3 md:col-span-2">
             <p className="text-xs text-slate-500">{t.passwordTip}</p>
-            <button type="submit" className="btn-secondary px-4 py-2 text-xs shrink-0">{t.updatePassword}</button>
+            <button type="submit" title={t.updatePassword} className="btn-secondary px-4 py-2 text-xs shrink-0">{t.updatePassword}</button>
           </div>
         </form>
       </section>

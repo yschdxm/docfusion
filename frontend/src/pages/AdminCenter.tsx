@@ -100,6 +100,25 @@ const zh = {
   providers: '个供应商',
   // 按钮提示
   toggleStatus: '启用/停用', prevPage: '上一页', nextPage: '下一页',
+  // Toast消息
+  toastFillApiKey: '请先填写 API Key 和 Base URL',
+  toastModelsFetched: (n: number) => `获取到 ${n} 个模型`,
+  toastFetchFailed: '获取模型列表失败',
+  toastUserUpdated: '用户信息已更新',
+  toastRoleUpdated: '角色已更新',
+  toastUserStatusUpdated: '用户状态已更新',
+  toastConfigSaved: '配置已保存',
+  toastDocShared: '文档已设为共享',
+  toastSharedRemoved: '已取消共享',
+  toastConfirmRoleChange: '确定要修改该用户的角色吗？',
+  toastConfirmUnshared: '确定要取消该文档的共享吗？',
+  toastFillModelFields: (provider: string, model: string) => `请填写供应商「${provider}」中模型「${model}」的上下文长度和最大输出长度`,
+  // 其他
+  noProviders: '暂无供应商，点击上方按钮添加',
+  unnamedProvider: '未命名供应商',
+  notConfigured: '未配置',
+  searchDocs: '搜索文档...',
+  totalRecords: (n: number) => `共 ${n} 条`,
   toggleReg: '切换注册状态', showKey: '显示密钥', hideKey: '隐藏密钥',
   removeProvider: '删除供应商', fetchModelsHint: '获取模型列表',
   addModelHint: '点击添加模型', removeModelHint: '移除模型',
@@ -149,6 +168,25 @@ const en = {
   providers: ' providers',
   // Button tooltips
   toggleStatus: 'Enable/Disable', prevPage: 'Previous', nextPage: 'Next',
+  // Toast messages
+  toastFillApiKey: 'Please fill in API Key and Base URL first',
+  toastModelsFetched: (n: number) => `Fetched ${n} models`,
+  toastFetchFailed: 'Failed to fetch model list',
+  toastUserUpdated: 'User info updated',
+  toastRoleUpdated: 'Role updated',
+  toastUserStatusUpdated: 'User status updated',
+  toastConfigSaved: 'Config saved',
+  toastDocShared: 'Document set as shared',
+  toastSharedRemoved: 'Sharing removed',
+  toastConfirmRoleChange: 'Change this user\'s role?',
+  toastConfirmUnshared: 'Remove sharing for this document?',
+  toastFillModelFields: (provider: string, model: string) => `Fill in max context and output tokens for「${provider}」-「${model}」`,
+  // Other
+  noProviders: 'No providers yet, click above to add',
+  unnamedProvider: 'Unnamed provider',
+  notConfigured: 'Not configured',
+  searchDocs: 'Search documents...',
+  totalRecords: (n: number) => `${n} total`,
   toggleReg: 'Toggle registration', showKey: 'Show key', hideKey: 'Hide key',
   removeProvider: 'Remove provider', fetchModelsHint: 'Fetch model list',
   addModelHint: 'Click to add model', removeModelHint: 'Remove model',
@@ -161,9 +199,73 @@ const en = {
   outputDocsCat: 'Output',
 }
 
+const ja = {
+  title: '管理センター',
+  tabs: { users: 'ユーザー管理', registration: '登録制御', models: 'モデル設定', docs: '共有文書' },
+  search: 'ユーザー名/メール/電話番号を検索', roleFilter: 'すべての役割',
+  user: 'ユーザー', admin: '管理者', superAdmin: 'スーパー管理者',
+  active: '有効', inactive: '無効', edit: '編集', viewFiles: 'ファイル表示',
+  username: 'ユーザー名', email: 'メール', phone: '電話番号', role: '役割', status: 'ステータス', actions: '操作',
+  password: 'パスワード', newPassword: '新しいパスワード', passwordHint: '空欄なら変更なし',
+  save: '保存', cancel: 'キャンセル', close: '閉じる',
+  regOpen: '登録開放', regClosed: '登録停止', regHint: '停止すると新規ユーザーは登録できません',
+  apiKey: 'API Key', baseUrl: 'Base URL', model: 'モデル名', selectModel: 'モデルを選択',
+  fetchModels: 'モデル取得', fetching: '取得中...', maxCtx: 'コンテキスト長', maxOut: '最大出力長',
+  llmConfig: 'LLMプロバイダー設定', addLlm: 'プロバイダー追加', removeLlm: '削除',
+  embConfig: '埋め込みモデル設定', rerankConfig: 'リランクモデル設定',
+  rateLimit: 'レート制限', rpm: 'リクエスト/分 (RPM)', tpm: 'トークン/分 (TPM)',
+  providerName: 'プロバイダー名', providerNameHint: '例: openai, deepseek, mimo',
+  sharedDocs: '共有文書', noDocs: '文書なし', sourceDocs: 'ソース文書', templates: 'テンプレート', outputDocs: '出力文書', all: 'すべて',
+  addShared: '共有文書を追加', setShared: '共有に設定', removeShared: '共有解除',
+  editUser: 'ユーザー編集', userFiles: 'ユーザーファイル',
+  roleChangeHint: '注意：管理者は他のユーザーに管理者権限を付与できません',
+  selfProtect: '自分のアカウントステータスは変更できません',
+  deleteConfirm: 'このプロバイダーとすべてのモデルを削除しますか？',
+  addModel: 'モデル追加',
+  noModels: 'モデルがありません。先にモデルを取得してください',
+  modelsCount: '個のモデル',
+  availableModels: '利用可能なモデル',
+  clickToAdd: 'クリックして追加',
+  removeModel: '削除',
+  importConfig: '設定インポート',
+  exportConfig: '設定エクスポート',
+  exportSuccess: '設定をエクスポートしました',
+  importSuccess: 'インポート完了',
+  importFormatError: '設定ファイルの形式が正しくありません',
+  importParseError: '設定ファイルの解析に失敗しました。JSON形式を確認してください',
+  providers: ' プロバイダー',
+  toggleStatus: '有効/無効', prevPage: '前へ', nextPage: '次へ',
+  toastFillApiKey: 'API KeyとBase URLを先に設定してください',
+  toastModelsFetched: (n: number) => `${n} 個のモデルを取得しました`,
+  toastFetchFailed: 'モデル一覧の取得に失敗しました',
+  toastUserUpdated: 'ユーザー情報を更新しました',
+  toastRoleUpdated: '役割を更新しました',
+  toastUserStatusUpdated: 'ユーザーステータスを更新しました',
+  toastConfigSaved: '設定を保存しました',
+  toastDocShared: '文書を共有に設定しました',
+  toastSharedRemoved: '共有を解除しました',
+  toastConfirmRoleChange: 'このユーザーの役割を変更しますか？',
+  toastConfirmUnshared: 'この文書の共有を解除しますか？',
+  toastFillModelFields: (provider: string, model: string) => `「${provider}」-「${model}」のコンテキスト長と最大出力を入力してください`,
+  noProviders: 'プロバイダーがありません。上のボタンで追加してください',
+  unnamedProvider: '名称未設定',
+  notConfigured: '未設定',
+  searchDocs: '文書を検索...',
+  totalRecords: (n: number) => `全 ${n} 件`,
+  toggleReg: '登録切替', showKey: 'キー表示', hideKey: 'キー非表示',
+  removeProvider: 'プロバイダー削除', fetchModelsHint: 'モデル一覧を取得',
+  addModelHint: 'クリックしてモデル追加', removeModelHint: 'モデル削除',
+  importHint: 'JSONから設定をインポート', exportHint: '設定をJSONでエクスポート',
+  saveHint: 'すべての設定を保存', removeSharedHint: '共有解除', setSharedHint: '共有に設定',
+  sourceDocsCat: 'ソース', templateDocsCat: 'テンプレート', allDocs: 'すべて',
+  download: 'ダウンロード', preview: 'プレビュー',
+  downloadSuccess: 'ダウンロード開始', downloadFail: 'ダウンロード失敗',
+  outputDocsCat: '出力文書',
+}
+
 export default function AdminCenter() {
   const { language } = useI18n()
-  const tl = language === 'en-US' ? en : zh
+  const tl = language === 'en-US' ? en : language === 'ja-JP' ? ja : zh
   const currentUser = getAuthUser()
   const isSuper = isSuperAdmin()
 
@@ -316,7 +418,7 @@ export default function AdminCenter() {
   const handleFetchModels = async (providerId: string) => {
     const provider = providers.find((p) => p.id === providerId)
     if (!provider || !provider.api_key || !provider.base_url) {
-      toast.error('请先填写 API Key 和 Base URL')
+      toast.error(tl.toastFillApiKey)
       return
     }
     setFetchingModels(providerId)
@@ -327,9 +429,9 @@ export default function AdminCenter() {
       })
       const modelNames = data.models.map((m: any) => m.id)
       setFetchedModels((prev) => ({ ...prev, [providerId]: modelNames }))
-      toast.success(`获取到 ${modelNames.length} 个模型`)
+      toast.success(tl.toastModelsFetched(modelNames.length))
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '获取模型列表失败')
+      toast.error(error.response?.data?.detail || tl.toastFetchFailed)
     } finally {
       setFetchingModels(null)
     }
@@ -368,7 +470,7 @@ export default function AdminCenter() {
   const handleFetchModelsForService = async (type: 'embedding' | 'rerank') => {
     const form = type === 'embedding' ? embeddingForm : rerankForm
     if (!form.api_key || !form.base_url) {
-      toast.error('请先填写 API Key 和 Base URL')
+      toast.error(tl.toastFillApiKey)
       return
     }
     setFetchingModels(type)
@@ -383,9 +485,9 @@ export default function AdminCenter() {
       } else {
         setRerankFetchedModels(modelNames)
       }
-      toast.success(`获取到 ${modelNames.length} 个模型`)
+      toast.success(tl.toastModelsFetched(modelNames.length))
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '获取模型列表失败')
+      toast.error(error.response?.data?.detail || tl.toastFetchFailed)
     } finally {
       setFetchingModels(null)
     }
@@ -397,24 +499,24 @@ export default function AdminCenter() {
     if (!editingUser) return
     try {
       await updateAdminUser(editingUser.id, { username: editForm.username, email: editForm.email, phone: editForm.phone, password: editForm.password || undefined })
-      toast.success('用户信息已更新'); setEditingUser(null); loadUsers()
+      toast.success(tl.toastUserUpdated); setEditingUser(null); loadUsers()
     } catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
   const handleChangeRole = async (userId: string, newRole: string) => {
-    if (!confirm('确定要修改该用户的角色吗？')) return
-    try { await updateUserRole(userId, newRole); toast.success('角色已更新'); loadUsers() }
+    if (!confirm(tl.toastConfirmRoleChange)) return
+    try { await updateUserRole(userId, newRole); toast.success(tl.toastRoleUpdated); loadUsers() }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
   const handleToggleUserStatus = async (user: AdminUser) => {
     if (user.id === currentUser?.id) { toast.error(tl.selfProtect); return }
-    try { await updateAdminUser(user.id, { is_active: !user.is_active }); toast.success('用户状态已更新'); loadUsers() }
+    try { await updateAdminUser(user.id, { is_active: !user.is_active }); toast.success(tl.toastUserStatusUpdated); loadUsers() }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
   const handleSaveRegistration = async () => {
-    try { await updateSystemConfigs({ registration_enabled: String(registrationEnabled) }); toast.success('配置已保存') }
+    try { await updateSystemConfigs({ registration_enabled: String(registrationEnabled) }); toast.success(tl.toastConfigSaved) }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
@@ -423,7 +525,7 @@ export default function AdminCenter() {
     for (const p of providers) {
       for (const m of p.models) {
         if (!m.max_context_tokens || !m.max_output_tokens) {
-          toast.error(`请填写供应商「${p.name || '未命名'}」中模型「${m.name}」的上下文长度和最大输出长度`)
+          toast.error(tl.toastFillModelFields(p.name || tl.unnamedProvider, m.name))
           return
         }
       }
@@ -461,20 +563,20 @@ export default function AdminCenter() {
       configs.llm_tpm = rateLimitForm.tpm
 
       await updateSystemConfigs(configs)
-      toast.success('配置已保存')
+      toast.success(tl.toastConfigSaved)
     } catch (error: any) {
       toast.error(error.response?.data?.detail || '操作失败')
     }
   }
 
   const handleSetShared = async (docId: string) => {
-    try { await setDocShared(docId); toast.success('文档已设为共享'); loadSharedDocs(); loadAllDocs() }
+    try { await setDocShared(docId); toast.success(tl.toastDocShared); loadSharedDocs(); loadAllDocs() }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
   const handleRemoveShared = async (docId: string) => {
-    if (!confirm('确定要取消该文档的共享吗？')) return
-    try { await removeDocShared(docId); toast.success('已取消共享'); loadSharedDocs(); loadAllDocs() }
+    if (!confirm(tl.toastConfirmUnshared)) return
+    try { await removeDocShared(docId); toast.success(tl.toastSharedRemoved); loadSharedDocs(); loadAllDocs() }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
   }
 
@@ -713,7 +815,7 @@ export default function AdminCenter() {
       <div className="shrink-0 pb-4 border-b border-slate-200 dark:border-slate-700">
         <div className="flex gap-1 sm:gap-2 overflow-x-auto pb-1 scrollbar-none">
         {tabs.map((tab) => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+          <button key={tab.key} onClick={() => setActiveTab(tab.key)} title={tab.label}
             className={`flex items-center gap-2 rounded-xl px-3 sm:px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap ${
               activeTab === tab.key ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/25' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}>
@@ -791,13 +893,13 @@ export default function AdminCenter() {
 
           {totalUsers > 20 && (
             <div className="flex items-center justify-between">
-              <span className="text-sm text-slate-500 dark:text-slate-400">共 {totalUsers} 条</span>
+              <span className="text-sm text-slate-500 dark:text-slate-400">{tl.totalRecords(totalUsers)}</span>
               <div className="flex gap-2">
                 <button onClick={() => setUserPage((p) => Math.max(1, p - 1))} disabled={userPage === 1}
-                  className="rounded-lg px-3 py-1.5 text-sm bg-slate-100 dark:bg-slate-700 disabled:opacity-50">上一页</button>
+                  className="rounded-lg px-3 py-1.5 text-sm bg-slate-100 dark:bg-slate-700 disabled:opacity-50" title={tl.prevPage}>{tl.prevPage}</button>
                 <span className="rounded-lg bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 text-sm text-blue-700 dark:text-blue-300">{userPage}</span>
                 <button onClick={() => setUserPage((p) => p + 1)} disabled={userPage * 20 >= totalUsers}
-                  className="rounded-lg px-3 py-1.5 text-sm bg-slate-100 dark:bg-slate-700 disabled:opacity-50">下一页</button>
+                  className="rounded-lg px-3 py-1.5 text-sm bg-slate-100 dark:bg-slate-700 disabled:opacity-50" title={tl.nextPage}>{tl.nextPage}</button>
               </div>
             </div>
           )}
@@ -840,7 +942,7 @@ export default function AdminCenter() {
           <div>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{tl.llmConfig}</h3>
-              <button onClick={addProvider}
+              <button onClick={addProvider} title={tl.addLlm}
                 className="flex items-center gap-1.5 rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25">
                 <Plus className="h-4 w-4" />{tl.addLlm}
               </button>
@@ -848,7 +950,7 @@ export default function AdminCenter() {
 
             {providers.length === 0 && (
               <div className="rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-8 text-center text-slate-400 dark:text-slate-500">
-                暂无供应商，点击上方按钮添加
+                {tl.noProviders}
               </div>
             )}
 
@@ -861,11 +963,11 @@ export default function AdminCenter() {
                     <div className="flex items-center gap-3 min-w-0">
                       <div className={`w-3 h-3 rounded-full shrink-0 ${expandedProvider === provider.id ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
                       <div className="min-w-0">
-                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{provider.name || '未命名供应商'}</p>
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{provider.name || tl.unnamedProvider}</p>
                         <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                           {provider.models.length > 0
                             ? `${provider.models.length} ${tl.modelsCount}: ${provider.models.map((m) => m.name).join(', ')}`
-                            : provider.base_url || '未配置'}
+                            : provider.base_url || tl.notConfigured}
                         </p>
                       </div>
                     </div>
@@ -1034,7 +1136,7 @@ export default function AdminCenter() {
             <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-3">{tl.sharedDocs}</h3>
             <div className="flex gap-2 mb-4 overflow-x-auto">
               {[{ key: '', label: tl.all }, { key: 'source', label: tl.sourceDocs }, { key: 'template', label: tl.templates }, { key: 'output', label: tl.outputDocs }].map((cat) => (
-                <button key={cat.key} onClick={() => setSharedDocCategory(cat.key)}
+                <button key={cat.key} onClick={() => setSharedDocCategory(cat.key)} title={cat.label}
                   className={`rounded-xl px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${sharedDocCategory === cat.key ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/25' : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'}`}>
                   {cat.label}
                 </button>
@@ -1069,7 +1171,7 @@ export default function AdminCenter() {
             <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-3">{tl.addShared}</h3>
             <div className="relative mb-4">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="搜索文档..." value={docSearch} onChange={(e) => setDocSearch(e.target.value)}
+              <input type="text" placeholder={tl.searchDocs} value={docSearch} onChange={(e) => setDocSearch(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-blue-500" />
             </div>
 
@@ -1112,8 +1214,8 @@ export default function AdminCenter() {
               {renderFormInput(tl.newPassword, editForm.password, (v) => setEditForm({ ...editForm, password: v }), { placeholder: tl.passwordHint })}
             </div>
             <div className="flex justify-end gap-3 mt-6">
-              <button onClick={() => setEditingUser(null)} className="rounded-xl px-5 py-2.5 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">{tl.cancel}</button>
-              <button onClick={handleSaveUser} className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25">{tl.save}</button>
+              <button onClick={() => setEditingUser(null)} title={tl.cancel} className="rounded-xl px-5 py-2.5 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">{tl.cancel}</button>
+              <button onClick={handleSaveUser} title={tl.save} className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25">{tl.save}</button>
             </div>
           </div>
         </div>

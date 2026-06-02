@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import api from '../services/api'
+import { tr } from '../services/i18n'
 
 export interface Message {
   id?: number
@@ -81,7 +82,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const sessions: ChatSession[] = response.data.map((conv: any) => ({
         id: conv.id,
         documentId: conv.file_ids?.[0] || null,
-        documentName: conv.title || '新对话',
+        documentName: conv.title || tr('新对话', 'New Chat', '新しい会話'),
         fileIds: conv.file_ids || [],
         templateId: conv.template_id,
         messages: [],
@@ -160,11 +161,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 const filledDocId = task.filled_doc_id || task.result?.filled_doc_id
                 messages[i] = {
                   ...msg,
-                  content: '表格填写完成！您可以下载填写后的文件。',
+                  content: tr('表格填写完成！您可以下载填写后的文件。', 'Table fill complete! You can download the file.', '表の入力が完了しました。ファイルをダウンロードできます。'),
                   action_data: {
                     action_type: 'completed',
-                    title: '表格填写完成',
-                    description: '已完成',
+                    title: tr('表格填写完成', 'Table Fill Complete', '表入力完了'),
+                    description: tr('已完成', 'Completed', '完了'),
                     progress: 100,
                     result: {
                       filled_file_id: filledDocId,
@@ -175,16 +176,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               } else if (task.status === 'failed') {
                 messages[i] = {
                   ...msg,
-                  content: `表格填写失败：${task.error || task.result?.error || '未知错误'}`,
+                  content: `${tr('表格填写失败：', 'Table fill failed: ', '表の入力失敗: ')}${task.error || task.result?.error || tr('未知错误', 'Unknown error', '不明なエラー')}`,
                   action_data: {
                     action_type: 'failed',
-                    title: '表格填写失败',
-                    description: task.error || task.result?.error || '未知错误'
+                    title: tr('表格填写失败', 'Table Fill Failed', '表入力失敗'),
+                    description: task.error || task.result?.error || tr('未知错误', 'Unknown error', '不明なエラー')
                   }
                 }
               } else if (task.status === 'processing') {
                 const progress = parseInt(task.result?.progress) || 0
-                const currentStep = task.result?.current_step || '处理中...'
+                const currentStep = task.result?.current_step || tr('处理中...', 'Processing...', '処理中...')
                 messages[i] = {
                   ...msg,
                   action_data: {
@@ -223,7 +224,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           updatedSessions.unshift({
             id: conv.id,
             documentId: conv.file_ids?.[0] || null,
-            documentName: conv.title || '新对话',
+            documentName: conv.title || tr('新对话', 'New Chat', '新しい会話'),
             fileIds: conv.file_ids || [],
             templateId: conv.template_id,
             messages,

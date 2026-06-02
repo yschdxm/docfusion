@@ -63,21 +63,21 @@ const i18n = {
   },
   'ja-JP': {
     page: {
-      '/': 'Dashboard',
-      '/documents': 'Documents',
-      '/document-operation': 'Doc Operations',
-      '/knowledge': 'Knowledge Graph',
-      '/work-log': 'Work Log',
-      '/profile': 'Profile',
+      '/': 'ダッシュボード',
+      '/documents': 'ドキュメント管理',
+      '/document-operation': 'スマート操作',
+      '/knowledge': 'ナレッジグラフ',
+      '/work-log': '作業ログ',
+      '/profile': 'プロフィール',
       '/admin': '管理センター',
     },
-    genericPage: 'Page',
-    settings: 'Settings',
-    settingsTabs: { preferences: 'Preferences', theme: 'Theme', language: 'Language' },
-    pref: { on: 'On', off: 'Off' },
-    enterProfile: 'Profile',
-    userFallback: 'User',
-    logout: 'Logout',
+    genericPage: 'ページ',
+    settings: '設定',
+    settingsTabs: { preferences: 'システム設定', theme: 'テーマ', language: '言語' },
+    pref: { on: 'オン', off: 'オフ' },
+    enterProfile: 'プロフィール',
+    userFallback: 'ユーザー',
+    logout: 'ログアウト',
   },
 } as const
 
@@ -271,7 +271,8 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
             <button
               onClick={onToggleSidebar}
               className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0"
-              aria-label={sidebarOpen ? '关闭菜单' : '打开菜单'}
+              aria-label={sidebarOpen ? tr('关闭菜单', 'Close menu', 'メニューを閉じる') : tr('打开菜单', 'Open menu', 'メニューを開く')}
+              title={sidebarOpen ? tr('关闭菜单', 'Close menu', 'メニューを閉じる') : tr('打开菜单', 'Open menu', 'メニューを開く')}
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 {sidebarOpen ? (
@@ -295,6 +296,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                 setShowNoticePanel((prev) => !prev)
               }}
               aria-label={tr('打开通知中心', 'Open notifications', '通知を開く')}
+              title={tr('通知', 'Notifications', '通知')}
               className={`relative rounded-lg border p-1.5 transition-colors ${
                 isDarkMode
                   ? 'border-slate-600 bg-slate-700 text-slate-400 hover:bg-slate-600'
@@ -315,7 +317,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
               }`}>
                 <div className="mb-2 flex items-center justify-between">
                   <p className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{tr('桌面通知', 'Desktop Notifications', 'デスクトップ通知')}</p>
-                  <button onClick={markAllRead} className="text-xs text-primary-600 hover:text-primary-700">
+                  <button onClick={markAllRead} className="text-xs text-primary-600 hover:text-primary-700" title={tr('全部已读', 'Mark all read', 'すべて既読')}>
                     {tr('全部已读', 'Mark all read', 'すべて既読')}
                   </button>
                 </div>
@@ -373,6 +375,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
                         : isDarkMode ? 'text-slate-300' : 'text-slate-600'
                     }`}
+                    title={dict.settingsTabs.preferences}
                   >
                     {dict.settingsTabs.preferences}
                   </button>
@@ -383,6 +386,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
                         : isDarkMode ? 'text-slate-300' : 'text-slate-600'
                     }`}
+                    title={dict.settingsTabs.theme}
                   >
                     {dict.settingsTabs.theme}
                   </button>
@@ -393,6 +397,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         ? isDarkMode ? 'bg-slate-600 text-primary-400 shadow-sm' : 'bg-white text-primary-600 shadow-sm'
                         : isDarkMode ? 'text-slate-300' : 'text-slate-600'
                     }`}
+                    title={dict.settingsTabs.language}
                   >
                     {dict.settingsTabs.language}
                   </button>
@@ -418,6 +423,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         key={item.key}
                         type="button"
                         onClick={() => togglePreference(item.key as keyof PreferenceState)}
+                        title={item.label}
                         className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
                           isDarkMode
                             ? 'border-slate-600 bg-slate-700 hover:bg-slate-600'
@@ -464,6 +470,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         <button
                           key={option.value}
                           onClick={() => handleThemeChange(option.value)}
+                          title={label}
                           className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
                             theme === option.value
                               ? isDarkMode ? 'bg-blue-900/40' : 'bg-primary-50'
@@ -490,6 +497,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                       <button
                         key={item}
                         onClick={() => handleLanguageChange(item)}
+                        title={languageLabelMap[item]}
                         className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
                           language === item
                             ? isDarkMode ? 'bg-blue-900/40' : 'bg-primary-50'
@@ -547,6 +555,7 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                         type="button"
                         onClick={() => setActiveHelpSection((prev) => (prev === section.key ? null : (section.key as 'modules' | 'workflow' | 'shortcuts' | 'faq')))}
                         className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium ${isDarkMode ? 'text-slate-200 hover:bg-slate-600' : 'text-slate-800 hover:bg-slate-100'}`}
+                        title={section.title}
                       >
                         <span>{section.title}</span>
                         <ChevronDown className={`h-4 w-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'} transition-transform ${activeHelpSection === section.key ? 'rotate-180' : ''}`} />

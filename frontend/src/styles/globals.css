@@ -369,6 +369,14 @@
   border-color: #334155 !important;
 }
 
+[data-theme='night-mode'] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155 !important;
+}
+
+[data-theme='night-mode'] .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155 !important;
+}
+
 [data-theme='night-mode'] .hover\:bg-slate-50:hover,
 [data-theme='night-mode'] .hover\:bg-slate-100:hover,
 [data-theme='night-mode'] .hover\:bg-white:hover {

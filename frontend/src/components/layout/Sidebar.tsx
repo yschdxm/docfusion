@@ -44,7 +44,7 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
             options.push({ value: model.id, label: model.name })
           })
         } else {
-          options.push({ value: '', label: language === 'zh-CN' ? '请先配置模型' : 'Configure models first' })
+          options.push({ value: '', label: t.configureModel })
         }
 
         setModelOptions(options)
@@ -59,7 +59,7 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
   const handleModelSwitch = async (model: string) => {
     if (!model) {
       // 如果选择的是空值（请先配置模型），提示用户
-      toast.error(language === 'zh-CN' ? '请先在管理中心配置LLM模型' : 'Please configure LLM model in Admin Center first')
+      toast.error(t.configureModelHint)
       return
     }
     if (model === currentModel) return
@@ -78,7 +78,7 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: t.dashboard },
     { path: '/documents', icon: FolderOpen, label: t.documents },
-    { path: '/document-operation', icon: FileText, label: language === 'zh-CN' ? '智能助手' : t.operation },
+    { path: '/document-operation', icon: FileText, label: t.operation },
     { path: '/knowledge', icon: Network, label: t.knowledge },
     { path: '/work-log', icon: NotebookPen, label: t.workLog },
     ...(isAdmin()
@@ -86,7 +86,7 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
           {
             path: '/admin',
             icon: ShieldCheck,
-            label: language === 'zh-CN' ? '管理中心' : language === 'ja-JP' ? '管理センター' : 'Admin Center',
+            label: t.adminCenter,
           },
         ]
       : []),
@@ -102,7 +102,8 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
             <button
               onClick={onClose}
               className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              aria-label="关闭菜单"
+              aria-label={t.closeMenu}
+              title={t.closeMenu}
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -150,7 +151,7 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
 
       <div className="border-t border-slate-200/80 px-4 py-4">
         <div className={`rounded-xl border border-slate-200 px-4 py-3 ${isDarkMode ? 'night-mode-gradient-bg' : 'bg-[linear-gradient(180deg,#ffffff,#f6f9ff)]'}`}>
-          <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Engine</p>
+          <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{t.engine}</p>
           <Dropdown
             value={currentModel}
             onChange={handleModelSwitch}

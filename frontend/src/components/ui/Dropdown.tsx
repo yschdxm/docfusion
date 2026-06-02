@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, Search } from 'lucide-react'
+import { useI18n } from '../../hooks/useI18n'
 
 interface DropdownOption {
   value: string
@@ -22,7 +23,7 @@ export default function Dropdown({
   value,
   onChange,
   options,
-  placeholder = '请选择',
+  placeholder,
   className = '',
   buttonClassName = '',
   icon,
@@ -33,6 +34,8 @@ export default function Dropdown({
   const [search, setSearch] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
 
   const selectedOption = options.find(opt => opt.value === value)
 
@@ -62,6 +65,7 @@ export default function Dropdown({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
+        title={selectedOption?.label || placeholder || tr('请选择', 'Please select', '選択してください')}
         className={`w-full flex items-center gap-2 px-3 py-2 bg-transparent border-0 rounded-lg
                   hover:bg-slate-100/50 transition-colors text-left ${buttonClassName}`}
       >
@@ -83,7 +87,7 @@ export default function Dropdown({
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="搜索..."
+                  placeholder={tr('搜索...', 'Search...', '検索...')}
                   className="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-slate-100 pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-transparent"
                   onClick={(e) => e.stopPropagation()}
                 />
@@ -106,7 +110,7 @@ export default function Dropdown({
             ))
           ) : (
             <div className="px-4 py-3 text-sm text-slate-500 text-center">
-              {search ? '无匹配结果' : '暂无选项'}
+              {search ? tr('无匹配结果', 'No matching results', '一致する結果がありません') : tr('暂无选项', 'No options', 'オプションなし')}
             </div>
           )}
         </div>
