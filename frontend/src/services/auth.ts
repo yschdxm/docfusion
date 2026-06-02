@@ -6,6 +6,8 @@ export interface AuthUser {
   email: string
   phone: string
   is_active: boolean
+  role: 'user' | 'admin' | 'super_admin'
+  selected_model?: string
   created_at: string
   updated_at: string
 }
@@ -44,6 +46,14 @@ export const getAuthUser = (): AuthUser | null => {
 export const getAuthToken = (): string | null => localStorage.getItem(AUTH_TOKEN_KEY)
 
 export const getLastLoginAt = (): string | null => localStorage.getItem(AUTH_LAST_LOGIN_AT_KEY)
+
+export const setAuthUserField = (updates: Partial<AuthUser>) => {
+  const user = getAuthUser()
+  if (!user) return
+  const updated = { ...user, ...updates }
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(updated))
+  window.dispatchEvent(new Event(AUTH_USER_CHANGED_EVENT))
+}
 
 export const isAuthenticated = (): boolean => Boolean(getAuthToken() && getAuthUser())
 
@@ -103,4 +113,23 @@ export const logout = () => {
   localStorage.removeItem(AUTH_USER_KEY)
   localStorage.removeItem(AUTH_TOKEN_KEY)
   window.dispatchEvent(new Event(AUTH_USER_CHANGED_EVENT))
+}
+
+export const isAdmin = (): boolean => {
+  const user = getAuthUser()
+  return user?.role === 'admin' || user?.role === 'super_admin'
+}
+
+export const isSuperAdmin = (): boolean => {
+  const user = getAuthUser()
+  return user?.role === 'super_admin'
+}
+
+export const checkRegistrationEnabled = async (): Promise<boolean> => {
+  try {
+    const { data } = await api.get('/admin/configs/registration')
+    return data.enabled
+  } catch {
+    return true // 默认开放注册
+  }
 }

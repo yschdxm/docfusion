@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +13,8 @@ class UserProfile(BaseModel):
     email: str
     phone: str
     is_active: bool
+    role: str
+    selected_model: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

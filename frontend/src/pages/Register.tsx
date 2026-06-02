@@ -1,9 +1,9 @@
-﻿import { FormEvent, useMemo, useState } from 'react'
+﻿import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ArrowRight, Lock, Mail, Smartphone, UserRound, Sparkles, Shield } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { isAxiosError } from 'axios'
-import { isAuthenticated, registerWithPassword } from '../services/auth'
+import { isAuthenticated, registerWithPassword, checkRegistrationEnabled } from '../services/auth'
 
 const strengthTips = ['建议使用 8 位以上密码', '包含字母和数字更安全', '请避免使用常见弱密码']
 
@@ -15,14 +15,34 @@ export default function Register() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [registrationEnabled, setRegistrationEnabled] = useState<boolean | null>(null)
 
   const canSubmit = useMemo(
     () => Boolean(name.trim() && email.trim() && phone.trim() && password.trim() && confirmPassword.trim()),
     [name, email, phone, password, confirmPassword]
   )
 
+  useEffect(() => {
+    checkRegistrationEnabled().then(setRegistrationEnabled)
+  }, [])
+
   if (isAuthenticated()) {
     return <Navigate to="/" replace />
+  }
+
+  if (registrationEnabled === false) {
+    return (
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
+        <div className="auth-bg-grid" />
+        <div className="relative z-10 mx-auto max-w-md rounded-2xl border border-white/15 bg-white/10 p-8 text-center backdrop-blur-xl">
+          <h2 className="text-2xl font-semibold text-white">注册功能已关闭</h2>
+          <p className="mt-3 text-sm text-slate-300">系统当前未开放注册，请联系管理员。</p>
+          <Link to="/login" className="mt-6 inline-block rounded-lg bg-blue-500 px-6 py-2 text-sm font-medium text-white hover:bg-blue-600">
+            返回登录
+          </Link>
+        </div>
+      </div>
+    )
   }
 
   const handleSubmit = async (e: FormEvent) => {

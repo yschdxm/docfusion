@@ -7,13 +7,24 @@ import DocumentOperation from './pages/DocumentOperation'
 import KnowledgeGraph from './pages/KnowledgeGraph'
 import WorkLog from './pages/WorkLog'
 import ProfileCenter from './pages/ProfileCenter'
+import AdminCenter from './pages/AdminCenter'
 import Login from './pages/Login'
 import Register from './pages/Register'
-import { fetchCurrentUser, isAuthenticated, logout } from './services/auth'
+import { fetchCurrentUser, isAuthenticated, logout, isAdmin } from './services/auth'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   if (!isAuthenticated()) {
     return <Navigate to="/login" replace />
+  }
+  return children
+}
+
+function RequireAdmin({ children }: { children: JSX.Element }) {
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />
+  }
+  if (!isAdmin()) {
+    return <Navigate to="/" replace />
   }
   return children
 }
@@ -67,6 +78,14 @@ function App() {
         <Route path="knowledge" element={<KnowledgeGraph />} />
         <Route path="work-log" element={<WorkLog />} />
         <Route path="profile" element={<ProfileCenter />} />
+        <Route
+          path="admin"
+          element={
+            <RequireAdmin>
+              <AdminCenter />
+            </RequireAdmin>
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Search } from 'lucide-react'
 
 interface DropdownOption {
   value: string
@@ -15,6 +15,7 @@ interface DropdownProps {
   buttonClassName?: string
   icon?: React.ReactNode
   dropup?: boolean
+  searchable?: boolean
 }
 
 export default function Dropdown({
@@ -25,22 +26,36 @@ export default function Dropdown({
   className = '',
   buttonClassName = '',
   icon,
-  dropup = false
+  dropup = false,
+  searchable = false,
 }: DropdownProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   const selectedOption = options.find(opt => opt.value === value)
+
+  const filteredOptions = searchable && search
+    ? options.filter(opt => opt.label.toLowerCase().includes(search.toLowerCase()))
+    : options
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false)
+        setSearch('')
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  useEffect(() => {
+    if (isOpen && searchable && searchInputRef.current) {
+      searchInputRef.current.focus()
+    }
+  }, [isOpen, searchable])
 
   return (
     <div className={`relative ${className}`} ref={dropdownRef}>
@@ -59,13 +74,30 @@ export default function Dropdown({
 
       {isOpen && (
         <div className={`absolute left-0 right-0 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-[9999] ${dropup ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
-          {options.length > 0 ? (
-            options.map((option) => (
+          {searchable && (
+            <div className="sticky top-0 bg-white dark:bg-slate-800 p-2 border-b border-slate-200 dark:border-slate-600">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="搜索..."
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-slate-100 pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-transparent"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+            </div>
+          )}
+          {filteredOptions.length > 0 ? (
+            filteredOptions.map((option) => (
               <div
                 key={option.value}
                 onClick={() => {
                   onChange(option.value)
                   setIsOpen(false)
+                  setSearch('')
                 }}
                 className={`dropdown-item ${value === option.value ? 'dropdown-item-active' : ''}`}
               >
@@ -74,7 +106,7 @@ export default function Dropdown({
             ))
           ) : (
             <div className="px-4 py-3 text-sm text-slate-500 text-center">
-              暂无选项
+              {search ? '无匹配结果' : '暂无选项'}
             </div>
           )}
         </div>

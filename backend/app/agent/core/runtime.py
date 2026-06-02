@@ -353,7 +353,9 @@ class AgentRuntime:
         cancel_event: Optional[asyncio.Event] = None,
         on_stream_created=None,
         stream_manager: Optional['StreamManager'] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        user_selected_model: Optional[str] = None,
+        db=None,
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
@@ -361,6 +363,8 @@ class AgentRuntime:
             cancel_event: 取消事件，当设置时任务会被取消
             on_stream_created: 回调函数，接收创建的StreamManager
             stream_manager: 外部传入的StreamManager（用于断线重连场景）
+            user_selected_model: 用户选择的模型名称
+            db: 数据库会话
         """
         stream = stream_manager or StreamManager()
         if on_stream_created:
@@ -384,7 +388,7 @@ class AgentRuntime:
         # 启动执行任务
         logger.debug("[AgentRuntime.run_stream] 创建执行task")
         task = asyncio.create_task(
-            self._execute_loop(message, context, tracker, stream, cancel_event)
+            self._execute_loop(message, context, tracker, stream, cancel_event, user_selected_model=user_selected_model, db=db)
         )
 
         # 流式输出事件
@@ -450,7 +454,9 @@ class AgentRuntime:
         context: ToolContext,
         tracker: StepTracker,
         stream: StreamManager,
-        cancel_event: Optional[asyncio.Event] = None
+        cancel_event: Optional[asyncio.Event] = None,
+        user_selected_model: Optional[str] = None,
+        db=None,
     ) -> Dict[str, Any]:
         """执行主循环 - 使用原生工具调用和流式输出"""
         logger.info("[AgentRuntime._execute_loop] 进入执行循环 (原生工具调用)")
@@ -557,6 +563,8 @@ class AgentRuntime:
                     enable_thinking=True,
                     stream=True,
                     tools=openai_tools,
+                    user_selected_model=user_selected_model,
+                    db=db,
                 )
 
                 has_emitted_thinking_end = False

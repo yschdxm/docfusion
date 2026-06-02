@@ -8,29 +8,48 @@ settings = get_settings()
 
 
 class EmbeddingService:
-    """嵌入服务 - 使用模力方舟API"""
-    
+    """嵌入服务 - 支持OpenAI兼容的嵌入API"""
+
     def __init__(self):
-        self.api_key = settings.GITEE_AI_API_KEY
-        self.base_url = settings.GITEE_AI_BASE_URL
-        self.model = settings.EMBEDDING_MODEL
-        # SSL验证：总开关 AND Gitee AI开关
-        self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_GITEE_AI
-        logger.info(f"EmbeddingService初始化: model={self.model}, base_url={self.base_url}, ssl_verify={self.ssl_verify}")
+        self.api_key = ""
+        self.base_url = ""
+        self.model = ""
+        self.ssl_verify = settings.SSL_VERIFY
+        self._configured = False
+        logger.info("EmbeddingService初始化: 等待数据库配置")
+
+    async def apply_db_config(self, db) -> bool:
+        """从数据库应用配置"""
+        from app.services.config_service import config_service
+
+        self.api_key = await config_service.get(db, "embedding_api_key", "")
+        self.base_url = await config_service.get(db, "embedding_base_url", "")
+        self.model = await config_service.get(db, "embedding_model", "")
+
+        if not self.api_key or not self.base_url or not self.model:
+            logger.warning("嵌入服务配置不完整，请在管理中心配置")
+            return False
+
+        self._configured = True
+        logger.info(f"EmbeddingService配置已应用: model={self.model}, base_url={self.base_url}")
+        return True
     
     async def embed(self, texts: Union[str, List[str]]) -> List[List[float]]:
         """
         将文本转换为向量
-        
+
         Args:
             texts: 单个文本或文本列表
-            
+
         Returns:
             向量列表
         """
+        if not self._configured:
+            raise RuntimeError("嵌入服务未配置，请在管理中心配置嵌入模型")
+
         if isinstance(texts, str):
             texts = [texts]
-        
+
         logger.info(f"调用嵌入API: model={self.model}, texts_count={len(texts)}")
         
         async with httpx.AsyncClient(verify=self.ssl_verify) as client:

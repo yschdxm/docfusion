@@ -1,9 +1,9 @@
-﻿import { FormEvent, useMemo, useState } from 'react'
+﻿import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ArrowRight, Lock, Mail, ShieldCheck, Sparkles, Building2, CheckCircle2, Smartphone } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { isAxiosError } from 'axios'
-import { isAuthenticated, loginWithPassword } from '../services/auth'
+import { isAuthenticated, loginWithPassword, checkRegistrationEnabled } from '../services/auth'
 
 const highlights = ['企业级文档流转', '多源数据融合处理', '任务状态可追踪']
 
@@ -12,8 +12,13 @@ export default function Login() {
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [registrationEnabled, setRegistrationEnabled] = useState(true)
 
   const canSubmit = useMemo(() => Boolean(account.trim() && password.trim()), [account, password])
+
+  useEffect(() => {
+    checkRegistrationEnabled().then(setRegistrationEnabled)
+  }, [])
 
   if (isAuthenticated()) {
     return <Navigate to="/" replace />
@@ -140,9 +145,11 @@ export default function Login() {
                 <ShieldCheck className="h-3.5 w-3.5" />
                 受保护的连接
               </span>
-              <Link to="/register" className="font-medium text-primary-600 hover:text-primary-700">
-                没有账号？立即注册
-              </Link>
+              {registrationEnabled && (
+                <Link to="/register" className="font-medium text-primary-600 hover:text-primary-700">
+                  没有账号？立即注册
+                </Link>
+              )}
             </div>
           </div>
         </section>

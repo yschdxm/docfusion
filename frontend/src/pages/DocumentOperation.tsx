@@ -4,6 +4,7 @@ import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api from '../services/api'
+import { getAuthUser } from '../services/auth'
 import { useDocumentStore } from '../stores/documentStore'
 import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
@@ -581,6 +582,13 @@ export default function DocumentOperation() {
 
     if (!actionConfirmed && pendingAction) {
       toast.error(tr('请先处理待确认的操作', 'Please handle the pending action first', '保留中の操作を先に処理してください'))
+      return
+    }
+
+    // 检查用户是否已选择模型
+    const user = getAuthUser()
+    if (!user?.selected_model) {
+      toast.error(tr('请先在左下角选择一个模型', 'Please select a model first', 'まず左下でモデルを選択してください'))
       return
     }
 

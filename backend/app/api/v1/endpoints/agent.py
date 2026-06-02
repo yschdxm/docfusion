@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from app.core.deps import get_current_user
+from app.db.postgres import get_db
 from app.models.user import User
 from app.services.llm_service import llm_service
 from app.core.config import get_settings
@@ -100,14 +102,111 @@ async def get_model_config(current_user: User = Depends(get_current_user)):
     return llm_service.get_model_info()
 
 
+@router.get("/models")
+async def get_available_models(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取可用模型列表（所有用户可访问）"""
+    from app.services.config_service import config_service
+    import json as json_lib
+
+    configs = await config_service.get_all(db)
+    config_map = {c.key: c.value for c in configs}
+
+    models = []
+
+    # 从新的供应商JSON格式解析
+    providers_json = config_map.get('llm_providers', '')
+    if providers_json:
+        try:
+            providers = json_lib.loads(providers_json)
+            for provider in providers:
+                provider_id = provider.get('id', '')
+                provider_name = provider.get('name', '')
+                # 查找该供应商的所有模型
+                prefix = f'llm_{provider_id}_'
+                for key in config_map:
+                    if key.startswith(prefix) and key.endswith('_max_context_tokens'):
+                        model_name = key[len(prefix):-len('_max_context_tokens')]
+                        if model_name:
+                            models.append({
+                                "id": model_name,
+                                "name": model_name,
+                                "provider": provider_name,
+                            })
+        except json_lib.JSONDecodeError:
+            pass
+
+    # 获取用户选择的模型（如果用户未选择过则为空）
+    selected_model = current_user.selected_model or ""
+
+    return {"models": models, "current": selected_model}
+
+
 @router.post("/model/switch")
 async def switch_model(
     request: SwitchModelRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """切换模型提供商"""
+    """切换模型（从数据库配置中加载）"""
     try:
-        result = llm_service.switch_model(request.provider)
+        from app.services.config_service import config_service
+        import json as json_lib
+
+        model_name = request.provider  # provider参数现在是模型名称
+
+        # 从数据库获取所有配置
+        configs = await config_service.get_all(db)
+        config_map = {c.key: c.value for c in configs}
+
+        # 从新的供应商JSON格式中查找模型
+        providers_json = config_map.get('llm_providers', '')
+        if not providers_json:
+            return {"success": False, "error": "未配置任何LLM供应商"}
+
+        providers = json_lib.loads(providers_json)
+
+        found = False
+        for provider in providers:
+            provider_id = provider.get('id', '')
+            api_key = provider.get('api_key', '')
+            base_url = provider.get('base_url', '')
+
+            # 检查该供应商下是否有这个模型
+            ctx_key = f'llm_{provider_id}_{model_name}_max_context_tokens'
+            out_key = f'llm_{provider_id}_{model_name}_max_output_tokens'
+
+            if ctx_key in config_map and out_key in config_map:
+                max_context_tokens = config_map.get(ctx_key, '')
+                max_output_tokens = config_map.get(out_key, '')
+
+                if not max_context_tokens or not max_output_tokens:
+                    continue
+
+                if not api_key or not base_url:
+                    return {"success": False, "error": f"供应商 {provider.get('name', '')} 的 API Key 或 Base URL 未配置"}
+
+                # 更新配置
+                result = llm_service.update_config(
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=model_name,
+                    max_context_tokens=int(max_context_tokens),
+                    max_output_tokens=int(max_output_tokens)
+                )
+
+                found = True
+                break
+
+        if not found:
+            return {"success": False, "error": f"未找到模型 {model_name} 的配置"}
+
+        # 保存用户选择到数据库
+        current_user.selected_model = model_name
+        await db.commit()
+
         return {"success": True, **result}
-    except ValueError as e:
+    except Exception as e:
         return {"success": False, "error": str(e)}

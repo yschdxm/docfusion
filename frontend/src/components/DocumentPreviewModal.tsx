@@ -337,7 +337,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {previewData?.preview_type === 'onlyoffice' && (
+            {previewData?.preview_type === 'onlyoffice' && previewData?.can_edit && (
               <button
                 onClick={() => setOfficeMode((c) => (c === 'edit' ? 'view' : 'edit'))}
                 className="btn-secondary flex items-center gap-2 px-4 py-2"

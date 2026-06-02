@@ -7,10 +7,12 @@ export interface DocumentInfo {
   filename: string
   original_filename: string
   file_type: string
-  doc_category: string  // 'source' | 'template'
+  doc_category: string  // 'source' | 'template' | 'output'
   file_size?: number
   status: string
   created_at: string
+  user_id?: string | null
+  is_shared?: boolean
   extraction_status?: {
     task_id: string
     status: 'queued' | 'processing' | 'completed' | 'failed'

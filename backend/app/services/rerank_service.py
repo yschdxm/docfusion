@@ -8,15 +8,31 @@ settings = get_settings()
 
 
 class RerankService:
-    """重排服务 - 使用模力方舟API"""
-    
+    """重排服务 - 支持OpenAI兼容的重排API"""
+
     def __init__(self):
-        self.api_key = settings.GITEE_AI_API_KEY
-        self.base_url = settings.GITEE_AI_BASE_URL
-        self.model = settings.RERANK_MODEL
-        # SSL验证：总开关 AND Gitee AI开关
-        self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_GITEE_AI
-        logger.info(f"RerankService初始化: model={self.model}, base_url={self.base_url}, ssl_verify={self.ssl_verify}")
+        self.api_key = ""
+        self.base_url = ""
+        self.model = ""
+        self.ssl_verify = settings.SSL_VERIFY
+        self._configured = False
+        logger.info("RerankService初始化: 等待数据库配置")
+
+    async def apply_db_config(self, db) -> bool:
+        """从数据库应用配置"""
+        from app.services.config_service import config_service
+
+        self.api_key = await config_service.get(db, "rerank_api_key", "")
+        self.base_url = await config_service.get(db, "rerank_base_url", "")
+        self.model = await config_service.get(db, "rerank_model", "")
+
+        if not self.api_key or not self.base_url or not self.model:
+            logger.warning("重排服务配置不完整，请在管理中心配置")
+            return False
+
+        self._configured = True
+        logger.info(f"RerankService配置已应用: model={self.model}, base_url={self.base_url}")
+        return True
     
     async def rerank(
         self,
@@ -26,15 +42,18 @@ class RerankService:
     ) -> List[Dict[str, Any]]:
         """
         对文档进行重排序
-        
+
         Args:
             query: 查询文本
             documents: 待排序的文档列表
             top_n: 返回前N个结果
-            
+
         Returns:
             重排后的结果列表，包含index和relevance_score
         """
+        if not self._configured:
+            raise RuntimeError("重排服务未配置，请在管理中心配置重排模型")
+
         logger.info(f"调用重排API: model={self.model}, query_len={len(query)}, docs_count={len(documents)}, top_n={top_n}")
         
         async with httpx.AsyncClient(verify=self.ssl_verify) as client:

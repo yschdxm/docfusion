@@ -17,7 +17,16 @@ import {
 import toast from 'react-hot-toast'
 import Dropdown from '../components/ui/Dropdown'
 import api from '../services/api'
+import { getAuthUser, isAdmin } from '../services/auth'
 import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
+
+// 判断当前用户是否可以编辑/删除文档
+const canEditDoc = (doc: DocumentInfo): boolean => {
+  const user = getAuthUser()
+  if (!user) return false
+  if (isAdmin()) return true
+  return doc.user_id === user.id
+}
 import { useI18n } from '../hooks/useI18n'
 import DocumentPreviewModal from '../components/DocumentPreviewModal'
 
@@ -314,10 +323,19 @@ export default function DocumentManager() {
       toast.error(tr('请先选择要删除的文档', 'Select documents to delete first', '先に削除対象の文書を選択してください'))
       return
     }
-    if (!confirm(tr(`确认删除选中的 ${selectedDocs.length} 个文档吗？`, `Delete ${selectedDocs.length} selected documents?`, `選択した ${selectedDocs.length} 件の文書を削除しますか？`))) return
+    // 只删除有权限的文档（自己的 + 管理员可删所有）
+    const deletableIds = selectedDocs.filter(id => {
+      const doc = documents.find(d => d.id === id)
+      return doc && canEditDoc(doc)
+    })
+    if (deletableIds.length === 0) {
+      toast.error(tr('选中的文档无删除权限', 'No permission to delete selected documents', '選択した文書の削除権限がありません'))
+      return
+    }
+    if (!confirm(tr(`确认删除选中的 ${deletableIds.length} 个文档吗？`, `Delete ${deletableIds.length} selected documents?`, `選択した ${deletableIds.length} 件の文書を削除しますか？`))) return
 
     try {
-      const deleting = [...selectedDocs]
+      const deleting = [...deletableIds]
       for (const docId of deleting) {
         await deleteDocument(docId)
       }
@@ -648,12 +666,16 @@ export default function DocumentManager() {
                     selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={selectedDocs.includes(doc.id)}
-                    onChange={() => toggleSelect(doc.id)}
-                    className="h-3.5 w-3.5 rounded border-slate-300 bg-white text-primary-500 shrink-0"
-                  />
+                  {canEditDoc(doc) ? (
+                    <input
+                      type="checkbox"
+                      checked={selectedDocs.includes(doc.id)}
+                      onChange={() => toggleSelect(doc.id)}
+                      className="h-3.5 w-3.5 rounded border-slate-300 bg-white text-primary-500 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-3.5 shrink-0" />
+                  )}
 
                   <div className={`flex h-7 w-7 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-md ${config.bg}`}>
                     <Icon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${config.color}`} />
@@ -692,13 +714,15 @@ export default function DocumentManager() {
                     <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
                       <Download className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
-                    <button
-                      onClick={() => handleDelete(doc.id, doc.original_filename)}
-                      aria-label={tr('删除文档', 'Delete document', '文書を削除')}
-                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
-                    >
-                      <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                    </button>
+                    {canEditDoc(doc) && (
+                      <button
+                        onClick={() => handleDelete(doc.id, doc.original_filename)}
+                        aria-label={tr('删除文档', 'Delete document', '文書を削除')}
+                        className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               )
