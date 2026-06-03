@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square } from 'lucide-react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Search } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -152,6 +152,8 @@ export default function DocumentOperation() {
   const [showHistory, setShowHistory] = useState(false)
   const [showDocDropdown, setShowDocDropdown] = useState(false)
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const [docSearchKeyword, setDocSearchKeyword] = useState('')
+  const [templateSearchKeyword, setTemplateSearchKeyword] = useState('')
   const [localMessages, setLocalMessages] = useState<Message[]>([])
   const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
@@ -208,6 +210,14 @@ export default function DocumentOperation() {
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
+
+  // 根据搜索关键词过滤文档列表
+  const filteredSourceDocs = sourceDocs.filter((d) =>
+    d.original_filename.toLowerCase().includes(docSearchKeyword.toLowerCase())
+  )
+  const filteredTemplateDocs = templateDocs.filter((d) =>
+    d.original_filename.toLowerCase().includes(templateSearchKeyword.toLowerCase())
+  )
 
   useEffect(() => {
     fetchDocuments()
@@ -326,9 +336,11 @@ export default function DocumentOperation() {
     const handleClickOutside = (event: MouseEvent) => {
       if (docDropdownRef.current && !docDropdownRef.current.contains(event.target as Node)) {
         setShowDocDropdown(false)
+        setDocSearchKeyword('')
       }
       if (templateDropdownRef.current && !templateDropdownRef.current.contains(event.target as Node)) {
         setShowTemplateDropdown(false)
+        setTemplateSearchKeyword('')
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -992,7 +1004,13 @@ export default function DocumentOperation() {
 
             <div className="relative" ref={docDropdownRef}>
               <button
-                onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                onClick={() => {
+                  const nextOpen = !showDocDropdown
+                  setShowDocDropdown(nextOpen)
+                  setShowTemplateDropdown(false)
+                  if (!nextOpen) setDocSearchKeyword('')
+                  setTemplateSearchKeyword('')
+                }}
                 title={tr('选择文档', 'Select Documents', '文書を選択')}
                 className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
               >
@@ -1004,8 +1022,21 @@ export default function DocumentOperation() {
               </button>
               {showDocDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                  {sourceDocs.length > 0 ? (
-                    sourceDocs.map((doc) => (
+                  <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={docSearchKeyword}
+                        onChange={(e) => setDocSearchKeyword(e.target.value)}
+                        placeholder={tr('搜索文档...', 'Search docs...', '文書を検索...')}
+                        className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  </div>
+                  {filteredSourceDocs.length > 0 ? (
+                    filteredSourceDocs.map((doc) => (
                       <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
                         <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
                           {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
@@ -1018,7 +1049,7 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source docs', 'ソース文書なし')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{docSearchKeyword ? tr('未找到匹配文档', 'No matching docs', '一致する文書がありません') : tr('暂无源文档', 'No source docs', 'ソース文書なし')}</div>
                   )}
                 </div>
               )}
@@ -1026,7 +1057,13 @@ export default function DocumentOperation() {
 
             <div className="relative" ref={templateDropdownRef}>
               <button
-                onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                onClick={() => {
+                  const nextOpen = !showTemplateDropdown
+                  setShowTemplateDropdown(nextOpen)
+                  setShowDocDropdown(false)
+                  if (!nextOpen) setTemplateSearchKeyword('')
+                  setDocSearchKeyword('')
+                }}
                 title={tr('选择模板', 'Select Template', 'テンプレートを選択')}
                 className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
               >
@@ -1038,8 +1075,21 @@ export default function DocumentOperation() {
               </button>
               {showTemplateDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                  {templateDocs.length > 0 ? (
-                    templateDocs.map((doc) => (
+                  <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={templateSearchKeyword}
+                        onChange={(e) => setTemplateSearchKeyword(e.target.value)}
+                        placeholder={tr('搜索模板...', 'Search templates...', 'テンプレートを検索...')}
+                        className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  </div>
+                  {filteredTemplateDocs.length > 0 ? (
+                    filteredTemplateDocs.map((doc) => (
                       <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
                         <Table className="w-4 h-4 text-green-400 shrink-0" />
                         <div className="flex-1 min-w-0">
@@ -1050,7 +1100,7 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートなし')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{templateSearchKeyword ? tr('未找到匹配模板', 'No matching templates', '一致するテンプレートがありません') : tr('暂无模板', 'No templates', 'テンプレートなし')}</div>
                   )}
                 </div>
               )}
@@ -1072,7 +1122,13 @@ export default function DocumentOperation() {
               </button>
               <div className="relative min-w-0 flex-1" ref={docDropdownRef}>
                 <button
-                  onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                  onClick={() => {
+                    const nextOpen = !showDocDropdown
+                    setShowDocDropdown(nextOpen)
+                    setShowTemplateDropdown(false)
+                    if (!nextOpen) setDocSearchKeyword('')
+                    setTemplateSearchKeyword('')
+                  }}
                   title={tr('选择文档', 'Select Documents', '文書を選択')}
                   className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
@@ -1084,8 +1140,21 @@ export default function DocumentOperation() {
                 </button>
                 {showDocDropdown && (
                   <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                    {sourceDocs.length > 0 ? (
-                      sourceDocs.map((doc) => (
+                    <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input
+                          type="text"
+                          value={docSearchKeyword}
+                          onChange={(e) => setDocSearchKeyword(e.target.value)}
+                          placeholder={tr('搜索文档...', 'Search docs...', '文書を検索...')}
+                          className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                    {filteredSourceDocs.length > 0 ? (
+                      filteredSourceDocs.map((doc) => (
                         <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
                           <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
                             {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
@@ -1098,7 +1167,7 @@ export default function DocumentOperation() {
                         </div>
                       ))
                     ) : (
-                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{docSearchKeyword ? tr('未找到匹配文档', 'No matching docs', '一致する文書がありません') : tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
                     )}
                   </div>
                 )}
@@ -1106,7 +1175,13 @@ export default function DocumentOperation() {
 
               <div className="relative min-w-0 flex-1" ref={templateDropdownRef}>
                 <button
-                  onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                  onClick={() => {
+                    const nextOpen = !showTemplateDropdown
+                    setShowTemplateDropdown(nextOpen)
+                    setShowDocDropdown(false)
+                    if (!nextOpen) setTemplateSearchKeyword('')
+                    setDocSearchKeyword('')
+                  }}
                   title={tr('选择模板', 'Select Template', 'テンプレートを選択')}
                   className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
@@ -1118,8 +1193,21 @@ export default function DocumentOperation() {
                 </button>
                 {showTemplateDropdown && (
                   <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                    {templateDocs.length > 0 ? (
-                      templateDocs.map((doc) => (
+                    <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input
+                          type="text"
+                          value={templateSearchKeyword}
+                          onChange={(e) => setTemplateSearchKeyword(e.target.value)}
+                          placeholder={tr('搜索模板...', 'Search templates...', 'テンプレートを検索...')}
+                          className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                    {filteredTemplateDocs.length > 0 ? (
+                      filteredTemplateDocs.map((doc) => (
                         <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
                           <Table className="w-4 h-4 text-green-400 shrink-0" />
                           <div className="flex-1 min-w-0">
@@ -1130,7 +1218,7 @@ export default function DocumentOperation() {
                         </div>
                       ))
                     ) : (
-                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{templateSearchKeyword ? tr('未找到匹配模板', 'No matching templates', '一致するテンプレートがありません') : tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
                     )}
                   </div>
                 )}
