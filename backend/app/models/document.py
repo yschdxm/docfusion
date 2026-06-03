@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text, Integer, ForeignKey
+from sqlalchemy import Column, String, DateTime, BigInteger, JSON, Text, Integer, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.postgres import Base
 
@@ -17,6 +17,7 @@ class Document(Base):
     file_size = Column(BigInteger)
     file_path = Column(String(500))
     status = Column(String(20), default="pending")
+    is_shared = Column(Boolean, nullable=False, default=False)  # 是否为共享文档
     metadata_info = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

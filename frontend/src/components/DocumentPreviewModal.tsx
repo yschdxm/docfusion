@@ -215,7 +215,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
         <div className={`h-[68vh] overflow-hidden rounded-xl border ${
           isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
         }`}>
-          {officeLoading && <div className={`p-4 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>正在加载 OnlyOffice...</div>}
+          {officeLoading && <div className={`p-4 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{tr('正在加载 OnlyOffice...', 'Loading OnlyOffice...', 'OnlyOffice を読み込み中...')}</div>}
           {officeError && <div className={`border-b p-4 text-sm ${
             isDarkMode ? 'border-red-500/40 bg-red-900/30 text-red-300' : 'border-red-100 bg-red-50 text-red-600'
           }`}>{officeError}</div>}
@@ -337,9 +337,10 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {previewData?.preview_type === 'onlyoffice' && (
+            {previewData?.preview_type === 'onlyoffice' && previewData?.can_edit && (
               <button
                 onClick={() => setOfficeMode((c) => (c === 'edit' ? 'view' : 'edit'))}
+                title={officeMode === 'view' ? tr('进入编辑', 'Edit', '編集') : tr('切到只读', 'Read only', '読み取り専用')}
                 className="btn-secondary flex items-center gap-2 px-4 py-2"
               >
                 <Edit3 className="h-4 w-4" />
@@ -352,6 +353,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
                   setEditorOpen((c) => !c)
                   setEditContent(previewData.content)
                 }}
+                title={editorOpen ? tr('返回预览', 'Back to preview', 'プレビューに戻る') : tr('编辑', 'Edit', '編集')}
                 className="btn-secondary flex items-center gap-2 px-4 py-2"
               >
                 <Edit3 className="h-4 w-4" />
@@ -359,12 +361,12 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
               </button>
             )}
             {editorOpen && previewData?.can_edit && (
-              <button onClick={handleSave} className="btn-primary flex items-center gap-2 px-4 py-2" disabled={saving}>
+              <button onClick={handleSave} title={saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')} className="btn-primary flex items-center gap-2 px-4 py-2" disabled={saving}>
                 <CheckCircle className="h-4 w-4" />
                 {saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')}
               </button>
             )}
-            <button onClick={onClose} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`rounded-full p-2 transition-colors ${
+            <button onClick={onClose} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} title={tr('关闭', 'Close', '閉じる')} className={`rounded-full p-2 transition-colors ${
               isDarkMode
                 ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
                 : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'

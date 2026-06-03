@@ -50,6 +50,12 @@ export const getTheme = (): ResolvedTheme => {
 
 export const applyTheme = (theme: ResolvedTheme) => {
   document.documentElement.setAttribute('data-theme', theme)
+  // 同步 Tailwind dark mode class，使 dark: 前缀类生效
+  if (theme === 'night-mode') {
+    document.documentElement.classList.add('dark')
+  } else {
+    document.documentElement.classList.remove('dark')
+  }
 }
 
 export const setTheme = (theme: ThemeMode) => {

@@ -1,9 +1,10 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square } from 'lucide-react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Search } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api from '../services/api'
+import { getAuthUser } from '../services/auth'
 import { useDocumentStore } from '../stores/documentStore'
 import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
@@ -15,6 +16,7 @@ import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
 import { useI18n } from '../hooks/useI18n'
 import { getTheme } from '../services/theme'
+import { getStoredLanguage } from '../services/i18n'
 
 // 自定义 Markdown 链接组件：对 API 下载链接使用带 token 的请求
 function DownloadLink({ href, children }: { href?: string; children?: React.ReactNode }) {
@@ -65,7 +67,8 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
       window.URL.revokeObjectURL(url)
       document.body.removeChild(a)
     } catch {
-      toast.error('下载失败')
+      const lang = getStoredLanguage()
+      toast.error(lang === 'zh-CN' ? '下载失败' : lang === 'ja-JP' ? 'ダウンロードに失敗しました' : 'Download failed')
     }
   }
 
@@ -149,6 +152,8 @@ export default function DocumentOperation() {
   const [showHistory, setShowHistory] = useState(false)
   const [showDocDropdown, setShowDocDropdown] = useState(false)
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const [docSearchKeyword, setDocSearchKeyword] = useState('')
+  const [templateSearchKeyword, setTemplateSearchKeyword] = useState('')
   const [localMessages, setLocalMessages] = useState<Message[]>([])
   const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
@@ -205,6 +210,14 @@ export default function DocumentOperation() {
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
+
+  // 根据搜索关键词过滤文档列表
+  const filteredSourceDocs = sourceDocs.filter((d) =>
+    d.original_filename.toLowerCase().includes(docSearchKeyword.toLowerCase())
+  )
+  const filteredTemplateDocs = templateDocs.filter((d) =>
+    d.original_filename.toLowerCase().includes(templateSearchKeyword.toLowerCase())
+  )
 
   useEffect(() => {
     fetchDocuments()
@@ -323,9 +336,11 @@ export default function DocumentOperation() {
     const handleClickOutside = (event: MouseEvent) => {
       if (docDropdownRef.current && !docDropdownRef.current.contains(event.target as Node)) {
         setShowDocDropdown(false)
+        setDocSearchKeyword('')
       }
       if (templateDropdownRef.current && !templateDropdownRef.current.contains(event.target as Node)) {
         setShowTemplateDropdown(false)
+        setTemplateSearchKeyword('')
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -584,6 +599,13 @@ export default function DocumentOperation() {
       return
     }
 
+    // 检查用户是否已选择模型
+    const user = getAuthUser()
+    if (!user?.selected_model) {
+      toast.error(tr('请先在左下角选择一个模型', 'Please select a model first', 'まず左下でモデルを選択してください'))
+      return
+    }
+
     let currentSessionId = activeSessionId
     const isNewSession = !currentSessionId
     if (!currentSessionId) {
@@ -760,7 +782,7 @@ export default function DocumentOperation() {
       if (lastAiIndex !== undefined) {
         newMessages[lastAiIndex] = {
           ...newMessages[lastAiIndex],
-          content: '已取消当前操作。你可以继续输入新指令。',
+          content: tr('已取消当前操作。你可以继续输入新指令。', 'Operation cancelled. You can continue with new instructions.', '操作がキャンセルされました。新しい指示を入力できます。'),
           action: undefined,
         }
       }
@@ -873,7 +895,7 @@ export default function DocumentOperation() {
             <div className="fixed inset-y-0 left-0 z-50 w-72 flex flex-col glass shadow-2xl animate-fade-in">
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
                 <p className="text-sm font-semibold text-slate-900">{tr('历史记录', 'History', '履歴')}</p>
-                <button onClick={() => setShowHistory(false)} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+                <button onClick={() => setShowHistory(false)} title={tr('关闭历史', 'Close history', '履歴を閉じる')} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -901,6 +923,7 @@ export default function DocumentOperation() {
                     </div>
                     <button
                       onClick={(e) => handleDeleteSession(session.id, e)}
+                      title={tr('删除对话', 'Delete chat', '会話を削除')}
                       className="p-1 text-slate-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -938,6 +961,7 @@ export default function DocumentOperation() {
                 </div>
                 <button
                   onClick={(e) => handleDeleteSession(session.id, e)}
+                  title={tr('删除对话', 'Delete chat', '会話を削除')}
                   className="p-1 text-slate-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -958,12 +982,13 @@ export default function DocumentOperation() {
               <button
                 onClick={() => setShowHistory(!showHistory)}
                 aria-label={tr('切换历史记录', 'Toggle history', '履歴を切替')}
+                title={tr('历史记录', 'History', '履歴')}
                 className={`p-2 rounded-lg transition-colors shrink-0 ${showHistory ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
               >
                 <History className="w-4 h-4" />
               </button>
               <div className="flex items-center gap-2">
-                <button onClick={handleNewChat} className="btn-secondary px-3 py-1.5 text-xs">
+                <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs">
                   <Plus className="w-3 h-3" />
                   {tr('新建', 'New', '新規')}
                 </button>
@@ -979,7 +1004,14 @@ export default function DocumentOperation() {
 
             <div className="relative" ref={docDropdownRef}>
               <button
-                onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                onClick={() => {
+                  const nextOpen = !showDocDropdown
+                  setShowDocDropdown(nextOpen)
+                  setShowTemplateDropdown(false)
+                  if (!nextOpen) setDocSearchKeyword('')
+                  setTemplateSearchKeyword('')
+                }}
+                title={tr('选择文档', 'Select Documents', '文書を選択')}
                 className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
               >
                 <FileText className="w-4 h-4 text-blue-400 shrink-0" />
@@ -990,8 +1022,21 @@ export default function DocumentOperation() {
               </button>
               {showDocDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                  {sourceDocs.length > 0 ? (
-                    sourceDocs.map((doc) => (
+                  <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={docSearchKeyword}
+                        onChange={(e) => setDocSearchKeyword(e.target.value)}
+                        placeholder={tr('搜索文档...', 'Search docs...', '文書を検索...')}
+                        className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  </div>
+                  {filteredSourceDocs.length > 0 ? (
+                    filteredSourceDocs.map((doc) => (
                       <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
                         <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
                           {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
@@ -1004,7 +1049,7 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source docs', 'ソース文書なし')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{docSearchKeyword ? tr('未找到匹配文档', 'No matching docs', '一致する文書がありません') : tr('暂无源文档', 'No source docs', 'ソース文書なし')}</div>
                   )}
                 </div>
               )}
@@ -1012,7 +1057,14 @@ export default function DocumentOperation() {
 
             <div className="relative" ref={templateDropdownRef}>
               <button
-                onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                onClick={() => {
+                  const nextOpen = !showTemplateDropdown
+                  setShowTemplateDropdown(nextOpen)
+                  setShowDocDropdown(false)
+                  if (!nextOpen) setTemplateSearchKeyword('')
+                  setDocSearchKeyword('')
+                }}
+                title={tr('选择模板', 'Select Template', 'テンプレートを選択')}
                 className="w-full flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
               >
                 <Table className="w-4 h-4 text-green-400 shrink-0" />
@@ -1023,8 +1075,21 @@ export default function DocumentOperation() {
               </button>
               {showTemplateDropdown && (
                 <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                  {templateDocs.length > 0 ? (
-                    templateDocs.map((doc) => (
+                  <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={templateSearchKeyword}
+                        onChange={(e) => setTemplateSearchKeyword(e.target.value)}
+                        placeholder={tr('搜索模板...', 'Search templates...', 'テンプレートを検索...')}
+                        className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  </div>
+                  {filteredTemplateDocs.length > 0 ? (
+                    filteredTemplateDocs.map((doc) => (
                       <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
                         <Table className="w-4 h-4 text-green-400 shrink-0" />
                         <div className="flex-1 min-w-0">
@@ -1035,7 +1100,7 @@ export default function DocumentOperation() {
                       </div>
                     ))
                   ) : (
-                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートなし')}</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 text-center">{templateSearchKeyword ? tr('未找到匹配模板', 'No matching templates', '一致するテンプレートがありません') : tr('暂无模板', 'No templates', 'テンプレートなし')}</div>
                   )}
                 </div>
               )}
@@ -1057,7 +1122,14 @@ export default function DocumentOperation() {
               </button>
               <div className="relative min-w-0 flex-1" ref={docDropdownRef}>
                 <button
-                  onClick={() => { setShowDocDropdown(!showDocDropdown); setShowTemplateDropdown(false) }}
+                  onClick={() => {
+                    const nextOpen = !showDocDropdown
+                    setShowDocDropdown(nextOpen)
+                    setShowTemplateDropdown(false)
+                    if (!nextOpen) setDocSearchKeyword('')
+                    setTemplateSearchKeyword('')
+                  }}
+                  title={tr('选择文档', 'Select Documents', '文書を選択')}
                   className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
                   <FileText className="w-4 h-4 text-blue-400 shrink-0" />
@@ -1068,8 +1140,21 @@ export default function DocumentOperation() {
                 </button>
                 {showDocDropdown && (
                   <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                    {sourceDocs.length > 0 ? (
-                      sourceDocs.map((doc) => (
+                    <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input
+                          type="text"
+                          value={docSearchKeyword}
+                          onChange={(e) => setDocSearchKeyword(e.target.value)}
+                          placeholder={tr('搜索文档...', 'Search docs...', '文書を検索...')}
+                          className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                    {filteredSourceDocs.length > 0 ? (
+                      filteredSourceDocs.map((doc) => (
                         <div key={doc.id} onClick={() => toggleDocSelection(doc.id)} className={`dropdown-item ${selectedDocIds.includes(doc.id) ? 'dropdown-item-active' : ''}`}>
                           <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${selectedDocIds.includes(doc.id) ? 'bg-primary-500 border-primary-500' : 'border-slate-300'}`}>
                             {selectedDocIds.includes(doc.id) && <Check className="w-3 h-3 text-white" />}
@@ -1082,7 +1167,7 @@ export default function DocumentOperation() {
                         </div>
                       ))
                     ) : (
-                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{docSearchKeyword ? tr('未找到匹配文档', 'No matching docs', '一致する文書がありません') : tr('暂无源文档', 'No source documents', 'ソース文書がありません')}</div>
                     )}
                   </div>
                 )}
@@ -1090,7 +1175,14 @@ export default function DocumentOperation() {
 
               <div className="relative min-w-0 flex-1" ref={templateDropdownRef}>
                 <button
-                  onClick={() => { setShowTemplateDropdown(!showTemplateDropdown); setShowDocDropdown(false) }}
+                  onClick={() => {
+                    const nextOpen = !showTemplateDropdown
+                    setShowTemplateDropdown(nextOpen)
+                    setShowDocDropdown(false)
+                    if (!nextOpen) setTemplateSearchKeyword('')
+                    setDocSearchKeyword('')
+                  }}
+                  title={tr('选择模板', 'Select Template', 'テンプレートを選択')}
                   className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
                   <Table className="w-4 h-4 text-green-400 shrink-0" />
@@ -1101,8 +1193,21 @@ export default function DocumentOperation() {
                 </button>
                 {showTemplateDropdown && (
                   <div className="absolute top-full left-0 right-0 mt-2 dropdown-menu max-h-60 overflow-y-auto scrollbar-thin z-50">
-                    {templateDocs.length > 0 ? (
-                      templateDocs.map((doc) => (
+                    <div className="sticky top-0 bg-white p-2 border-b border-slate-100">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input
+                          type="text"
+                          value={templateSearchKeyword}
+                          onChange={(e) => setTemplateSearchKeyword(e.target.value)}
+                          placeholder={tr('搜索模板...', 'Search templates...', 'テンプレートを検索...')}
+                          className="w-full pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-primary-400"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                    {filteredTemplateDocs.length > 0 ? (
+                      filteredTemplateDocs.map((doc) => (
                         <div key={doc.id} onClick={() => handleTemplateSelect(doc.id)} className={`dropdown-item ${selectedTemplateId === doc.id ? 'dropdown-item-active' : ''}`}>
                           <Table className="w-4 h-4 text-green-400 shrink-0" />
                           <div className="flex-1 min-w-0">
@@ -1113,7 +1218,7 @@ export default function DocumentOperation() {
                         </div>
                       ))
                     ) : (
-                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
+                      <div className="px-4 py-3 text-sm text-slate-500 text-center">{templateSearchKeyword ? tr('未找到匹配模板', 'No matching templates', '一致するテンプレートがありません') : tr('暂无模板', 'No templates', 'テンプレートがありません')}</div>
                     )}
                   </div>
                 )}
@@ -1121,7 +1226,7 @@ export default function DocumentOperation() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <button onClick={handleNewChat} className="btn-secondary px-3 py-1.5 text-xs">
+              <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs">
                 <Plus className="w-3 h-3" />
                 {tr('新建对话', 'New Chat', '新しい会話')}
               </button>
@@ -1194,6 +1299,7 @@ export default function DocumentOperation() {
                   <div className="mt-2 flex">
                     <button
                       onClick={() => openPreview(message.action!)}
+                      title={tr('预览修改结果', 'Preview changes', '変更をプレビュー')}
                       className={`btn-secondary px-3 py-2 text-sm ${
                         isDarkMode
                           ? 'text-blue-300 border-blue-500/50 hover:bg-blue-900/30'
@@ -1280,7 +1386,7 @@ export default function DocumentOperation() {
                   {tr('共', 'Total', '合計')} {previewState.totalChanges} {tr('处修改', 'changes', '件の変更')}{previewState.outputFilename ? ` · ${previewState.outputFilename}` : ''}
                 </p>
               </div>
-              <button onClick={() => setPreviewState(null)} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`rounded-lg p-2 transition-colors ${
+              <button onClick={() => setPreviewState(null)} aria-label={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} title={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`rounded-lg p-2 transition-colors ${
                 isDarkMode
                   ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
                   : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
@@ -1296,7 +1402,7 @@ export default function DocumentOperation() {
                 }`}>
                   <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
                     <span className="rounded-full bg-primary-500/20 px-2.5 py-1 text-primary-700">{item.op}</span>
-                    <span className={`rounded-full px-2.5 py-1 ${isDarkMode ? 'bg-slate-600 text-slate-300' : 'bg-white text-slate-600'}`}>段落 {item.paragraph_index >= 0 ? item.paragraph_index : '-'}</span>
+                    <span className={`rounded-full px-2.5 py-1 ${isDarkMode ? 'bg-slate-600 text-slate-300' : 'bg-white text-slate-600'}`}>{tr('段落', 'Paragraph', '段落')} {item.paragraph_index >= 0 ? item.paragraph_index : '-'}</span>
                     {item.reason && <span className="text-slate-500">{item.reason}</span>}
                   </div>
 
@@ -1333,7 +1439,7 @@ export default function DocumentOperation() {
             disabled={isLoading}
           />
           {isStreaming ? (
-            <button onClick={handleStop} className={`btn-secondary px-4 py-2 ${
+            <button onClick={handleStop} title={tr('停止生成', 'Stop generation', '生成を停止')} className={`btn-secondary px-4 py-2 ${
               isDarkMode
                 ? 'text-red-400 border-red-500/50 hover:bg-red-900/30'
                 : 'text-red-500 border-red-300 hover:bg-red-50'
@@ -1342,28 +1448,28 @@ export default function DocumentOperation() {
               {tr('停止', 'Stop', '停止')}
             </button>
           ) : (
-            <button onClick={() => handleSend()} disabled={isLoading || (!inputValue.trim() && !pendingAction)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={() => handleSend()} title={tr('发送', 'Send', '送信')} disabled={isLoading || (!inputValue.trim() && !pendingAction)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
               {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
             </button>
           )}
         </div>
         {/* 快捷提示 */}
         <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-thin">
-          <button onClick={() => setInputValue(tr('帮我分析这些文档', 'Help me analyze these documents', 'これらの文書を分析してください'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+          <button onClick={() => setInputValue(tr('帮我分析这些文档', 'Help me analyze these documents', 'これらの文書を分析してください'))} title={tr('分析文档', 'Analyze docs', '文書分析')} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
             isDarkMode
               ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
               : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
           }`}>
             {tr('分析文档', 'Analyze docs', '文書分析')}
           </button>
-          <button onClick={() => setInputValue(tr('填写汇总表', 'Fill summary table', 'まとめ表を記入'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+          <button onClick={() => setInputValue(tr('填写汇总表', 'Fill summary table', 'まとめ表を記入'))} title={tr('填写表格', 'Fill table', '表記入')} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
             isDarkMode
               ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
               : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
           }`}>
             {tr('填写表格', 'Fill table', '表記入')}
           </button>
-          <button onClick={() => setInputValue(tr('查询关键信息', 'Query key information', '重要情報を検索'))} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
+          <button onClick={() => setInputValue(tr('查询关键信息', 'Query key information', '重要情報を検索'))} title={tr('查询信息', 'Query info', '情報検索')} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
             isDarkMode
               ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'
               : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'
@@ -1383,7 +1489,7 @@ export default function DocumentOperation() {
               onTouchStart={(e) => handleDragStart(e.touches[0].clientX)}
               className="shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-primary-100/50 transition-colors"
               style={{ width: HANDLE_WIDTH }}
-              title="拖动调整宽度"
+              title={tr('拖动调整宽度', 'Drag to resize', 'ドラッグしてリサイズ')}
             >
               <div className="w-1 h-8 rounded-full bg-slate-300 group-hover:bg-primary-400 transition-colors" />
             </div>
@@ -1412,7 +1518,7 @@ export default function DocumentOperation() {
           <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowMobilePreview(false)} />
           <div className="fixed inset-0 z-50 flex flex-col animate-fade-in">
             <div className={`flex items-center justify-end px-3 py-2 backdrop-blur-sm border-b ${isDarkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-white/90 border-slate-200'}`}>
-              <button onClick={() => setShowMobilePreview(false)} className={`p-1.5 rounded-lg ${isDarkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}`}>
+              <button onClick={() => setShowMobilePreview(false)} title={tr('关闭预览', 'Close preview', 'プレビューを閉じる')} className={`p-1.5 rounded-lg ${isDarkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}`}>
                 <X className="w-5 h-5" />
               </button>
             </div>

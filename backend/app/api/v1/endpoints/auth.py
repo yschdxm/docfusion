@@ -15,6 +15,7 @@ from app.schemas.auth import (
     UpdateProfileRequest,
     UserProfile,
 )
+from app.services.config_service import config_service
 
 router = APIRouter()
 
@@ -52,6 +53,11 @@ async def get_current_user(
 
 @router.post('/register', response_model=AuthResponse)
 async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    # 检查注册是否开放
+    registration_enabled = await config_service.get_bool(db, "registration_enabled", True)
+    if not registration_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='注册功能已关闭')
+
     normalized_email = payload.email.strip().lower()
     normalized_phone = normalize_phone(payload.phone)
 

@@ -10,10 +10,13 @@ DocFusion 是一个全栈 Web 应用，通过大语言模型实现文档的智�
 
 ### 核心功能
 
-- **文档智能操作**: 通过自然语言指令对文档进行内容提取、格式转换、编辑修改
+- **文档智能操作**: 通过自然语言指令对文档进行内容提取、格式转换、编辑修改，支持文档预览和搜索
 - **信息自动提取**: 从 docx、xlsx、md、txt 等格式中提取实体、表格、自定义字段
 - **智能表格填写**: 根据源文档自动填写模板表格，支持多源数据合并
 - **知识图谱构建**: 自动抽取实体关系，支持可视化查询和跨文档关联发现
+- **任务队列管理**: 异步任务队列控制并发处理，避免资源竞争和 API 过载
+- **管理面板**: 用户管理、系统配置、文档管理等管理员功能
+- **多语言支持**: 支持中文、英文、日文界面切换
 
 ## 技术栈
 
@@ -24,7 +27,7 @@ DocFusion 是一个全栈 Web 应用，通过大语言模型实现文档的智�
 | Python | 3.11 | 运行环境 |
 | FastAPI | - | Web 框架 |
 | SQLAlchemy | - | ORM |
-| Celery | - | 异步任务队列 |
+| asyncio | - | 异步任务队列 |
 | httpx | - | HTTP 客户端 |
 
 ### 前端
@@ -98,25 +101,6 @@ cp .env.example .env
 编辑 `.env` 文件，填入以下配置：
 
 ```env
-# ============================================
-# AI 模型 API 密钥
-# ============================================
-
-# MiMO API
-MIMO_API_KEY=your_mimo_api_key
-MIMO_BASE_URL=https://api.xiaomimimo.com/v1
-MIMO_MODEL=mimo-v2-flash
-
-# DeepSeek API
-DEEPSEEK_API_KEY=your_deepseek_api_key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
-
-# Gitee AI（嵌入和重排模型）
-GITEE_AI_API_KEY=your_gitee_ai_key
-GITEE_AI_BASE_URL=https://ai.gitee.com/v1
-EMBEDDING_MODEL=bge-m3
-RERANK_MODEL=bge-reranker-v2-m3
 
 # ============================================
 # 数据库密码（请使用强密码）
@@ -135,13 +119,26 @@ ALLOWED_HOSTS=your-domain.com,localhost
 # SSL 配置
 # ============================================
 SSL_VERIFY=true
-SSL_VERIFY_MIMO=true
-SSL_VERIFY_GITEE_AI=false
 
 # ============================================
 # 日志级别（生产环境建议 INFO 或 WARNING）
 # ============================================
 LOG_LEVEL=INFO
+
+# ============================================
+# 管理员配置（可选）
+# ============================================
+# 首次启动时自动创建主管理员账号
+# 如果不配置，系统会将第一个注册的用户设为主管理员
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=your_admin_password_here
+
+# ============================================
+# 模型配置说明
+# ============================================
+# 所有模型配置（LLM、嵌入、重排）通过管理中心在数据库中配置
+# 支持任意 OpenAI 兼容的 API
+# 首次启动后请访问 /admin 页面进行配置
 ```
 
 ### 3. 启动服务
@@ -174,13 +171,47 @@ curl -I http://localhost:3000
 | API 文档 | http://localhost:8000/docs | Swagger UI |
 | ONLYOFFICE | http://localhost:8088 | 文档编辑服务 |
 
+## 用户功能
+
+### 用户注册与登录
+
+系统支持用户注册功能，可通过邮箱或手机号注册账号。注册开关可在管理面板中控制。
+
+### 用户界面
+
+- **仪表盘**: 系统概览和快捷入口
+- **文档管理**: 上传、管理和组织文档
+- **智能助手**: 通过自然语言指令操作文档，支持文档预览和搜索
+- **知识图谱**: 可视化查看和查询文档知识图谱
+- **工作日志**: 查看和管理工作记录
+- **个人中心**: 个人信息管理
+
+### 主题与语言
+
+- **主题切换**: 支持系统跟随、商务蓝、夜间模式三种主题
+- **多语言**: 支持中文、英文、日文界面切换
+
+## 管理面板
+
+管理员可通过 `/admin` 路径访问管理中心，功能包括：
+
+- **用户管理**: 用户列表、角色分配、账号启用/禁用
+- **系统配置**: 全局配置项管理
+- **文档管理**: 系统文档统一管理
+- **API 密钥管理**: 配置和管理 AI 模型 API 密钥
+- **用量统计**: 查看系统资源使用情况
+
 ## 模型切换
 
-系统支持在 MiMO 和 DeepSeek 两种 AI 模型之间切换：
+系统支持自定义模型，并且可在模型之间切换。
 
 ### 前端切换
 
 登录系统后，左下角 Engine 区域可通过下拉菜单切换模型。
+
+### 管理面板切换
+
+管理员可在管理面板中配置模型和 API 密钥。
 
 ## 常用运维命令
 
@@ -263,10 +294,17 @@ docfusion/
 ├── backend/                    # 后端服务
 │   ├── app/
 │   │   ├── api/v1/            # API 路由
+│   │   │   └── endpoints/     # API 端点
+│   │   │       ├── admin.py   # 管理面板接口
+│   │   │       ├── agent.py   # 智能助手接口
+│   │   │       ├── auth.py    # 认证接口
+│   │   │       └── documents.py # 文档接口
 │   │   ├── core/              # 核心配置
 │   │   ├── models/            # 数据库模型
 │   │   ├── schemas/           # Pydantic 模式
 │   │   ├── services/          # 业务逻辑服务
+│   │   │   ├── task_queue.py  # 任务队列管理
+│   │   │   └── config_service.py # 配置服务
 │   │   ├── agent/             # AI Agent 系统
 │   │   └── main.py            # 应用入口
 │   ├── requirements.txt       # Python 依赖
@@ -274,7 +312,11 @@ docfusion/
 ├── frontend/                   # 前端应用
 │   ├── src/
 │   │   ├── components/        # UI 组件
+│   │   │   └── layout/        # 布局组件（支持响应式）
 │   │   ├── pages/             # 页面
+│   │   │   ├── AdminCenter.tsx # 管理中心
+│   │   │   ├── Login.tsx      # 登录页
+│   │   │   └── Register.tsx   # 注册页
 │   │   ├── hooks/             # 自定义 Hooks
 │   │   ├── services/          # API 服务
 │   │   └── stores/            # 状态管理

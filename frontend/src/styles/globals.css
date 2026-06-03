@@ -240,6 +240,14 @@
     background-color: #94a3b8;
     border-radius: 3px;
   }
+
+  [data-theme='night-mode'] .scrollbar-thin {
+    scrollbar-color: #475569 transparent;
+  }
+
+  [data-theme='night-mode'] .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #475569;
+  }
 }
 
 .animate-in {
@@ -358,6 +366,14 @@
 [data-theme='night-mode'] .border-slate-200,
 [data-theme='night-mode'] .border-slate-100,
 [data-theme='night-mode'] .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+[data-theme='night-mode'] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155 !important;
+}
+
+[data-theme='night-mode'] .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
   border-color: #334155 !important;
 }
 

@@ -481,6 +481,20 @@ async def agent_stream(
     logger.info(f"[API /agent/stream] 任务类型: {request.task_type}")
     logger.info(f"[API /agent/stream] 对话ID: {request.conversation_id}")
 
+    # 检查用户是否已选择模型（前端已检查，这里做兜底）
+    if not current_user.selected_model:
+        error_msg = "请先在左下角选择一个模型"
+        logger.warning(f"[API /agent/stream] 用户未选择模型: user_id={current_user.id}")
+
+        async def _model_error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+
+        return StreamingResponse(
+            _model_error_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"}
+        )
+
     # 加载对话历史
     conversation_history = []
     if request.conversation_id:
@@ -523,7 +537,7 @@ async def agent_stream(
             )
 
     return StreamingResponse(
-        _new_task_stream(request, conversation_history, user_id=str(current_user.id)),
+        _new_task_stream(request, conversation_history, user_id=str(current_user.id), user_selected_model=current_user.selected_model),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"}
     )
@@ -533,7 +547,7 @@ async def agent_stream(
 # 流式生成器
 # ============================================================
 
-async def _new_task_stream(request: AgentStreamRequest, conversation_history: list, user_id: str = None):
+async def _new_task_stream(request: AgentStreamRequest, conversation_history: list, user_id: str = None, user_selected_model: str = None):
     """新任务的事件流：创建任务 → 发送 task_id → 运行 agent → 持久化 → 清理"""
     task = await task_manager.create_task(conversation_id=request.conversation_id)
     event_count = 0
@@ -565,7 +579,9 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
             template_id=request.template_id,
             conversation_history=conversation_history,
             stream_manager=task.stream,
-            user_id=user_id
+            user_id=user_id,
+            user_selected_model=user_selected_model,
+            db=None,  # chat_completion 会自己创建 db session
         ):
             event_count += 1
 

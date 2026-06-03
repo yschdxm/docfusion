@@ -16,5 +16,7 @@ class User(Base):
     phone = Column(String(20), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    role = Column(String(20), nullable=False, default="user")  # user, admin, super_admin
+    selected_model = Column(String(200), nullable=True)  # 用户选择的当前模型
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

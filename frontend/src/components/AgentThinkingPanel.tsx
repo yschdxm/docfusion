@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { AgentStep } from '../services/agentStreamService'
 import { getTheme } from '../services/theme'
+import { useI18n } from '../hooks/useI18n'
 
 interface AgentThinkingPanelProps {
   steps: AgentStep[]
@@ -33,6 +34,8 @@ interface AgentThinkingPanelProps {
  * 单个步骤的详情渲染（主步骤和子步骤共用）
  */
 function StepDetails({ step }: { step: AgentStep }) {
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
 
   useEffect(() => {
@@ -70,7 +73,7 @@ function StepDetails({ step }: { step: AgentStep }) {
             : 'bg-blue-50 text-slate-700 border-blue-200'
         }`}>
           <p className={`text-xs font-medium mb-1 ${isDarkMode ? 'text-blue-300' : 'text-blue-600'}`}>
-            {step.type === 'assistant_reply' ? 'AI回复:' : '思考过程:'}
+            {step.type === 'assistant_reply' ? tr('AI回复:', 'AI Reply:', 'AI応答:') : tr('思考过程:', 'Thinking:', '思考過程:')}
           </p>
           {step.thinkingContent}
         </div>
@@ -79,7 +82,7 @@ function StepDetails({ step }: { step: AgentStep }) {
       {/* 工具参数 */}
       {step.toolParams && Object.keys(step.toolParams).length > 0 && (
         <div className="mt-2">
-          <p className="text-xs text-slate-500 font-medium">参数:</p>
+          <p className="text-xs text-slate-500 font-medium">{tr('参数:', 'Params:', 'パラメータ:')}</p>
           <pre className={`mt-1 p-2 rounded-lg text-xs max-h-32 overflow-auto scrollbar-thin ${
             isDarkMode
               ? 'bg-slate-800/80 text-slate-200'
@@ -93,7 +96,7 @@ function StepDetails({ step }: { step: AgentStep }) {
       {/* 工具结果 */}
       {step.toolResult && (
         <div className="mt-2">
-          <p className="text-xs text-slate-500 font-medium">结果:</p>
+          <p className="text-xs text-slate-500 font-medium">{tr('结果:', 'Result:', '結果:')}</p>
           <div className={`mt-1 p-2 rounded-lg text-xs max-h-32 overflow-auto scrollbar-thin ${
             isDarkMode
               ? 'bg-green-900/30 text-slate-200 border border-green-500/40'
@@ -103,7 +106,7 @@ function StepDetails({ step }: { step: AgentStep }) {
               <>
                 {step.toolResult.records_count !== undefined && (
                   <p className={`font-medium mb-1 ${isDarkMode ? 'text-green-300' : 'text-green-600'}`}>
-                    找到 {step.toolResult.records_count} 条记录
+                    {tr(`找到 ${step.toolResult.records_count} 条记录`, `Found ${step.toolResult.records_count} records`, `${step.toolResult.records_count} 件のレコードが見つかりました`)}
                   </p>
                 )}
                 {step.toolResult.records && (
@@ -111,14 +114,14 @@ function StepDetails({ step }: { step: AgentStep }) {
                     {JSON.stringify(step.toolResult.records.slice(0, 3), null, 2)}
                     {step.toolResult.records.length > 3 && (
                       <p className="text-slate-500 mt-1">
-                        ... 还有 {step.toolResult.records.length - 3} 条记录
+                        {tr(`... 还有 ${step.toolResult.records.length - 3} 条记录`, `... ${step.toolResult.records.length - 3} more records`, `... あと ${step.toolResult.records.length - 3} 件`)}
                       </p>
                     )}
                   </pre>
                 )}
                 {step.toolResult.headers && (
                   <p className="text-slate-600">
-                    表头: {step.toolResult.headers.join(', ')}
+                    {tr('表头:', 'Headers:', 'ヘッダー:')} {step.toolResult.headers.join(', ')}
                   </p>
                 )}
                 {!step.toolResult.records && !step.toolResult.headers && (
@@ -141,7 +144,7 @@ function StepDetails({ step }: { step: AgentStep }) {
             ? 'bg-red-900/30 border border-red-500/40 text-red-300'
             : 'bg-red-50 border border-red-200 text-red-600'
         }`}>
-          <p className={`text-xs font-medium mb-1 ${isDarkMode ? 'text-red-300' : 'text-red-600'}`}>错误:</p>
+          <p className={`text-xs font-medium mb-1 ${isDarkMode ? 'text-red-300' : 'text-red-600'}`}>{tr('错误:', 'Error:', 'エラー:')}</p>
           {step.errorMessage}
         </div>
       )}
@@ -213,6 +216,7 @@ function StepCard({
     }`}>
       <button
         onClick={() => onToggle(step.id)}
+        title={step.name}
         className={`w-full flex items-center justify-between p-3 transition-colors ${
           isDarkMode ? 'hover:bg-slate-700/80' : 'hover:bg-slate-50'
         }`}
@@ -244,6 +248,8 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
   const [internalExpanded, setInternalExpanded] = useState<Set<string>>(new Set())
   const autoCollapsedRef = useRef<Set<string>>(new Set())
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
@@ -282,7 +288,7 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
 
   useEffect(() => {
     const checkAndCollapse = (s: AgentStep) => {
-      if (s.type === 'thinking' && s.status === 'completed' && s.name === '思考完成') {
+      if (s.type === 'thinking' && s.status === 'completed' && (s.name === '思考完成' || s.name === 'Thinking complete' || s.name === '思考完了')) {
         setTimeout(() => {
           autoCollapsedRef.current.add(s.id)
           setInternalExpanded((prev) => {
@@ -336,7 +342,7 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
           <CheckCircle className="w-5 h-5 text-green-500" />
         )}
         <span className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-          {isActive ? 'Agent正在处理...' : 'Agent执行完成'}
+          {isActive ? tr('Agent正在处理...', 'Agent is processing...', 'Agentが処理中...') : tr('Agent执行完成', 'Agent finished', 'Agentが完了しました')}
         </span>
       </div>
 
@@ -355,9 +361,9 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
                 isDarkMode ? 'border-cyan-500/60' : 'border-cyan-300'
               }`}>
                 <p className={`text-xs font-medium ${isDarkMode ? 'text-cyan-300' : 'text-cyan-600'}`}>
-                  {step.agentName === 'delegate_fill_table' ? '填表Agent' :
-                   step.agentName === 'delegate_document_edit' ? '文档编辑Agent' :
-                   step.agentName || '子Agent'} 执行过程:
+                  {step.agentName === 'delegate_fill_table' ? tr('填表Agent', 'Table Fill Agent', '表入力Agent') :
+                   step.agentName === 'delegate_document_edit' ? tr('文档编辑Agent', 'Doc Edit Agent', '文書編集Agent') :
+                   step.agentName || tr('子Agent', 'Sub-Agent', 'サブAgent')} {tr('执行过程:', 'Execution:', '実行過程:')}
                 </p>
                 {step.children.map((child, ci) => (
                   <div key={child.id}>

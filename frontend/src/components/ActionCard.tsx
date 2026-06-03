@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Loader2, CheckCircle, XCircle, Download } from 'lucide-react'
 import { getTheme } from '../services/theme'
+import { useI18n } from '../hooks/useI18n'
 
 export interface ActionData {
   action_id?: string
@@ -28,6 +29,8 @@ interface ActionCardProps {
 
 export default function ActionCard({ action, onConfirm, onCancel }: ActionCardProps) {
   const { action_type, title, description, progress, result } = action
+  const { language } = useI18n()
+  const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
 
   useEffect(() => {
@@ -67,14 +70,16 @@ export default function ActionCard({ action, onConfirm, onCancel }: ActionCardPr
               <button
                 onClick={onConfirm}
                 className="btn-primary px-4 py-2 text-sm"
+                title={tr('确认执行', 'Confirm', '確認')}
               >
-                确认执行
+                {tr('确认执行', 'Confirm', '確認')}
               </button>
               <button
                 onClick={onCancel}
                 className="btn-secondary px-4 py-2 text-sm"
+                title={tr('取消', 'Cancel', 'キャンセル')}
               >
-                取消
+                {tr('取消', 'Cancel', 'キャンセル')}
               </button>
             </div>
           </div>
@@ -99,7 +104,7 @@ export default function ActionCard({ action, onConfirm, onCancel }: ActionCardPr
             {progress !== undefined && (
               <div className="mt-2">
                 <div className="flex justify-between text-xs text-slate-500 mb-1">
-                  <span>进度</span>
+                  <span>{tr('进度', 'Progress', '進捗')}</span>
                   <span>{progress}%</span>
                 </div>
                 <div className={`w-full h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-700' : 'bg-slate-200'}`}>
@@ -134,6 +139,7 @@ export default function ActionCard({ action, onConfirm, onCancel }: ActionCardPr
               <a
                 href={downloadUrl}
                 download
+                title={tr('下载文件', 'Download File', 'ファイルをダウンロード')}
                 className={`mt-2 inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors ${
                   isDarkMode
                     ? 'bg-green-800/50 text-green-300 hover:bg-green-700/50'
@@ -141,7 +147,7 @@ export default function ActionCard({ action, onConfirm, onCancel }: ActionCardPr
                 }`}
               >
                 <Download className="w-4 h-4" />
-                下载文件
+                {tr('下载文件', 'Download File', 'ファイルをダウンロード')}
               </a>
             )}
           </div>

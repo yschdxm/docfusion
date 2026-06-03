@@ -22,6 +22,12 @@ export const languageLabelMap: Record<LanguageCode, string> = {
   'ja-JP': '日本語',
 }
 
+/** 通用翻译辅助函数，可在非 React 环境（stores、services）中使用 */
+export const tr = (zh: string, en: string, ja = en): string => {
+  const lang = getStoredLanguage()
+  return lang === 'zh-CN' ? zh : lang === 'ja-JP' ? ja : en
+}
+
 export const profileI18n = {
   'zh-CN': {
     recentLogin: '最近登录',
@@ -155,31 +161,46 @@ export const sidebarI18n = {
   'zh-CN': {
     dashboard: '仪表盘',
     documents: '文档管理',
-    operation: '文档智能操作',
+    operation: '智能助手',
     tableFill: '表格填写',
     knowledge: '知识图谱',
     workLog: '工作日志',
+    adminCenter: '管理中心',
     systemName: '知融云枢',
     systemSub: '文档智能融合系统',
+    engine: '引擎',
+    configureModel: '请先配置模型',
+    configureModelHint: '请先在管理中心配置LLM模型',
+    closeMenu: '关闭菜单',
   },
   'en-US': {
     dashboard: 'Dashboard',
     documents: 'Documents',
-    operation: 'Doc Operations',
+    operation: 'Smart Operations',
     tableFill: 'Table Fill',
     knowledge: 'Knowledge Graph',
     workLog: 'Work Log',
+    adminCenter: 'Admin Center',
     systemName: 'ZhiRong Hub',
     systemSub: 'Smart Document Fusion',
+    engine: 'Engine',
+    configureModel: 'Configure models first',
+    configureModelHint: 'Please configure LLM model in Admin Center first',
+    closeMenu: 'Close menu',
   },
   'ja-JP': {
     dashboard: 'ダッシュボード',
     documents: 'ドキュメント管理',
-    operation: 'ドキュメント操作',
+    operation: 'スマート操作',
     tableFill: '表入力',
     knowledge: 'ナレッジグラフ',
     workLog: '作業ログ',
+    adminCenter: '管理センター',
     systemName: '知融云枢',
     systemSub: '文書インテリジェント融合',
+    engine: 'エンジン',
+    configureModel: 'モデルを先に設定してください',
+    configureModelHint: '管理センターでLLMモデルを先に設定してください',
+    closeMenu: 'メニューを閉じる',
   },
 } as const

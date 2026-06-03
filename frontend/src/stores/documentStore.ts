@@ -1,16 +1,19 @@
 import { create } from 'zustand'
 import toast from 'react-hot-toast'
 import api from '../services/api'
+import { tr } from '../services/i18n'
 
 export interface DocumentInfo {
   id: string
   filename: string
   original_filename: string
   file_type: string
-  doc_category: string  // 'source' | 'template'
+  doc_category: string  // 'source' | 'template' | 'output'
   file_size?: number
   status: string
   created_at: string
+  user_id?: string | null
+  is_shared?: boolean
   extraction_status?: {
     task_id: string
     status: 'queued' | 'processing' | 'completed' | 'failed'
@@ -47,7 +50,7 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       }
     } catch (error) {
       console.error('Failed to fetch documents:', error)
-      toast.error('获取文件列表失败，请刷新页面重试')
+      toast.error(tr('获取文件列表失败，请刷新页面重试', 'Failed to fetch documents, please refresh the page', '文書一覧の取得に失敗しました。ページを更新してください'))
     } finally {
       set({ isLoading: false })
     }

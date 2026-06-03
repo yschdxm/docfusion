@@ -1,3 +1,4 @@
+import asyncio
 import json
 import httpx
 import logging
@@ -44,55 +45,52 @@ class LLMService:
     }
 
     def __init__(self):
-        self.current_provider = "deepseek"  # 当前模型提供商
-        self.api_key = settings.DEEPSEEK_API_KEY
-        self.base_url = settings.DEEPSEEK_BASE_URL
-        self.model = settings.DEEPSEEK_MODEL
-        self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
-        self.max_context_tokens = settings.DEEPSEEK_MAX_CONTEXT_TOKENS
+        # 初始化为空配置，等待数据库配置
+        self.current_provider = ""
+        self.api_key = ""
+        self.base_url = ""
+        self.model = ""
+        self.max_output_tokens = 0
+        self.max_context_tokens = 0
         self.ssl_verify = settings.SSL_VERIFY
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        self.headers = {}
         self.max_retries = 3
         self.retry_delay = 1.0  # 初始重试延迟（秒）
         self.error_logger = llm_error_logger
+        self._db_config_applied = False  # 标记是否已应用数据库配置
+        self._configured = False  # 标记是否已配置
+        self._model_lock = asyncio.Lock()  # 保护模型切换和LLM调用的原子性
 
-        logger.info(
-            "LLMService初始化: provider=%s, model=%s, base_url=%s, ssl_verify=%s, max_retries=%d",
-            self.current_provider, self.model, self.base_url, self.ssl_verify, self.max_retries
-        )
+        logger.info("LLMService初始化: 等待数据库配置")
 
-    def switch_model(self, provider: str) -> Dict[str, str]:
-        """切换模型提供商
+    def update_config(self, api_key: str, base_url: str, model: str,
+                      max_context_tokens: int = 128000, max_output_tokens: int = 4096) -> Dict[str, str]:
+        """更新LLM配置
 
         Args:
-            provider: 模型提供商名称 ("mimo" 或 "deepseek")
+            api_key: API密钥
+            base_url: API地址
+            model: 模型名称
+            max_context_tokens: 上下文长度
+            max_output_tokens: 最大输出长度
 
         Returns:
             包含当前模型信息的字典
         """
-        if provider == "deepseek":
-            if not settings.DEEPSEEK_API_KEY:
-                raise ValueError("DeepSeek API Key 未配置")
-            self.current_provider = "deepseek"
-            self.api_key = settings.DEEPSEEK_API_KEY
-            self.base_url = settings.DEEPSEEK_BASE_URL
-            self.model = settings.DEEPSEEK_MODEL
-            self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
-            self.max_context_tokens = settings.DEEPSEEK_MAX_CONTEXT_TOKENS
-            self.ssl_verify = settings.SSL_VERIFY
-        elif provider == "mimo":
-            self.current_provider = "mimo"
-            self.api_key = settings.MIMO_API_KEY
-            self.base_url = settings.MIMO_BASE_URL
-            self.model = settings.MIMO_MODEL
-            self.max_output_tokens = settings.MIMO_MAX_OUTPUT_TOKENS
-            self.max_context_tokens = settings.MIMO_MAX_CONTEXT_TOKENS
-            self.ssl_verify = settings.SSL_VERIFY and settings.SSL_VERIFY_MIMO
-        else:
-            raise ValueError(f"不支持的模型提供商: {provider}")
+        if not api_key:
+            raise ValueError("API Key 未配置")
+        if not base_url:
+            raise ValueError("Base URL 未配置")
+        if not model:
+            raise ValueError("Model 未配置")
+
+        self.current_provider = "openai_compatible"
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = model
+        self.max_context_tokens = max_context_tokens
+        self.max_output_tokens = max_output_tokens
+        self.ssl_verify = settings.SSL_VERIFY
 
         # 更新 headers
         self.headers = {
@@ -100,8 +98,8 @@ class LLMService:
             "Content-Type": "application/json"
         }
 
-        logger.info("LLMService切换模型: provider=%s, model=%s, base_url=%s",
-                     self.current_provider, self.model, self.base_url)
+        self._configured = True
+        logger.info("LLM配置已更新: model=%s, base_url=%s", self.model, self.base_url)
 
         return {
             "provider": self.current_provider,
@@ -118,6 +116,193 @@ class LLMService:
             "max_output_tokens": self.max_output_tokens,
             "max_context_tokens": self.max_context_tokens,
         }
+
+    async def ensure_user_model(self, user_selected_model: str, db) -> bool:
+        """确保当前配置为指定用户的模型（每次请求前调用）
+
+        Args:
+            user_selected_model: 用户的 selected_model 字段
+            db: 数据库会话
+
+        Returns:
+            bool: 是否成功配置
+
+        Raises:
+            ValueError: 用户未选择模型
+        """
+        if not user_selected_model:
+            raise ValueError("请先在左下角选择一个模型")
+
+        # 如果当前已配置且模型匹配，直接返回
+        if self._configured and self.model == user_selected_model:
+            return True
+
+        # 需要切换到用户选择的模型，从数据库查找配置
+        from app.services.config_service import config_service
+        import json as json_lib
+
+        configs = await config_service.get_all(db)
+        config_map = {c.key: c.value for c in configs}
+
+        providers_json = config_map.get('llm_providers', '')
+        if not providers_json:
+            raise ValueError("系统未配置任何LLM供应商")
+
+        try:
+            providers = json_lib.loads(providers_json)
+        except json_lib.JSONDecodeError:
+            raise ValueError("LLM供应商配置格式错误")
+
+        for provider in providers:
+            provider_id = provider.get('id', '')
+            api_key = provider.get('api_key', '')
+            base_url = provider.get('base_url', '')
+
+            if not api_key or not base_url:
+                continue
+
+            ctx_key = f'llm_{provider_id}_{user_selected_model}_max_context_tokens'
+            out_key = f'llm_{provider_id}_{user_selected_model}_max_output_tokens'
+
+            if ctx_key in config_map and out_key in config_map:
+                max_context_tokens = config_map.get(ctx_key, '')
+                max_output_tokens = config_map.get(out_key, '')
+
+                if not max_context_tokens or not max_output_tokens:
+                    continue
+
+                self.update_config(
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=user_selected_model,
+                    max_context_tokens=int(max_context_tokens),
+                    max_output_tokens=int(max_output_tokens),
+                )
+                return True
+
+        raise ValueError(f"未找到模型 {user_selected_model} 的配置，可能已被管理员删除")
+
+    async def apply_db_config(self, db) -> bool:
+        """从数据库应用配置（供应商+模型分离格式）
+
+        Returns:
+            bool: 是否成功配置（数据库中有有效的模型配置）
+        """
+        from app.services.config_service import config_service
+        from app.models.user import User
+        import json as json_lib
+
+        # 获取所有配置
+        configs = await config_service.get_all(db)
+        config_map = {c.key: c.value for c in configs}
+
+        # 解析供应商列表
+        providers_json = config_map.get('llm_providers', '')
+        if not providers_json:
+            logger.warning("LLM配置不完整，请在管理中心配置至少一个LLM供应商")
+            return False
+
+        try:
+            providers = json_lib.loads(providers_json)
+        except json_lib.JSONDecodeError:
+            logger.warning("LLM供应商配置格式错误")
+            return False
+
+        if not providers:
+            logger.warning("LLM配置不完整，请在管理中心配置至少一个LLM供应商")
+            return False
+
+        # 获取用户的selected_model作为启动时的默认选择
+        from sqlalchemy import select
+        result = await db.execute(select(User).where(User.selected_model.isnot(None)).limit(1))
+        user_with_selection = result.scalar_one_or_none()
+        preferred_model = user_with_selection.selected_model if user_with_selection else None
+
+        # 遍历所有供应商和模型，查找匹配的配置
+        for provider in providers:
+            provider_id = provider.get('id', '')
+            api_key = provider.get('api_key', '')
+            base_url = provider.get('base_url', '')
+
+            if not api_key or not base_url:
+                continue
+
+            # 查找该供应商下的所有模型
+            prefix = f'llm_{provider_id}_'
+            for key in config_map:
+                if key.startswith(prefix) and key.endswith('_max_context_tokens'):
+                    model_name = key[len(prefix):-len('_max_context_tokens')]
+                    if not model_name:
+                        continue
+
+                    # 如果有用户偏好且匹配，或者没有偏好则使用第一个可用的
+                    if preferred_model and model_name != preferred_model:
+                        continue
+
+                    max_context_tokens = config_map.get(f'{prefix}{model_name}_max_context_tokens', '')
+                    max_output_tokens = config_map.get(f'{prefix}{model_name}_max_output_tokens', '')
+
+                    # 上下文长度和最大输出长度为必填项，未填写则跳过该模型
+                    if not max_context_tokens or not max_output_tokens:
+                        continue
+
+                    self.current_provider = "openai_compatible"
+                    self.api_key = api_key
+                    self.base_url = base_url
+                    self.model = model_name
+                    self.max_context_tokens = int(max_context_tokens)
+                    self.max_output_tokens = int(max_output_tokens)
+                    self.ssl_verify = settings.SSL_VERIFY
+                    self.headers = {
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    self._db_config_applied = True
+                    self._configured = True
+                    logger.info("LLM配置已从数据库应用: model=%s, base_url=%s", self.model, self.base_url)
+                    return True
+
+        # 如果没有匹配的用户偏好，使用第一个可用的供应商和模型
+        for provider in providers:
+            provider_id = provider.get('id', '')
+            api_key = provider.get('api_key', '')
+            base_url = provider.get('base_url', '')
+
+            if not api_key or not base_url:
+                continue
+
+            prefix = f'llm_{provider_id}_'
+            for key in config_map:
+                if key.startswith(prefix) and key.endswith('_max_context_tokens'):
+                    model_name = key[len(prefix):-len('_max_context_tokens')]
+                    if not model_name:
+                        continue
+
+                    max_context_tokens = config_map.get(f'{prefix}{model_name}_max_context_tokens', '')
+                    max_output_tokens = config_map.get(f'{prefix}{model_name}_max_output_tokens', '')
+
+                    # 上下文长度和最大输出长度为必填项，未填写则跳过该模型
+                    if not max_context_tokens or not max_output_tokens:
+                        continue
+
+                    self.current_provider = "openai_compatible"
+                    self.api_key = api_key
+                    self.base_url = base_url
+                    self.model = model_name
+                    self.max_context_tokens = int(max_context_tokens)
+                    self.max_output_tokens = int(max_output_tokens)
+                    self.ssl_verify = settings.SSL_VERIFY
+                    self.headers = {
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    self._db_config_applied = True
+                    self._configured = True
+                    logger.info("LLM配置已从数据库应用(默认): model=%s, base_url=%s", self.model, self.base_url)
+                    return True
+
+        logger.warning("LLM配置不完整，请在管理中心配置至少一个LLM供应商")
+        return False
 
     @staticmethod
     def _extract_json(text: str) -> Any:
@@ -169,7 +354,9 @@ class LLMService:
         enable_thinking: bool = True,
         stream: bool = False,
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str = "auto"
+        tool_choice: str = "auto",
+        user_selected_model: Optional[str] = None,
+        db=None,
     ) -> Union[str, Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
         """调用LLM聊天接口（带错误处理和重试机制）
 
@@ -181,6 +368,8 @@ class LLMService:
             stream: 是否使用流式输出
             tools: 工具定义列表 (OpenAI格式)
             tool_choice: 工具选择策略
+            user_selected_model: 用户选择的模型（传入时自动校验并锁定配置）
+            db: 数据库会话（配合 user_selected_model 使用）
 
         Returns:
             如果stream=True: 返回AsyncGenerator
@@ -190,6 +379,45 @@ class LLMService:
         Raises:
             LLMError: 当API调用失败或响应异常时
         """
+        # 如果指定了用户模型，加锁确保模型切换和LLM调用的原子性
+        if user_selected_model:
+            async with self._model_lock:
+                if db:
+                    await self.ensure_user_model(user_selected_model, db)
+                else:
+                    from app.db.postgres import async_session
+                    async with async_session() as session:
+                        await self.ensure_user_model(user_selected_model, session)
+                return await self._do_chat_completion(
+                    messages=messages, temperature=temperature, max_tokens=max_tokens,
+                    enable_thinking=enable_thinking, stream=stream, tools=tools, tool_choice=tool_choice,
+                )
+
+        # 未指定用户模型，直接调用（兼容其他服务如知识图谱、SQL查询等）
+        return await self._do_chat_completion(
+            messages=messages, temperature=temperature, max_tokens=max_tokens,
+            enable_thinking=enable_thinking, stream=stream, tools=tools, tool_choice=tool_choice,
+        )
+
+    async def _do_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        enable_thinking: bool = True,
+        stream: bool = False,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto"
+    ) -> Union[str, Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
+        """内部实现：调用LLM聊天接口（带错误处理和重试机制）"""
+        # 检查是否已配置
+        if not self._configured:
+            raise LLMError(
+                error_code=LLMErrorCode.CONNECTION_ERROR,
+                message="请先选择模型",
+                http_status=None,
+            )
+
         if max_tokens is None:
             max_tokens = self.max_output_tokens
         start_time = time.time()

@@ -15,6 +15,9 @@ from app.api.v1.api import api_router
 from app.db.postgres import init_db
 from app.db.neo4j_db import init_neo4j, close_neo4j
 
+# 导入所有模型以确保 create_all 能创建所有表
+from app.models import user, document, system_config
+
 setup_logging()
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,30 @@ async def lifespan(app: FastAPI):
 
     await init_db()
     await init_neo4j()
+
+    # 初始化系统配置（如果不存在则创建默认值）
+    from app.services.config_service import config_service
+    from app.services.llm_service import llm_service
+    from app.services.embedding_service import embedding_service
+    from app.services.rerank_service import rerank_service
+    from app.core.rate_limiter import rate_limiter
+    from app.db.postgres import async_session
+
+    async with async_session() as db:
+        # 确保注册开关配置存在
+        reg_enabled = await config_service.get(db, "registration_enabled")
+        if not reg_enabled:
+            await config_service.set(db, "registration_enabled", "true", description="是否开放注册")
+
+        # 从数据库应用LLM配置
+        await llm_service.apply_db_config(db)
+
+        # 从数据库应用嵌入和重排配置
+        await embedding_service.apply_db_config(db)
+        await rerank_service.apply_db_config(db)
+
+        # 从数据库应用流控配置
+        await rate_limiter.apply_db_config(db)
 
     yield
 

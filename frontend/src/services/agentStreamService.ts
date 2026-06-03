@@ -8,6 +8,7 @@
 
 import { fetchEventSource, EventSourceMessage } from '@microsoft/fetch-event-source'
 import { getAuthToken } from './auth'
+import { tr } from './i18n'
 
 export interface AgentStreamRequest {
   message: string
@@ -364,7 +365,7 @@ class AgentStreamService {
             this.clearPersistedTask(state.sessionId)
             state.onComplete({
               success: true,
-              message: event.data.message || '任务完成',
+              message: event.data.message || tr('任务完成', 'Task completed', 'タスク完了'),
               output_file_id: event.data.result?.output_file_id,
               download_url: event.data.result?.download_url,
               task_stats: event.data.result?.task_stats,
@@ -375,7 +376,7 @@ class AgentStreamService {
             state.completedFired = true
             state.taskEnded = true
             this.clearPersistedTask(state.sessionId)
-            const errorMsg = event.data.error || '任务执行失败'
+            const errorMsg = event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗')
             state.onError(errorMsg)
             state.abortController.abort()
           } else if (event.event_type === 'cancelled') {
@@ -383,7 +384,7 @@ class AgentStreamService {
             state.completedFired = true
             state.taskEnded = true
             this.clearPersistedTask(state.sessionId)
-            state.onError(event.data.message || '任务已取消')
+            state.onError(event.data.message || tr('任务已取消', 'Task cancelled', 'タスクがキャンセルされました'))
             state.abortController.abort()
           }
         },
@@ -411,7 +412,7 @@ class AgentStreamService {
           }
           // 重连次数耗尽 → 停止重试并通知
           if (state.reconnectAttempts >= state.maxReconnectAttempts) {
-            state.onError(`连接中断，重连失败(${state.reconnectAttempts}次)`)
+            state.onError(tr(`连接中断，重连失败(${state.reconnectAttempts}次)`, `Connection lost, reconnect failed (${state.reconnectAttempts} times)`, `接続切断、再接続失敗（${state.reconnectAttempts}回）`))
             return null
           }
           // 继续重试
@@ -441,7 +442,7 @@ class AgentStreamService {
       }
       // 其他意外错误
       else {
-        state.onError(`连接中断: ${errMsg}`)
+        state.onError(tr(`连接中断: ${errMsg}`, `Connection lost: ${errMsg}`, `接続切断: ${errMsg}`))
       }
     } finally {
       if (state.taskEnded) {
@@ -500,7 +501,7 @@ class AgentStreamService {
         break
       case 'assistant_message': {
         const msg = d.message || ''
-        const src = d.agent_name ? '子Agent' : '主Agent'
+        const src = d.agent_name ? tr('子Agent', 'Sub-Agent', 'サブAgent') : tr('主Agent', 'Main Agent', 'メインAgent')
         console.log(`[SSE][${connectionId}] 中途回复(${src}): ${msg.substring(0, 100)}${msg.length > 100 ? '...' : ''}`)
         break
       }
@@ -541,7 +542,7 @@ class AgentStreamService {
     switch (event.event_type) {
       case 'step_start': {
         const stepType = this._inferStepType(event.data.step_name || '')
-        this._findOrCreateChildStep(parentStep, stepId, stepType, event.data.step_name || '步骤', event.data.description || '')
+        this._findOrCreateChildStep(parentStep, stepId, stepType, event.data.step_name || tr('步骤', 'Step', 'ステップ'), event.data.description || '')
         break
       }
       case 'step_progress': {
@@ -555,23 +556,23 @@ class AgentStreamService {
         break
       }
       case 'thinking_start': {
-        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', event.data.message || '思考中', 'Agent正在分析任务')
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', event.data.message || tr('思考中', 'Thinking', '思考中'), tr('Agent正在分析任务', 'Agent is analyzing the task', 'Agentがタスクを分析中'))
         child.status = 'running'
         if (!child.thinkingContent) child.thinkingContent = ''
         break
       }
       case 'thinking_chunk': {
-        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', '思考中', 'Agent正在分析任务')
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'thinking', tr('思考中', 'Thinking', '思考中'), tr('Agent正在分析任务', 'Agent is analyzing the task', 'Agentがタスクを分析中'))
         child.thinkingContent = (child.thinkingContent || '') + (event.data.content || '')
         break
       }
       case 'thinking_end': {
         const child = parentStep.children?.find(c => c.id === stepId)
-        if (child) { child.status = 'completed'; child.progress = 100; child.name = '思考完成' }
+        if (child) { child.status = 'completed'; child.progress = 100; child.name = tr('思考完成', 'Thinking complete', '思考完了') }
         break
       }
       case 'tool_call': {
-        const child = this._findOrCreateChildStep(parentStep, stepId, 'tool_call', `调用 ${event.data.tool_name}`, `执行工具: ${event.data.tool_name}`)
+        const child = this._findOrCreateChildStep(parentStep, stepId, 'tool_call', tr(`调用 ${event.data.tool_name}`, `Calling ${event.data.tool_name}`, `${event.data.tool_name} を呼び出し`), tr(`执行工具: ${event.data.tool_name}`, `Executing tool: ${event.data.tool_name}`, `ツール実行: ${event.data.tool_name}`))
         child.toolName = event.data.tool_name
         child.toolParams = event.data.parameters
         child.status = 'running'
@@ -601,7 +602,7 @@ class AgentStreamService {
         const msg = event.data.message || ''
         if (msg) {
           parentStep.children?.push({
-            id: `reply_${++state.replyCounter}`, type: 'assistant_reply', name: 'AI回复',
+            id: `reply_${++state.replyCounter}`, type: 'assistant_reply', name: tr('AI回复', 'AI Reply', 'AI応答'),
             description: msg, status: 'completed', progress: 100, thinkingContent: msg,
           })
         }
@@ -657,8 +658,8 @@ class AgentStreamService {
       case 'step_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100 } break }
       case 'tool_call':
         state.steps.set(stepId, {
-          id: stepId, type: 'tool_call', name: `调用 ${event.data.tool_name}`,
-          description: `执行工具: ${event.data.tool_name}`, status: 'running', progress: 50,
+          id: stepId, type: 'tool_call', name: tr(`调用 ${event.data.tool_name}`, `Calling ${event.data.tool_name}`, `${event.data.tool_name} を呼び出し`),
+          description: tr(`执行工具: ${event.data.tool_name}`, `Executing tool: ${event.data.tool_name}`, `ツール実行: ${event.data.tool_name}`), status: 'running', progress: 50,
           toolName: event.data.tool_name, toolParams: event.data.parameters,
         })
         break
@@ -667,26 +668,26 @@ class AgentStreamService {
       case 'thinking_start': {
         const existing = state.steps.get(stepId)
         if (existing) { existing.status = 'running'; existing.name = event.data.message || existing.name }
-        else { state.steps.set(stepId, { id: stepId, type: 'thinking', name: event.data.message || '思考中', description: 'Agent正在分析任务', status: 'running', progress: 0, thinkingContent: '' }) }
+        else { state.steps.set(stepId, { id: stepId, type: 'thinking', name: event.data.message || tr('思考中', 'Thinking', '思考中'), description: tr('Agent正在分析任务', 'Agent is analyzing the task', 'Agentがタスクを分析中'), status: 'running', progress: 0, thinkingContent: '' }) }
         break
       }
       case 'thinking_chunk': {
         let s = state.steps.get(stepId)
-        if (!s) { s = { id: stepId, type: 'thinking', name: '思考中', description: 'Agent正在分析任务', status: 'running', progress: 0, thinkingContent: '' }; state.steps.set(stepId, s) }
+        if (!s) { s = { id: stepId, type: 'thinking', name: tr('思考中', 'Thinking', '思考中'), description: tr('Agent正在分析任务', 'Agent is analyzing the task', 'Agentがタスクを分析中'), status: 'running', progress: 0, thinkingContent: '' }; state.steps.set(stepId, s) }
         s.thinkingContent += event.data.content || ''
         break
       }
-      case 'thinking_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100; s.name = '思考完成' } break }
+      case 'thinking_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100; s.name = tr('思考完成', 'Thinking complete', '思考完了') } break }
       case 'content_chunk': break
       case 'content_end': { const s = state.steps.get(stepId); if (s) { s.status = 'completed'; s.progress = 100 } break }
       case 'assistant_message': state.steps.clear(); break
       case 'data_retrieval_start':
-        state.steps.set(stepId, { id: stepId, type: 'data_retrieval', name: `查询 ${event.data.source}`, description: `从 ${event.data.source} 检索数据`, status: 'running', progress: 0 })
+        state.steps.set(stepId, { id: stepId, type: 'data_retrieval', name: tr(`查询 ${event.data.source}`, `Query ${event.data.source}`, `${event.data.source} を検索`), description: tr(`从 ${event.data.source} 检索数据`, `Retrieving data from ${event.data.source}`, `${event.data.source} からデータを取得`), status: 'running', progress: 0 })
         break
       case 'data_retrieval_progress': { const s = state.steps.get(stepId); if (s) s.progress = event.data.records_found > 0 ? 50 : 0; break }
       case 'fill_table_progress': {
         let s = state.steps.get(stepId)
-        if (!s) { s = { id: stepId, type: 'fill_table', name: '填写表格', description: '正在将数据填入模板', status: 'running', progress: 0 }; state.steps.set(stepId, s) }
+        if (!s) { s = { id: stepId, type: 'fill_table', name: tr('填写表格', 'Filling table', '表を入力'), description: tr('正在将数据填入模板', 'Filling data into template', 'データをテンプレートに入力中'), status: 'running', progress: 0 }; state.steps.set(stepId, s) }
         s.progress = event.data.progress || 0
         break
       }
@@ -694,14 +695,14 @@ class AgentStreamService {
       case 'completed': { const s = state.steps.get(stepId); if (s && s.type === 'thinking') { s.status = 'completed'; s.progress = 100 } break }
       case 'failed': {
         const fid = event.step_id || `step_fail_${Date.now()}`
-        state.steps.set(fid, { id: fid, type: 'thinking', name: '任务失败', description: event.data.error || '任务执行失败', status: 'error', progress: 0, errorMessage: event.data.error })
+        state.steps.set(fid, { id: fid, type: 'thinking', name: tr('任务失败', 'Task failed', 'タスク失敗'), description: event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗'), status: 'error', progress: 0, errorMessage: event.data.error })
         break
       }
       case 'error': {
         const eid = event.step_id || `step_error_${Date.now()}`
         const e = state.steps.get(eid)
-        if (e) { e.status = 'error'; e.errorMessage = event.data.error || event.data.message || '发生错误' }
-        else { state.steps.set(eid, { id: eid, type: 'thinking', name: '错误', description: event.data.error || event.data.message || '发生错误', status: 'error', progress: 0, errorMessage: event.data.error || event.data.message }) }
+        if (e) { e.status = 'error'; e.errorMessage = event.data.error || event.data.message || tr('发生错误', 'An error occurred', 'エラーが発生しました') }
+        else { state.steps.set(eid, { id: eid, type: 'thinking', name: tr('错误', 'Error', 'エラー'), description: event.data.error || event.data.message || tr('发生错误', 'An error occurred', 'エラーが発生しました'), status: 'error', progress: 0, errorMessage: event.data.error || event.data.message }) }
         break
       }
     }

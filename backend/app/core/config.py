@@ -41,34 +41,8 @@ class Settings(BaseSettings):
     NEO4J_PASSWORD: Optional[str] = None
     QDRANT_URL: Optional[str] = None
 
-    # MiMO API
-    MIMO_API_KEY: Optional[str] = None
-    MIMO_BASE_URL: str = "https://api.xiaomimimo.com/v1"
-    MIMO_MODEL: str = "mimo-v2-flash"
-    MIMO_MAX_CONTEXT_TOKENS: int = 128000   # 128K
-    MIMO_MAX_OUTPUT_TOKENS: int = 65536     # 64K
-
-    # DeepSeek API
-    DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
-    DEEPSEEK_MAX_CONTEXT_TOKENS: int = 1000000  # 1M
-    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 393216    # 384K
-
-    # LLM 流控配置
-    LLM_RPM: int = 100  # 每分钟最大请求数
-    LLM_TPM: int = 10_000_000  # 每分钟最大 token 数 (10M)
-
-    # Gitee AI API
-    GITEE_AI_API_KEY: Optional[str] = None
-    GITEE_AI_BASE_URL: str = "https://ai.gitee.com/v1"
-    EMBEDDING_MODEL: str = "bge-m3"
-    RERANK_MODEL: str = "bge-reranker-v2-m3"
-
     # SSL Configuration
     SSL_VERIFY: bool = True  # 总开关，默认开启SSL验证
-    SSL_VERIFY_MIMO: bool = True  # MiMO模型SSL验证
-    SSL_VERIFY_GITEE_AI: bool = True  # Gitee AI（嵌入和重排模型）SSL验证
 
     # ONLYOFFICE
     ONLYOFFICE_SERVER_URL: str = "http://localhost:8088"
@@ -103,8 +77,6 @@ class Settings(BaseSettings):
             "NEO4J_USER": "Neo4j 用户名",
             "NEO4J_PASSWORD": "Neo4j 密码",
             "QDRANT_URL": "Qdrant 向量数据库连接",
-            "MIMO_API_KEY": "MiMO 模型 API 密钥",
-            "GITEE_AI_API_KEY": "Gitee AI API 密钥（用于嵌入和重排模型）",
         }
 
         missing_fields = []
@@ -124,16 +96,7 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context):
         """在模型初始化后，处理 Docker secrets"""
-        # 如果环境变量中没有设置 API 密钥，尝试从 Docker secret 文件读取
-        if not self.MIMO_API_KEY:
-            secret_file = os.getenv("MIMO_API_KEY_FILE", "")
-            if secret_file:
-                self.MIMO_API_KEY = read_secret_from_file(secret_file)
-
-        if not self.GITEE_AI_API_KEY:
-            secret_file = os.getenv("GITEE_AI_API_KEY_FILE", "")
-            if secret_file:
-                self.GITEE_AI_API_KEY = read_secret_from_file(secret_file)
+        pass
 
 
 @lru_cache()

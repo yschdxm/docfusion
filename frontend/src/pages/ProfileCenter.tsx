@@ -6,6 +6,12 @@ import { changePassword, getAuthUser, getLastLoginAt, updateAuthUser } from '../
 import { profileI18n } from '../services/i18n'
 import { useI18n } from '../hooks/useI18n'
 
+const roleLabels = {
+  'zh-CN': { user: '普通用户', admin: '管理员', super_admin: '主管理员' },
+  'en-US': { user: 'Standard User', admin: 'Admin', super_admin: 'Super Admin' },
+  'ja-JP': { user: '一般ユーザー', admin: '管理者', super_admin: '主管理者' },
+}
+
 const AVATAR_SEED_KEY = 'profile_avatar_seed'
 
 const avatarPresets = [
@@ -39,6 +45,10 @@ export default function ProfileCenter() {
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const currentUser = getAuthUser()
   const [avatarSeed] = useState<number>(() => ensureAvatarSeed())
+
+  const userRoleLabel = currentUser?.role
+    ? (roleLabels[language]?.[currentUser.role as keyof typeof roleLabels['zh-CN']] || currentUser.role)
+    : t.userRole
 
   const [name, setName] = useState(currentUser?.username || '')
   const [email, setEmail] = useState(currentUser?.email || '')
@@ -117,7 +127,7 @@ export default function ProfileCenter() {
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs" style={{ backgroundColor: 'color-mix(in srgb, var(--theme-primary) 16%, transparent)', color: 'var(--theme-body-text)' }}>
                   <BadgeCheck className="h-3.5 w-3.5" />
-                  {t.userRole}
+                  {userRoleLabel}
                 </span>
                 <span className="rounded-full px-2.5 py-1 text-xs" style={{ backgroundColor: 'color-mix(in srgb, var(--theme-primary) 12%, transparent)', color: 'var(--theme-body-text)' }}>
                   {t.userId}: {profileMeta.userId}
@@ -153,7 +163,7 @@ export default function ProfileCenter() {
               </label>
             </div>
 
-            <button type="submit" className="btn-primary px-4 py-2" disabled={isSaving}>
+            <button type="submit" title={t.save} className="btn-primary px-4 py-2" disabled={isSaving}>
               <Save className="h-4 w-4" />
               {isSaving ? t.saving : t.save}
             </button>
@@ -165,7 +175,7 @@ export default function ProfileCenter() {
           <div className="mt-4 space-y-2 text-sm">
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
               <p className="text-xs text-slate-500">{t.accountType}</p>
-              <p className="mt-1 text-slate-800">{t.userRole}</p>
+              <p className="mt-1 text-slate-800">{userRoleLabel}</p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
               <p className="text-xs text-slate-500">{t.userId}</p>
@@ -210,7 +220,7 @@ export default function ProfileCenter() {
 
           <div className="mt-1 flex items-center justify-between gap-3 md:col-span-2">
             <p className="text-xs text-slate-500">{t.passwordTip}</p>
-            <button type="submit" className="btn-secondary px-4 py-2 text-xs shrink-0">{t.updatePassword}</button>
+            <button type="submit" title={t.updatePassword} className="btn-secondary px-4 py-2 text-xs shrink-0">{t.updatePassword}</button>
           </div>
         </form>
       </section>

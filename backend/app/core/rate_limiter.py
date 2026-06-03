@@ -3,7 +3,6 @@ import time
 from collections import deque
 import logging
 from typing import Optional, Dict, Any
-from app.core.config import get_settings
 from app.core.llm_errors import (
     LLMErrorCode,
     create_llm_error,
@@ -244,6 +243,30 @@ class RateLimiter:
             "total_wait_time": 0.0,
         }
 
+    def update_limits(self, rpm: Optional[int] = None, tpm: Optional[int] = None):
+        """
+        更新流控限制
+
+        Args:
+            rpm: 新的RPM限制
+            tpm: 新的TPM限制
+        """
+        if rpm is not None and rpm > 0:
+            self.rpm = rpm
+        if tpm is not None and tpm > 0:
+            self.tpm = tpm
+        logger.info("[RATE_LIMIT] 流控限制已更新 | RPM=%d, TPM=%d", self.rpm, self.tpm)
+
+    async def apply_db_config(self, db) -> None:
+        """从数据库应用流控配置"""
+        from app.services.config_service import config_service
+
+        rpm = await config_service.get_int(db, "llm_rpm", self.rpm)
+        tpm = await config_service.get_int(db, "llm_tpm", self.tpm)
+
+        self.update_limits(rpm=rpm, tpm=tpm)
+        logger.info("流控配置已从数据库应用: RPM=%d, TPM=%d", self.rpm, self.tpm)
+
     async def create_rate_limit_error(
         self,
         retry_after: Optional[float] = None,
@@ -273,6 +296,5 @@ class RateLimiter:
         )
 
 
-# 全局流控实例
-settings = get_settings()
-rate_limiter = RateLimiter(rpm=settings.LLM_RPM, tpm=settings.LLM_TPM)
+# 全局流控实例（默认值，启动后会被数据库配置覆盖）
+rate_limiter = RateLimiter(rpm=100, tpm=10_000_000)

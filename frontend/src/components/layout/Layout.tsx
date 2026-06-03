@@ -175,7 +175,7 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <Header isMobile={isMobile} onToggleSidebar={() => setSidebarOpen(prev => !prev)} sidebarOpen={sidebarOpen} />
         <main className="flex-1 p-3 sm:p-4 lg:p-6 min-h-0">
-          <div className="animate-in h-full flex flex-col min-h-0">
+          <div className="animate-in h-full">
             <Outlet />
           </div>
         </main>

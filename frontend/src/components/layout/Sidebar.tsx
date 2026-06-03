@@ -1,11 +1,13 @@
 ﻿import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FolderOpen, FileText, Network, NotebookPen } from 'lucide-react'
+import { LayoutDashboard, FolderOpen, FileText, Network, NotebookPen, ShieldCheck } from 'lucide-react'
 import { useI18n } from '../../hooks/useI18n'
 import { sidebarI18n } from '../../services/i18n'
 import { useState, useEffect } from 'react'
 import api from '../../services/api'
 import Dropdown from '../ui/Dropdown'
 import { getTheme } from '../../services/theme'
+import { isAdmin, setAuthUserField } from '../../services/auth'
+import toast from 'react-hot-toast'
 
 interface SidebarProps {
   isMobile?: boolean
@@ -15,7 +17,8 @@ interface SidebarProps {
 export default function Sidebar({ isMobile, onClose }: SidebarProps) {
   const { language } = useI18n()
   const t = sidebarI18n[language]
-  const [currentProvider, setCurrentProvider] = useState<string>('deepseek')
+  const [currentModel, setCurrentModel] = useState<string>('')
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([])
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
 
   // 监听主题变化
@@ -27,44 +30,66 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
     return () => observer.disconnect()
   }, [])
 
-  // 获取当前模型配置
+  // 获取当前模型配置和可用模型列表
   useEffect(() => {
-    const fetchModelConfig = async () => {
+    const fetchModels = async () => {
       try {
-        const { data } = await api.get('/agent/model')
-        setCurrentProvider(data.provider)
+        // 获取可用模型列表（所有用户可访问）
+        const { data } = await api.get('/agent/models')
+        setCurrentModel(data.current || '')
+
+        const options: { value: string; label: string }[] = []
+        if (data.models && data.models.length > 0) {
+          data.models.forEach((model: { id: string; name: string; provider: string }) => {
+            options.push({ value: model.id, label: model.name })
+          })
+        } else {
+          options.push({ value: '', label: t.configureModel })
+        }
+
+        setModelOptions(options)
       } catch (error) {
         console.error('获取模型配置失败:', error)
       }
     }
-    fetchModelConfig()
-  }, [])
+    fetchModels()
+  }, [language])
 
   // 切换模型
-  const handleModelSwitch = async (provider: string) => {
-    if (provider === currentProvider) return
+  const handleModelSwitch = async (model: string) => {
+    if (!model) {
+      // 如果选择的是空值（请先配置模型），提示用户
+      toast.error(t.configureModelHint)
+      return
+    }
+    if (model === currentModel) return
 
     try {
-      const { data } = await api.post('/agent/model/switch', { provider })
+      const { data } = await api.post('/agent/model/switch', { provider: model })
       if (data.success) {
-        setCurrentProvider(provider)
+        setCurrentModel(model)
+        setAuthUserField({ selected_model: model })
       }
     } catch (error) {
       console.error('切换模型失败:', error)
     }
   }
 
-  const modelOptions = [
-    { value: 'mimo', label: 'MiMO v2 Flash' },
-    { value: 'deepseek', label: 'DeepSeek V4 Flash' },
-  ]
-
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: t.dashboard },
     { path: '/documents', icon: FolderOpen, label: t.documents },
-    { path: '/document-operation', icon: FileText, label: language === 'zh-CN' ? '智能助手' : t.operation },
+    { path: '/document-operation', icon: FileText, label: t.operation },
     { path: '/knowledge', icon: Network, label: t.knowledge },
     { path: '/work-log', icon: NotebookPen, label: t.workLog },
+    ...(isAdmin()
+      ? [
+          {
+            path: '/admin',
+            icon: ShieldCheck,
+            label: t.adminCenter,
+          },
+        ]
+      : []),
   ]
 
   return (
@@ -77,7 +102,8 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
             <button
               onClick={onClose}
               className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              aria-label="关闭菜单"
+              aria-label={t.closeMenu}
+              title={t.closeMenu}
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -125,9 +151,9 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
 
       <div className="border-t border-slate-200/80 px-4 py-4">
         <div className={`rounded-xl border border-slate-200 px-4 py-3 ${isDarkMode ? 'night-mode-gradient-bg' : 'bg-[linear-gradient(180deg,#ffffff,#f6f9ff)]'}`}>
-          <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Engine</p>
+          <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{t.engine}</p>
           <Dropdown
-            value={currentProvider}
+            value={currentModel}
             onChange={handleModelSwitch}
             options={modelOptions}
             className="mt-1"

@@ -38,10 +38,10 @@ def _strip_trailing_slash(url: str) -> str:
 
 
 def _user_doc_filter(user_id: UUID):
-    """构建用户文档过滤条件，根据配置决定是否包含无主数据"""
+    """构建用户文档过滤条件，根据配置决定是否包含无主数据和共享文档"""
     if settings.INCLUDE_ORPHAN_DATA:
-        return or_(Document.user_id == user_id, Document.user_id.is_(None))
-    return Document.user_id == user_id
+        return or_(Document.user_id == user_id, Document.user_id.is_(None), Document.is_shared == True)
+    return or_(Document.user_id == user_id, Document.is_shared == True)
 
 
 async def _get_user_document(document_id: UUID, user_id: UUID, db: AsyncSession) -> Document:
@@ -53,6 +53,30 @@ async def _get_user_document(document_id: UUID, user_id: UUID, db: AsyncSession)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+
+async def _get_document_as_admin(document_id: UUID, user_id: UUID, db: AsyncSession, is_admin: bool = False) -> Document:
+    """获取文档：管理员可访问任意文档，普通用户遵循原有权限"""
+    if is_admin:
+        result = await db.execute(
+            select(Document).where(Document.id == document_id)
+        )
+    else:
+        result = await db.execute(
+            select(Document).where(Document.id == document_id, _user_doc_filter(user_id))
+        )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+def _ensure_document_owner(doc: Document, user_id: UUID, is_admin: bool = False):
+    """确保用户是文档所有者（或管理员），共享文档对非所有者只读"""
+    if is_admin:
+        return
+    if doc.user_id != user_id:
+        raise HTTPException(status_code=403, detail="共享文档只读，无法修改或删除")
 
 
 def _normalize_api_prefix(prefix: str) -> str:
@@ -153,7 +177,7 @@ def _truncate_text(content: str, limit: int = TEXT_PREVIEW_LIMIT) -> tuple[str, 
     return content[:limit], True
 
 
-def _get_document_preview(doc: Document) -> DocumentPreviewResponse:
+def _get_document_preview(doc: Document, user_can_edit: bool = True) -> DocumentPreviewResponse:
     from app.services.document_processor.md_parser import MdParser
     from app.services.document_processor.txt_parser import TxtParser
 
@@ -180,7 +204,7 @@ def _get_document_preview(doc: Document) -> DocumentPreviewResponse:
             preview_type="text",
             content=content,
             truncated=truncated,
-            can_edit=True,
+            can_edit=user_can_edit,
         )
 
     if file_type == "md":
@@ -193,7 +217,7 @@ def _get_document_preview(doc: Document) -> DocumentPreviewResponse:
             content=content,
             html_content=parsed.get("html", ""),
             truncated=truncated,
-            can_edit=True,
+            can_edit=user_can_edit,
         )
 
     # docx / xlsx / ppt 等 Office 文件统一走 OnlyOffice
@@ -204,7 +228,7 @@ def _get_document_preview(doc: Document) -> DocumentPreviewResponse:
             file_name=doc.original_filename,
             file_type=file_type,
             preview_type="onlyoffice",
-            can_edit=False,
+            can_edit=user_can_edit,
         )
 
     raise HTTPException(status_code=400, detail=f"不支持预览此文件类型: {file_type}")
@@ -489,7 +513,9 @@ async def list_documents(
             "status": doc.status,
             "metadata_info": doc.metadata_info or {},
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
-            "extraction_status": None
+            "extraction_status": None,
+            "user_id": str(doc.user_id) if doc.user_id else None,
+            "is_shared": bool(doc.is_shared),
         }
 
         if doc.doc_category == "source":
@@ -640,8 +666,11 @@ async def preview_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    doc = await _get_user_document(document_id, current_user.id, db)
-    return _get_document_preview(doc)
+    is_admin = current_user.role in ('admin', 'super_admin')
+    doc = await _get_document_as_admin(document_id, current_user.id, db, is_admin)
+    # 所有者或管理员可编辑，共享文档对普通用户只读
+    user_can_edit = is_admin or doc.user_id == current_user.id
+    return _get_document_preview(doc, user_can_edit=user_can_edit)
 
 
 @router.get("/{document_id}/office-config")
@@ -651,7 +680,12 @@ async def get_onlyoffice_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    doc = await _get_user_document(document_id, current_user.id, db)
+    is_admin = current_user.role in ('admin', 'super_admin')
+    doc = await _get_document_as_admin(document_id, current_user.id, db, is_admin)
+
+    # 共享文档对非所有者强制只读
+    if not is_admin and doc.user_id != current_user.id:
+        mode = "view"
 
     file_type = (doc.file_type or "").lower()
     if file_type not in ONLYOFFICE_FILE_TYPES:
@@ -785,7 +819,7 @@ async def inline_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    doc = await _get_user_document(document_id, current_user.id, db)
+    doc = await _get_document_as_admin(document_id, current_user.id, db, current_user.role in ('admin', 'super_admin'))
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -842,6 +876,7 @@ async def save_document_content(
     current_user: User = Depends(get_current_user)
 ):
     doc = await _get_user_document(document_id, current_user.id, db)
+    _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -879,7 +914,7 @@ async def download_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    doc = await _get_user_document(document_id, current_user.id, db)
+    doc = await _get_document_as_admin(document_id, current_user.id, db, current_user.role in ('admin', 'super_admin'))
 
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
@@ -980,6 +1015,7 @@ async def delete_document(
     current_user: User = Depends(get_current_user)
 ):
     doc = await _get_user_document(document_id, current_user.id, db)
+    _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
 
     doc_id_str = str(document_id)
 
