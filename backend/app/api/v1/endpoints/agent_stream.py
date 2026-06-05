@@ -30,6 +30,65 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+import re
+
+
+def _normalize_download_urls(content: str) -> str:
+    """规范化消息中的下载链接，修复LLM生成的错误URL
+
+    处理以下错误格式：
+    1. https://www1.fylm.xyz:9200/api/v1/documents/... → /api/v1/documents/...
+    2. http://api/v1/documents/... → /api/v1/documents/...
+    3. 任何包含 /documents/{uuid}/download 的完整URL → 相对路径
+    """
+    if not content:
+        return content
+
+    # 匹配 Markdown 链接中的下载URL: [text](url)
+    # 也匹配纯文本URL
+    def fix_url(match):
+        prefix = match.group(1)  # 可能的 [text]( 前缀
+        url = match.group(2)
+        suffix = match.group(3)  # 可能的 ) 后缀
+
+        # 检查是否是下载链接
+        if '/documents/' in url and '/download' in url:
+            # 提取路径部分
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                return f"{prefix}{parsed.path}{suffix}"
+            except:
+                # 如果解析失败，尝试正则提取
+                path_match = re.search(r'(/api/v1/documents/[\w-]+/download)', url)
+                if path_match:
+                    return f"{prefix}{path_match.group(1)}{suffix}"
+
+        return match.group(0)  # 不是下载链接，返回原值
+
+    # 匹配 Markdown 链接格式: [text](url)
+    content = re.sub(r'(\[[^\]]*\]\()([^)]+)(\))', fix_url, content)
+
+    # 匹配纯文本URL（不在Markdown链接中的）
+    def fix_plain_url(match):
+        url = match.group(0)
+        if '/documents/' in url and '/download' in url:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                return parsed.path
+            except:
+                path_match = re.search(r'(/api/v1/documents/[\w-]+/download)', url)
+                if path_match:
+                    return path_match.group(1)
+        return url
+
+    # 匹配 http:// 或 https:// 开头的URL
+    content = re.sub(r'https?://[^\s\)]+', fix_plain_url, content)
+
+    return content
+
+
 # ============================================================
 # StepAccumulator — 解析 SSE 事件，累积构建 steps 数据
 # ============================================================
@@ -385,6 +444,10 @@ async def _save_message(
     使用 shield 保护保存操作不被 CancelledError 中断。
     """
     import asyncio as _asyncio
+
+    # 规范化消息中的下载链接（只处理assistant消息）
+    if role == "assistant" and content:
+        content = _normalize_download_urls(content)
 
     async def _do_save():
         async with async_session() as db:

@@ -26,14 +26,25 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
 
   // 规范化下载链接：提取相对路径部分
   const normalizeDownloadHref = (url: string): string => {
-    // 如果是完整URL（包含域名），提取路径部分
+    if (!url) return url
+
+    // 情况1: 完整URL（如 https://www1.fylm.xyz:9200/api/v1/documents/...）
     try {
       const urlObj = new URL(url)
-      return urlObj.pathname  // 返回路径部分，如 /api/v1/documents/xxx/download
+      // 提取路径部分，忽略域名
+      return urlObj.pathname
     } catch {
-      // 不是完整URL，直接返回原值
-      return url
+      // 不是完整URL，继续处理
     }
+
+    // 情况2: 错误格式 http://api/v1/... （域名是 "api"）
+    const wrongDomainMatch = url.match(/^https?:\/\/api(\/.*)$/i)
+    if (wrongDomainMatch) {
+      return wrongDomainMatch[1]  // 返回 /v1/documents/... 部分
+    }
+
+    // 情况3: 正确的相对路径（如 /api/v1/documents/...）
+    return url
   }
 
   const handleClick = async (e: React.MouseEvent) => {
