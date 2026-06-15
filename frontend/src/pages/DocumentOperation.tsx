@@ -1004,8 +1004,15 @@ export default function DocumentOperation() {
                   {tr('新建', 'New', '新規')}
                 </button>
                 <button
-                  onClick={() => { requestPreview(); setShowMobilePreview(true) }}
-                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 border border-transparent"
+                  onClick={() => {
+                    if (isMobile) {
+                      requestPreview()
+                      setShowMobilePreview(true)
+                    } else {
+                      togglePanel()
+                    }
+                  }}
+                  className={`p-2 rounded-lg transition-colors ${isPanelOpen && !isMobile ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                   title={tr('文档预览', 'Preview', 'プレビュー')}
                 >
                   <Eye className="w-4 h-4" />
