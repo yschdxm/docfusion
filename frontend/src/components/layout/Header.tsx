@@ -29,7 +29,6 @@ const i18n = {
     page: {
       '/': '仪表盘',
       '/documents': '文档管理',
-      '/document-operation': '智能助手',
       '/knowledge': '知识图谱',
       '/work-log': '工作日志',
       '/profile': '个人中心',
@@ -47,7 +46,6 @@ const i18n = {
     page: {
       '/': 'Dashboard',
       '/documents': 'Documents',
-      '/document-operation': 'Doc Operations',
       '/knowledge': 'Knowledge Graph',
       '/work-log': 'Work Log',
       '/profile': 'Profile',
@@ -65,7 +63,6 @@ const i18n = {
     page: {
       '/': 'ダッシュボード',
       '/documents': 'ドキュメント管理',
-      '/document-operation': 'スマート操作',
       '/knowledge': 'ナレッジグラフ',
       '/work-log': '作業ログ',
       '/profile': 'プロフィール',
@@ -566,8 +563,6 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                           {section.key === 'modules' && (
                             <>
                               <p>{tr('文档管理：上传、检索、预览、下载文档。', 'Documents: upload, search, preview, and download files.', '文書管理: アップロード・検索・プレビュー・ダウンロード。')}</p>
-                              <p>{tr('智能助手：通过自然语言提取、改写、转换内容。', 'Doc Operations: extract, rewrite, and convert via natural language.', '文書操作: 自然言語で抽出・改写・変換。')}</p>
-                              <p>{tr('表格填写：从源文档自动填充模板表格。', 'Table Fill: auto-fill templates from source docs.', '表入力: ソース文書からテンプレートに自動入力。')}</p>
                               <p>{tr('知识图谱：查看实体关系与跨文档关联。', 'Knowledge Graph: view entity relations across docs.', 'ナレッジグラフ: 文書横断の関係を確認。')}</p>
                               <p>{tr('工作日志：查看统计、维护待办、导出日志。', 'Work Log: stats, todos, and export.', '作業ログ: 統計・TODO・エクスポート。')}</p>
                             </>
@@ -576,8 +571,8 @@ export default function Header({ isMobile, onToggleSidebar, sidebarOpen }: Heade
                           {section.key === 'workflow' && (
                             <>
                               <p>{tr('1. 上传源文档和模板。', '1) Upload source docs and templates.', '1) ソース文書とテンプレートをアップロード。')}</p>
-                              <p>{tr('2. 在智能助手中完成提取与处理。', '2) Process and extract in Doc Operations.', '2) 文書操作で処理・抽出。')}</p>
-                              <p>{tr('3. 在表格填写中生成业务表格。', '3) Generate business tables in Table Fill.', '3) 表入力で業務表を生成。')}</p>
+                              <p>{tr('2. 系统自动提取文档信息。', '2) System auto-extracts document info.', '2) システムが文書情報を自動抽出。')}</p>
+                              <p>{tr('3. 在知识图谱中查看关联关系。', '3) View relations in Knowledge Graph.', '3) ナレッジグラフで関係を確認。')}</p>
                               <p>{tr('4. 在工作日志导出结果与过程记录。', '4) Export records in Work Log.', '4) 作業ログで記録を出力。')}</p>
                             </>
                           )}

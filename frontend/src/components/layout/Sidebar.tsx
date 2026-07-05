@@ -1,5 +1,5 @@
 ﻿import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FolderOpen, FileText, Network, NotebookPen, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, FolderOpen, Network, NotebookPen, ShieldCheck } from 'lucide-react'
 import { useI18n } from '../../hooks/useI18n'
 import { sidebarI18n } from '../../services/i18n'
 import { useState, useEffect } from 'react'
@@ -78,7 +78,6 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: t.dashboard },
     { path: '/documents', icon: FolderOpen, label: t.documents },
-    { path: '/document-operation', icon: FileText, label: t.operation },
     { path: '/knowledge', icon: Network, label: t.knowledge },
     { path: '/work-log', icon: NotebookPen, label: t.workLog },
     ...(isAdmin()

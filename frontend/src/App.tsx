@@ -2,8 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { useEffect } from 'react'
 import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
-import DocumentManager from './pages/DocumentManager'
-import DocumentOperation from './pages/DocumentOperation'
+import DocumentWorkspace from './pages/DocumentWorkspace'
 import KnowledgeGraph from './pages/KnowledgeGraph'
 import WorkLog from './pages/WorkLog'
 import ProfileCenter from './pages/ProfileCenter'
@@ -73,8 +72,7 @@ function App() {
         }
       >
         <Route index element={<Dashboard />} />
-        <Route path="documents" element={<DocumentManager />} />
-        <Route path="document-operation" element={<DocumentOperation />} />
+        <Route path="documents" element={<DocumentWorkspace />} />
         <Route path="knowledge" element={<KnowledgeGraph />} />
         <Route path="work-log" element={<WorkLog />} />
         <Route path="profile" element={<ProfileCenter />} />

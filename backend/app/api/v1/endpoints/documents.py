@@ -769,6 +769,31 @@ async def raw_public_document(
     )
 
 
+@router.get("/onlyoffice/refresh-url/{document_id}")
+async def refresh_document_url(
+    document_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取刷新后的文档 URL，用于 OnlyOffice token续期"""
+    is_admin = current_user.role in ('admin', 'super_admin')
+    doc = await _get_document_as_admin(document_id, current_user.id, db, is_admin)
+
+    server_url = _strip_trailing_slash(settings.ONLYOFFICE_DOCUMENT_SERVER_URL)
+    callback_base = _strip_trailing_slash(settings.ONLYOFFICE_CALLBACK_BASE_URL)
+    api_prefix = _normalize_api_prefix(settings.ONLYOFFICE_API_PREFIX)
+
+    ttl_seconds = max(60, int(settings.ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS or 900))
+    expires = int(time.time()) + ttl_seconds
+    token = _build_onlyoffice_raw_token(doc.id, expires)
+    public_raw_url = f"{callback_base}{api_prefix}/documents/onlyoffice/raw-public/{doc.id}?expires={expires}&token={token}"
+
+    return {
+        "url": public_raw_url,
+        "expires": expires,
+    }
+
+
 @router.post("/onlyoffice/callback/{document_id}")
 async def onlyoffice_callback(
     document_id: UUID,
