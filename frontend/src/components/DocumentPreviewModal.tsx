@@ -135,7 +135,11 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
         throw new Error('OnlyOffice component not loaded')
       }
 
-      officeEditorRef.current = new window.DocsAPI.DocEditor('onlyoffice-editor', response.data.config)
+      const config = {
+        ...response.data.config,
+        documentServerUrl: '',
+      }
+      officeEditorRef.current = new window.DocsAPI.DocEditor('onlyoffice-editor', config)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'OnlyOffice load failed'
       setOfficeError(message)

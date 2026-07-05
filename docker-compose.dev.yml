@@ -11,6 +11,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    networks:
+      - dev-net
 
   neo4j:
     image: docker.1ms.run/neo4j:5
@@ -22,6 +24,8 @@ services:
     ports:
       - "7474:7474"
       - "7687:7687"
+    networks:
+      - dev-net
 
   qdrant:
     image: docker.1ms.run/qdrant/qdrant:latest
@@ -31,6 +35,8 @@ services:
       - "6333:6333"
       - "6334:6334"
       - "6336:6336"
+    networks:
+      - dev-net
 
   onlyoffice:
     image: docker.1ms.run/onlyoffice/documentserver:latest
@@ -39,11 +45,23 @@ services:
       - "8088:80"
     environment:
       - JWT_ENABLED=false
+      - SECURE_LINK_SECRET=yQYi0yzvGKxkIs8tfLaL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - onlyoffice_data:/var/www/onlyoffice/Data
+      - ./onlyoffice/local.json:/etc/onlyoffice/documentserver/local.json:ro
+      - ./onlyoffice/ds.conf:/etc/onlyoffice/documentserver/nginx/ds.conf:ro
+      - ./onlyoffice/ds-docservice.conf:/etc/nginx/includes/ds-docservice.conf:ro
+    networks:
+      - dev-net
 
 volumes:
   postgres_data:
   neo4j_data:
   qdrant_data:
   onlyoffice_data:
+
+networks:
+  dev-net:
+    driver: bridge

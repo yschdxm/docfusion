@@ -111,6 +111,10 @@ export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOffi
 
       const config = {
         ...response.data.config,
+        documentServerUrl: '',
+        editorConfig: {
+          ...response.data.config.editorConfig,
+        },
         events: {
           onRequestRefreshToken: async () => {
             const newUrl = await refreshDocumentUrl()
