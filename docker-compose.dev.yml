@@ -14,10 +14,10 @@ services:
       - "host.docker.internal:host-gateway"
     entrypoint: ["/bin/sh", "-c", "rm -rf /var/www/onlyoffice/documentserver/fonts && mkdir -p /var/www/onlyoffice/documentserver/fonts && chmod 777 /var/www/onlyoffice/documentserver/fonts && rm -f /var/www/onlyoffice/documentserver/server/FileConverter/bin/font_selection.bin /var/www/onlyoffice/documentserver/server/FileConverter/bin/AllFonts.js && find /var/www/onlyoffice/documentserver/core-fonts -name '*.ttc' -delete && python3 /var/www/onlyoffice/documentserver/build_tools/develop/run_build_js.py /var/www/onlyoffice/documentserver $$@ && DS=/var/www/onlyoffice/documentserver/sdkjs && for d in word cell slide visio; do ln -sf $$DS/deploy/sdkjs/$$d/sdk-all-min.js $$DS/$$d/sdk-all-min.js 2>/dev/null; ln -sf $$DS/deploy/sdkjs/$$d/sdk-all.js $$DS/$$d/sdk-all.js 2>/dev/null; ln -sf $$DS/deploy/sdkjs/$$d/sdk-all.cache $$DS/$$d/sdk-all.cache 2>/dev/null; done && exec /bin/sh -c /app/ds/run-document-server.sh"]
     volumes:
-      # 官方流程：挂载源码
-      - /home/qilin/onlyoffice/sdkjs:/var/www/onlyoffice/documentserver/sdkjs
-      - /home/qilin/onlyoffice/web-apps:/var/www/onlyoffice/documentserver/web-apps
-      - /home/qilin/onlyoffice/server:/var/www/onlyoffice/documentserver/server
+      # 官方流程：挂载源码（已迁移到项目内）
+      - ./onlyoffice-sdk/sdkjs:/var/www/onlyoffice/documentserver/sdkjs
+      - ./onlyoffice-sdk/web-apps:/var/www/onlyoffice/documentserver/web-apps
+      - ./onlyoffice-sdk/server:/var/www/onlyoffice/documentserver/server
       # 保留原有配置
       - ./onlyoffice/local.json:/etc/onlyoffice/documentserver/local.json:ro
       - ./onlyoffice/ds.conf:/etc/onlyoffice/documentserver/nginx/ds.conf:ro

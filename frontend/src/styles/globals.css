@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -69,6 +69,11 @@
     border: 1px solid var(--theme-border);
     @apply rounded-xl;
     box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  }
+
+  /* Toast主题感知样式 */
+  .toast-themed {
+    color: var(--theme-body-text);
   }
 
   .glass-light {
