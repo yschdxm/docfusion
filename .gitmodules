@@ -1,9 +1,9 @@
 [submodule "onlyoffice-sdk/sdkjs"]
 	path = onlyoffice-sdk/sdkjs
-	url = https://github.com/ONLYOFFICE/sdkjs.git
+	url = https://github.com/yschdxm/onlyoffice-sdk-sdkjs-for-docfusion.git
 [submodule "onlyoffice-sdk/server"]
 	path = onlyoffice-sdk/server
-	url = https://github.com/ONLYOFFICE/server.git
+	url = https://github.com/yschdxm/onlyoffice-sdk-server-for-docfusion.git
 [submodule "onlyoffice-sdk/web-apps"]
 	path = onlyoffice-sdk/web-apps
-	url = https://github.com/ONLYOFFICE/web-apps.git
+	url = https://github.com/yschdxm/onlyoffice-sdk-web-apps-for-docfusion.git
