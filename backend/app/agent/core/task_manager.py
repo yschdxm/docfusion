@@ -30,7 +30,8 @@ class Task:
     finished_at: Optional[datetime] = None  # 完成/失败的时间
     result: Optional[dict] = None  # 完成/失败的结果数据
     user_cancelled: bool = False  # 用户主动取消标记
-    step_accumulator: Optional[object] = None  # StepAccumulator 实例（由 agent_stream 模块设置）
+    step_accumulator: Optional[object] = None  # StepAccumulator 实例（兼容旧引用）
+    persister: Optional[object] = None  # StreamPersister 实例（由 agent_stream 模块设置）
     last_saved_content: str = ""  # 最后保存的消息内容，用于去重
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)  # 用户取消信号
     reconnect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # 重连锁，防止同一任务被多个连接同时接入

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_
+from sqlalchemy import select, delete, or_, func
 from datetime import datetime
 from app.core.config import get_settings
 from app.core.deps import get_current_user
@@ -82,7 +82,7 @@ async def list_conversations(
 
     conv_list = []
     for conv in conversations:
-        # 获取最后一条消息
+        # 获取最后一条消息和消息总数
         msg_result = await db.execute(
             select(Message)
             .where(Message.conversation_id == conv.id)
@@ -91,6 +91,12 @@ async def list_conversations(
         )
         last_msg = msg_result.scalar_one_or_none()
 
+        count_result = await db.execute(
+            select(func.count(Message.id))
+            .where(Message.conversation_id == conv.id)
+        )
+        message_count = count_result.scalar() or 0
+
         conv_list.append({
             "id": conv.id,
             "title": conv.title,
@@ -98,7 +104,8 @@ async def list_conversations(
             "template_id": conv.template_id,
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
-            "last_message": last_msg.content[:50] if last_msg else None
+            "last_message": last_msg.content[:50] if last_msg else None,
+            "message_count": message_count
         })
 
     return conv_list

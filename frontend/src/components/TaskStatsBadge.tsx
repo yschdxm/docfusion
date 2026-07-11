@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { TaskStats } from '../services/agentStreamService'
-import { getTheme } from '../services/theme'
+import { TaskStats } from '../types/agent'
+import { useTheme } from '../hooks/useTheme'
 import { useI18n } from '../hooks/useI18n'
 
 interface TaskStatsBadgeProps {
@@ -63,15 +63,7 @@ export default function TaskStatsBadge({ stats, isLive = false, liveDuration }: 
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const [expanded, setExpanded] = useState(false)
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
+  const isDarkMode = useTheme() === 'dark'
 
   const displayDuration = isLive && liveDuration !== undefined ? liveDuration : stats.duration_ms
 

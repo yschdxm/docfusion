@@ -5,7 +5,7 @@
  * 功能：对话、流式输出、操作卡片、思考过程展示
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Send, Loader2, X, Square } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
@@ -16,11 +16,12 @@ import { useChatStore } from '../../stores/chatStore'
 import ActionCard, { ActionData } from '../ActionCard'
 import AgentThinkingPanel from '../AgentThinkingPanel'
 import TaskStatsBadge from '../TaskStatsBadge'
-import agentStreamService, { AgentStep, TaskStats } from '../../services/agentStreamService'
+import agentStreamService from '../../services/agentStreamService'
 import { useI18n } from '../../hooks/useI18n'
 import { useAgentStream } from '../../hooks/useAgentStream'
-import { getTheme } from '../../services/theme'
+import { useTheme } from '../../hooks/useTheme'
 import { getStoredLanguage } from '../../services/i18n'
+import type { AgentStep, TaskStats } from '../../types/agent'
 
 // 自定义 Markdown 链接组件：对 API 下载链接使用带 token 的请求
 function DownloadLink({ href, children }: { href?: string; children?: React.ReactNode }) {
@@ -33,7 +34,7 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
     try {
       const urlObj = new URL(url)
       return urlObj.pathname
-    } catch {}
+    } catch { /* URL解析失败，继续尝试其他方式 */ }
     const wrongDomainMatch = url.match(/^https?:\/\/api(\/.*)$/i)
     if (wrongDomainMatch) {
       return wrongDomainMatch[1]
@@ -83,14 +84,14 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
 
 const markdownComponents = { a: DownloadLink }
 
-interface Message {
+interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
   action?: ActionData
   timestamp: number
   steps?: AgentStep[]
-  isStreaming?: boolean
   task_stats?: TaskStats
+  isStreaming?: boolean
 }
 
 interface AISidebarProps {
@@ -102,9 +103,10 @@ interface AISidebarProps {
   onGetSelectedText?: () => Promise<string | null>
 }
 
-export default function AISidebar({ documentId, documentName, onGetSelectedText }: AISidebarProps) {
+export default function AISidebar({ documentId, documentName }: AISidebarProps) {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
+  const isDarkMode = useTheme() === 'dark'
 
   const {
     sessions,
@@ -112,30 +114,42 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
     createSession,
     setActiveSession,
     deleteSession,
-    updateSessionFiles,
-    updateMessage,
+    addLocalMessage,
     loadSessions,
   } = useChatStore()
 
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
-
-  // 监听主题变化
+  // 页面加载时获取历史会话列表
   useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
+    loadSessions()
   }, [])
 
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
-  const [localMessages, setLocalMessages] = useState<Message[]>([])
   const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
+
+  // 获取当前活跃会话的消息（来自 chatStore，唯一的持久化来源）
+  const storeMessages = useMemo(() => {
+    const session = sessions.find(s => s.id === activeSessionId)
+    return session?.messages || []
+  }, [sessions, activeSessionId])
+
+  // onMessageComplete 回调：保存消息到 chatStore
+  // sessionId 由 hook 在 startStream 调用时捕获，确保不会是 null
+  const handleMessageComplete = (sid: string, content: string, steps: AgentStep[], stats?: TaskStats) => {
+    if (!sid || !content) return
+    // 后端已在流式过程中持久化消息，这里只更新本地 store 用于 UI 显示
+    addLocalMessage(sid, {
+      role: 'assistant',
+      content,
+      steps,
+      task_stats: stats,
+    })
+  }
+
 
   const {
     isStreaming,
@@ -148,17 +162,7 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
     reconnectToTask,
   } = useAgentStream({
     sessionId: activeSessionId,
-    onMessageComplete: (content, steps, stats) => {
-      if (content) {
-        setLocalMessages(prev => [...prev, {
-          role: 'assistant',
-          content,
-          timestamp: Date.now(),
-          steps,
-          task_stats: stats || undefined,
-        }])
-      }
-    },
+    onMessageComplete: handleMessageComplete,
   })
 
   // isLoading: true while waiting for first content, false once streaming starts
@@ -166,10 +170,36 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
     if (isStreaming) setIsLoading(false)
   }, [isStreaming])
 
+  // 构建显示用的消息列表：store 消息 + 流式中的虚拟消息
+  const displayMessages: DisplayMessage[] = useMemo(() => {
+    const base: DisplayMessage[] = storeMessages.map(m => ({
+      role: m.role,
+      content: m.content,
+      action: m.action_data,
+      timestamp: m.timestamp,
+      steps: m.steps,
+      task_stats: m.task_stats,
+    }))
+    return base
+  }, [storeMessages])
+
+  // 流式中的内容作为虚拟消息追加（思考阶段就开始显示，不等 content）
+  const allMessages: DisplayMessage[] = useMemo(() => {
+    if (isStreaming) {
+      return [...displayMessages, {
+        role: 'assistant' as const,
+        content: streamingContent || '',
+        timestamp: 0,
+        isStreaming: true,
+      }]
+    }
+    return displayMessages
+  }, [displayMessages, isStreaming, streamingContent])
+
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [localMessages, streamingContent, currentSteps])
+  }, [allMessages, currentSteps])
 
   // 加载会话消息
   useEffect(() => {
@@ -183,36 +213,28 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
         setIsLoading(false)
       }
 
-      const { loadSessionMessages } = useChatStore.getState()
-      const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
+      // messagesLoaded 区分"新建的空会话"和"从后端加载但消息尚未填充的会话"。
+      // 新建的会话：messagesLoaded=true，跳过加载（消息通过 addMessage 写入）。
+      // 已有会话：messagesLoaded=false，需要从后端加载消息。
+      const session = useChatStore.getState().sessions.find(s => s.id === sessionId)
+      const needsLoad = session && !session.messagesLoaded
 
-      loadSessionMessages(sessionId, true).then(() => {
-        if (cancelled) return
-        if (useChatStore.getState().activeSessionId !== sessionId) return
-        const updatedSession = useChatStore.getState().sessions.find(s => s.id === sessionId)
-        if (updatedSession) {
-          if (!runningTaskId || localMessages.length === 0) {
-            setLocalMessages(
-              updatedSession.messages.map(m => ({
-                role: m.role,
-                content: m.content,
-                action: m.action_data,
-                timestamp: m.timestamp,
-                steps: m.steps,
-                task_stats: m.task_stats,
-              }))
-            )
-          }
+      if (needsLoad) {
+        const { loadSessionMessages } = useChatStore.getState()
+        const runningTaskId = agentStreamService.getRunningTaskId(sessionId)
+
+        loadSessionMessages(sessionId, true).then(() => {
+          if (cancelled) return
+          if (useChatStore.getState().activeSessionId !== sessionId) return
           // 自动重连正在运行的任务
           if (runningTaskId && !agentStreamService.hasActiveConnection(sessionId)) {
             reconnectToTask(runningTaskId)
           }
-        }
-      })
+        })
+      }
 
       return () => { cancelled = true }
     } else {
-      setLocalMessages([])
       setPendingAction(null)
     }
   }, [activeSessionId])
@@ -246,14 +268,13 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
       )
     }
 
-    const isFirstMessage = isNewSession || localMessages.length === 0
+    const isFirstMessage = isNewSession || storeMessages.length === 0
 
-    const userMsg: Message = {
+    // 用户消息只更新本地 store（后端在流式处理中已持久化）
+    addLocalMessage(currentSessionId, {
       role: 'user',
       content: userMessage,
-      timestamp: Date.now(),
-    }
-    setLocalMessages((prev) => [...prev, userMsg])
+    })
     setInputValue('')
     setIsLoading(true)
 
@@ -262,7 +283,12 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
         .then(async (res) => {
           const newTitle = res.data.title || tr('新对话', 'New Chat', '新しい会話')
           await api.put(`/conversations/${currentSessionId}`, { title: newTitle })
-          useChatStore.getState().loadSessions()
+          // 直接更新 store 中的标题，不用 loadSessions（会用后端旧数据覆盖消息）
+          useChatStore.setState(state => ({
+            sessions: state.sessions.map(s =>
+              s.id === currentSessionId ? { ...s, documentName: newTitle } : s
+            )
+          }))
         })
         .catch((e) => console.error('Failed to generate title:', e))
     }
@@ -271,19 +297,12 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
       message: userMessage,
       file_ids: documentId ? [documentId] : [],
       conversation_id: currentSessionId,
-    })
+    }, currentSessionId)
   }
 
   // 停止生成
   const handleStop = async () => {
-    const contentToSave = streamingContent
-    const stepsToSave = currentSteps.length > 0 ? [...currentSteps] : []
-    if (contentToSave) {
-      setLocalMessages(prev => [...prev, { role: 'assistant', content: contentToSave, timestamp: Date.now() }])
-    }
-    if (stepsToSave.length > 0) {
-      setLocalMessages(prev => [...prev, { role: 'assistant', content: '', timestamp: Date.now(), steps: stepsToSave }])
-    }
+    // useAgentStream.stopStream 内部会调用 onMessageComplete 保存已流式输出的内容
     await stopStream()
     setIsLoading(false)
     toast(tr('已停止生成', 'Generation stopped', '生成を停止しました'), { icon: '⏹️' })
@@ -357,7 +376,6 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
           <button
             onClick={() => {
               setActiveSession(null)
-              setLocalMessages([])
               setPendingAction(null)
             }}
             className={`p-1.5 rounded-lg transition-colors ${
@@ -388,6 +406,10 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
                 onClick={() => {
                   setActiveSession(session.id)
                   setShowHistory(false)
+                  // 如果点击的是当前活跃会话且消息未加载，手动加载
+                  if (activeSessionId === session.id && !session.messagesLoaded) {
+                    useChatStore.getState().loadSessionMessages(session.id, true)
+                  }
                 }}
                 className={`flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors ${
                   activeSessionId === session.id
@@ -400,7 +422,7 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
                     {session.documentName || tr('新对话', 'New Chat', '新しい会話')}
                   </div>
                   <div className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                    {session.messages.length} {tr('条消息', 'messages', '件のメッセージ')}
+                    {session.messageCount} {tr('条消息', 'messages', '件のメッセージ')}
                   </div>
                 </div>
                 <button
@@ -422,7 +444,7 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
 
       {/* 消息列表 */}
       <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 ai-sidebar-scroll">
-        {localMessages.length === 0 && !isStreaming && (
+        {allMessages.length === 0 && !isStreaming && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 ${
               isDarkMode ? 'bg-slate-800' : 'bg-primary-50'
@@ -435,9 +457,17 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
           </div>
         )}
 
-        {localMessages.map((msg, index) => (
+        {allMessages.map((msg, index) => (
           <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] ${msg.role === 'user' ? 'order-2' : 'order-1'}`}>
+              {/* 思考过程（内容之前，反映真实时序：先思考，再回复） */}
+              {msg.isStreaming && currentSteps.length > 0 && (
+                <AgentThinkingPanel steps={currentSteps} isActive={true} />
+              )}
+              {!msg.isStreaming && msg.steps && msg.steps.length > 0 && (
+                <AgentThinkingPanel steps={msg.steps} isActive={false} />
+              )}
+
               {/* 消息内容 */}
               {msg.content && (
                 <div className={`p-3 rounded-2xl ${
@@ -455,6 +485,22 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
                 </div>
               )}
 
+              {/* 任务统计（内容之后） */}
+              {msg.isStreaming && (
+                <div className="mt-2">
+                  <TaskStatsBadge
+                    stats={streamingStats || { duration_ms: 0, total_tokens: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, llm_calls: 0, iterations: 0 }}
+                    isLive={true}
+                    liveDuration={streamingDuration}
+                  />
+                </div>
+              )}
+              {!msg.isStreaming && msg.task_stats && (
+                <div className="mt-2">
+                  <TaskStatsBadge stats={msg.task_stats} />
+                </div>
+              )}
+
               {/* 操作卡片 */}
               {msg.action && (
                 <ActionCard
@@ -464,56 +510,17 @@ export default function AISidebar({ documentId, documentName, onGetSelectedText 
                 />
               )}
 
-              {/* 思考过程 */}
-              {msg.steps && msg.steps.length > 0 && (
-                <AgentThinkingPanel steps={msg.steps} isActive={false} />
-              )}
-
-              {/* 任务统计 */}
-              {msg.task_stats && (
-                <div className="mt-2">
-                  <TaskStatsBadge stats={msg.task_stats} />
+              {/* 时间戳 */}
+              {!msg.isStreaming && msg.timestamp > 0 && (
+                <div className={`text-xs mt-1 ${msg.role === 'user' ? 'text-right' : 'text-left'} ${
+                  isDarkMode ? 'text-slate-600' : 'text-slate-400'
+                }`}>
+                  {new Date(msg.timestamp).toLocaleTimeString()}
                 </div>
               )}
-
-              {/* 时间戳 */}
-              <div className={`text-xs mt-1 ${msg.role === 'user' ? 'text-right' : 'text-left'} ${
-                isDarkMode ? 'text-slate-600' : 'text-slate-400'
-              }`}>
-                {new Date(msg.timestamp).toLocaleTimeString()}
-              </div>
             </div>
           </div>
         ))}
-
-        {/* 流式输出 */}
-        {isStreaming && streamingContent && (
-          <div className="flex justify-start">
-            <div className={`max-w-[85%] p-3 rounded-2xl ${
-              isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-700'
-            }`}>
-              <div className="prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {streamingContent}
-                </ReactMarkdown>
-              </div>
-              <span className={`text-xs mt-2 block ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                {new Date().toLocaleTimeString()}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* 实时统计 */}
-        {isStreaming && (
-          <div className="flex justify-start">
-            <TaskStatsBadge
-              stats={streamingStats || { duration_ms: 0, total_tokens: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, llm_calls: 0, iterations: 0 }}
-              isLive={true}
-              liveDuration={streamingDuration}
-            />
-          </div>
-        )}
 
         {/* 加载指示器 */}
         {isLoading && !isStreaming && (

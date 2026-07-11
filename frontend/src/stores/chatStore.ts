@@ -19,6 +19,8 @@ export interface ChatSession {
   fileIds: string[]
   templateId: string | null
   messages: Message[]
+  messagesLoaded: boolean  // 是否已从后端加载过消息
+  messageCount: number     // 后端返回的消息总数（用于历史列表显示）
   lastMessage?: string
   createdAt: number
   updatedAt: number
@@ -44,9 +46,12 @@ interface ChatStore {
   // 获取会话
   getSession: (sessionId: string) => ChatSession | undefined
   
-  // 添加消息
+  // 添加消息（持久化到后端）
   addMessage: (sessionId: string, message: Omit<Message, 'timestamp'>) => Promise<number | null>
-  
+
+  // 添加消息（仅本地，不写后端）— 用于流式完成时，后端已持久化
+  addLocalMessage: (sessionId: string, message: Omit<Message, 'timestamp'>) => void
+
   // 更新消息
   updateMessage: (sessionId: string, messageId: number, message: Omit<Message, 'timestamp'>) => Promise<void>
   
@@ -86,17 +91,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         fileIds: conv.file_ids || [],
         templateId: conv.template_id,
         messages: [],
+        messagesLoaded: false,
+        messageCount: conv.message_count || 0,
         lastMessage: conv.last_message || '',
         createdAt: new Date(conv.created_at).getTime(),
         updatedAt: new Date(conv.updated_at).getTime()
       }))
       set({ sessions })
 
-      // 自动设置最新会话为活跃会话
+      // 自动设置最新会话为活跃会话（消息由 AISidebar effect 统一加载）
       const currentActive = get().activeSessionId
       if (!currentActive && sessions.length > 0) {
         set({ activeSessionId: sessions[0].id })
-        await get().loadSessionMessages(sessions[0].id)
       }
     } catch (error) {
       console.error('Failed to load sessions:', error)
@@ -210,6 +216,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             ? {
                 ...s,
                 messages,
+                messagesLoaded: true,
                 fileIds: conv.file_ids || [],
                 templateId: conv.template_id,
                 documentName: conv.title || s.documentName,
@@ -228,6 +235,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             fileIds: conv.file_ids || [],
             templateId: conv.template_id,
             messages,
+            messagesLoaded: true,
+            messageCount: messages.length,
             lastMessage: conv.last_message || '',
             createdAt: new Date(conv.created_at).getTime(),
             updatedAt: new Date(conv.updated_at).getTime()
@@ -259,6 +268,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         fileIds,
         templateId,
         messages: [],
+        messagesLoaded: true,
+        messageCount: 0,
         createdAt: Date.now(),
         updatedAt: Date.now()
       }
@@ -284,11 +295,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       timestamp: Date.now()
     }
     
-    // 先更新本地状态
+    // 先更新本地状态，同时标记 messagesLoaded 防止 loadSessionMessages 覆盖
     set(state => ({
-      sessions: state.sessions.map(s => 
-        s.id === sessionId 
-          ? { ...s, messages: [...s.messages, newMessage], updatedAt: Date.now() }
+      sessions: state.sessions.map(s =>
+        s.id === sessionId
+          ? { ...s, messages: [...s.messages, newMessage], messagesLoaded: true, updatedAt: Date.now() }
           : s
       )
     }))
@@ -306,6 +317,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       console.error('Failed to save message:', error)
       return null
     }
+  },
+
+  addLocalMessage: (sessionId, message) => {
+    const newMessage: Message = {
+      ...message,
+      timestamp: Date.now()
+    }
+    set(state => ({
+      sessions: state.sessions.map(s =>
+        s.id === sessionId
+          ? { ...s, messages: [...s.messages, newMessage], messagesLoaded: true, updatedAt: Date.now() }
+          : s
+      )
+    }))
   },
 
   updateMessage: async (sessionId, messageId, message) => {

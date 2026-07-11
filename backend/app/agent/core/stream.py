@@ -109,7 +109,7 @@ class StreamManager:
         self._is_closed = False
         self._is_cancelled = False
         self._current_step_id: Optional[str] = None
-        self._event_history: list[str] = []  # 已格式化的 SSE 字符串缓存（用于断线重连回放）
+        self._event_history: list[AgentEvent] = []  # 结构化事件缓存（用于断线重连回放）
 
     async def emit(self, event: AgentEvent) -> None:
         """发送一个事件"""
@@ -118,8 +118,8 @@ class StreamManager:
             return
 
         await self._event_queue.put(event)
-        # 同时写入历史，确保断线期间事件不丢失（即使没有消费者）
-        self._event_history.append(event.to_sse_format())
+        # 存储结构化事件对象（而非格式化字符串），便于重连时直接使用
+        self._event_history.append(event)
         logger.debug(f"[StreamManager] 发送事件: {event.event_type} | step_id={event.step_id}")
 
         # 记录重要事件到INFO级别
@@ -403,9 +403,13 @@ class StreamManager:
                 logger.error(f"[StreamManager] 流异常: {e}")
                 break
 
-    def get_history(self) -> list[str]:
-        """获取所有已发送的 SSE 事件（用于断线重连回放）"""
+    def get_history(self) -> list[AgentEvent]:
+        """获取所有已发送的结构化事件（用于断线重连回放）"""
         return list(self._event_history)
+
+    def get_history_sse(self) -> list[str]:
+        """获取所有已发送的 SSE 格式字符串（用于重连时直接 yield）"""
+        return [e.to_sse_format() for e in self._event_history]
 
     def is_closed(self) -> bool:
         """检查流是否已关闭"""

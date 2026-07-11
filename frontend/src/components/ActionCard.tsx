@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react'
 import { Loader2, CheckCircle, XCircle, Download } from 'lucide-react'
-import { getTheme } from '../services/theme'
+import { useTheme } from '../hooks/useTheme'
 import { useI18n } from '../hooks/useI18n'
 
 export interface ActionData {
@@ -31,15 +30,7 @@ export default function ActionCard({ action, onConfirm, onCancel }: ActionCardPr
   const { action_type, title, description, progress, result } = action
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
+  const isDarkMode = useTheme() === 'dark'
 
   // 确认卡片
   if (action_type === 'confirm_extract' || action_type === 'confirm_fill') {

@@ -26,12 +26,6 @@
 - paragraph_split: 段落拆分
 - set_text_style: 字体样式设置
 - convert: 格式转换
-- delete_content: 删除内容
-- merge_cells: 合并单元格
-- split_cell: 拆分单元格
-- set_cell_formula: 设置公式
-- set_cell_style: 设置样式
-- apply_template_style: 应用模板样式
 - batch_edit: 批量编辑
 - build_knowledge_graph: 构建知识图谱
 - find_related_entities: 查找关联实体
@@ -68,12 +62,6 @@ from .document_edit_tools import (
     ParagraphSplitTool,
     SetTextStyleTool,
     ConvertTool,
-    DeleteContentTool,
-    MergeCellsTool,
-    SplitCellTool,
-    SetCellFormulaTool,
-    SetCellStyleTool,
-    ApplyTemplateStyleTool,
 )
 
 # 新增工具
@@ -110,12 +98,6 @@ __all__ = [
     "ParagraphSplitTool",
     "SetTextStyleTool",
     "ConvertTool",
-    "DeleteContentTool",
-    "MergeCellsTool",
-    "SplitCellTool",
-    "SetCellFormulaTool",
-    "SetCellStyleTool",
-    "ApplyTemplateStyleTool",
     # 新增工具
     "BatchEditTool",
     "BuildKnowledgeGraphTool",
@@ -164,12 +146,6 @@ def get_all_tools():
         ParagraphSplitTool(),
         SetTextStyleTool(),
         ConvertTool(),
-        DeleteContentTool(),
-        MergeCellsTool(),
-        SplitCellTool(),
-        SetCellFormulaTool(),
-        SetCellStyleTool(),
-        ApplyTemplateStyleTool(),
         # 新增工具
         BatchEditTool(),
         BuildKnowledgeGraphTool(),

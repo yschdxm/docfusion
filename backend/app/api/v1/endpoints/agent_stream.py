@@ -400,6 +400,69 @@ class StepAccumulator:
 
 
 # ============================================================
+# StreamPersister — 统一的流式消息持久化器
+# ============================================================
+
+class StreamPersister:
+    """统一处理 SSE 事件的持久化逻辑。
+
+    将 _new_task_stream 和 _replay_and_stream_inner 中重复的
+    持久化代码集中到一处。
+    """
+
+    def __init__(self, conversation_id: str):
+        self.conversation_id = conversation_id
+        self.accumulator = StepAccumulator()
+        self.last_saved_content = ""
+
+    async def process_event(self, event_type: str, data: dict, step_id: Optional[str] = None, log_prefix: str = ""):
+        """处理一个 SSE 事件：更新 accumulator 状态，按需持久化消息。"""
+        self.accumulator.process_event(event_type, data, step_id)
+
+        # 子 agent 的 assistant_message/completed 不保存为独立消息
+        is_child = bool(data.get("agent_name"))
+
+        if event_type == "assistant_message" and not is_child:
+            msg = data.get("message", "")
+            if msg:
+                steps = self.accumulator.get_steps()
+                await _save_message(self.conversation_id, "assistant", msg, steps=steps)
+                self.last_saved_content = msg
+                self.accumulator.reset()
+                logger.info(f"[Persist{log_prefix}] assistant_message saved: {msg[:80]} | steps={len(steps)}")
+
+        elif event_type == "completed" and not is_child:
+            msg = data.get("message", "")
+            if msg and msg != self.last_saved_content:
+                action_data = _extract_action_data(data)
+                steps = self.accumulator.get_steps()
+                task_stats = data.get("result", {}).get("task_stats")
+                await _save_message(self.conversation_id, "assistant", msg, action_data=action_data, steps=steps, task_stats=task_stats)
+                logger.info(f"[Persist{log_prefix}] completed saved: {msg[:80]} | steps={len(steps)} | stats={'yes' if task_stats else 'no'}")
+            elif msg == self.last_saved_content:
+                logger.info(f"[Persist{log_prefix}] completed skipped (duplicate): {msg[:80]}")
+
+    async def flush_on_error(self, error_msg: str):
+        """异常时保存累积的 steps 和 content。"""
+        if self.accumulator.has_content():
+            content = self.accumulator.get_pending_content() or error_msg
+            steps = self.accumulator.get_steps()
+            await _save_message(self.conversation_id, "assistant", content, steps=steps)
+            logger.info(f"[Persist] 异常时保存累积内容: {content[:80]} | steps={len(steps)}")
+
+    async def flush_on_cancel(self):
+        """取消时保存累积的 steps 和 content。"""
+        content = self.accumulator.get_pending_content()
+        steps = self.accumulator.get_steps()
+        if content and content != self.last_saved_content:
+            await _save_message(self.conversation_id, "assistant", content, steps=steps)
+            logger.info(f"[Persist] 取消时保存累积内容: {content[:80]} | steps={len(steps)}")
+        elif steps:
+            await _save_message(self.conversation_id, "assistant", "", steps=steps)
+            logger.info(f"[Persist] 取消时保存 steps: {len(steps)}")
+
+
+# ============================================================
 # 辅助函数
 # ============================================================
 
@@ -616,23 +679,25 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
     event_count = 0
     cancelled = False
 
-    # 创建 StepAccumulator 并挂载到 task（供 cancel 端点使用）
-    accumulator = StepAccumulator()
-    task.step_accumulator = accumulator
+    # 创建 StreamPersister 统一处理持久化（挂载到 task 供 cancel 端点使用）
+    persister = StreamPersister(request.conversation_id) if request.conversation_id else None
+    task.persister = persister
+    # 兼容旧的 step_accumulator 引用（cancel 端点使用）
+    task.step_accumulator = persister.accumulator if persister else None
 
     try:
-        # 后端统一持久化：保存用户消息
-        if request.conversation_id and request.message:
+        # 保存用户消息
+        if persister and request.message:
             await _save_message(request.conversation_id, "user", request.message)
             logger.info(f"[Persist] 用户消息已保存: {request.message[:80]}")
 
-        # 首先发送 task_id 事件（前端提取后用于重连）
+        # 发送 task_id 事件（前端提取后用于重连）
         task_id_event = AgentEvent(
             event_type=AgentEventType.SYSTEM_MESSAGE,
             data={"task_id": task.task_id}
         )
         yield task_id_event.to_sse_format()
-        task.stream._event_history.append(task_id_event.to_sse_format())
+        task.stream._event_history.append(task_id_event)
 
         agent = create_general_agent(stream_manager_provider=lambda: task.stream)
 
@@ -644,42 +709,18 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
             stream_manager=task.stream,
             user_id=user_id,
             user_selected_model=user_selected_model,
-            db=None,  # chat_completion 会自己创建 db session
+            db=None,
         ):
             event_count += 1
 
-            # 后端统一持久化：在 yield 之前处理消息保存，防止用户断开连接导致消息丢失
-            if request.conversation_id:
+            # 统一持久化
+            if persister:
                 try:
                     event_info = _parse_sse_event(event)
                     if event_info:
-                        accumulator.process_event(
+                        await persister.process_event(
                             event_info["type"], event_info["data"], event_info.get("step_id")
                         )
-
-                        # 子 agent 的 assistant_message/completed 不保存为独立消息
-                        # 已通过 StepAccumulator._handle_child_event 嵌入到委派步骤的 children 中
-                        is_child = bool(event_info["data"].get("agent_name"))
-
-                        if event_info["type"] == "assistant_message" and not is_child:
-                            msg = event_info["data"].get("message", "")
-                            if msg:
-                                steps = accumulator.get_steps()
-                                await _save_message(request.conversation_id, "assistant", msg, steps=steps)
-                                task.last_saved_content = msg
-                                accumulator.reset()
-                                logger.info(f"[Persist] assistant_message saved: {msg[:80]} | steps={len(steps)}")
-
-                        elif event_info["type"] == "completed" and not is_child:
-                            msg = event_info["data"].get("message", "")
-                            if msg and msg != task.last_saved_content:
-                                action_data = _extract_action_data(event_info["data"])
-                                steps = accumulator.get_steps()
-                                task_stats = event_info["data"].get("result", {}).get("task_stats")
-                                await _save_message(request.conversation_id, "assistant", msg, action_data=action_data, steps=steps, task_stats=task_stats)
-                                logger.info(f"[Persist] completed saved: {msg[:80]} | steps={len(steps)} | stats={'yes' if task_stats else 'no'}")
-                            elif msg == task.last_saved_content:
-                                logger.info(f"[Persist] completed skipped (duplicate): {msg[:80]}")
                 except Exception as e:
                     logger.warning(f"[Persist] 事件处理异常: {e}", exc_info=True)
 
@@ -697,12 +738,8 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
 
     except Exception as e:
         logger.exception(f"[API /agent/stream] 任务执行失败: {e}")
-        # 异常时保存累积的 steps 和 content
-        if request.conversation_id and accumulator.has_content():
-            content = accumulator.get_pending_content() or f"执行出错: {str(e)}"
-            steps = accumulator.get_steps()
-            await _save_message(request.conversation_id, "assistant", content, steps=steps)
-            logger.info(f"[Persist] 异常时保存累积内容: {content[:80]} | steps={len(steps)}")
+        if persister:
+            await persister.flush_on_error(f"执行出错: {str(e)}")
         if not task.stream.is_closed():
             await task.stream.emit_failed(str(e))
             yield AgentEvent(
@@ -737,37 +774,29 @@ async def _replay_and_stream_inner(task):
     history = task.stream.get_history()
 
     # 检查历史中是否已有结束事件
+    _TERMINAL_EVENTS = {"completed", "failed", "cancelled"}
     already_finished = any(
-        '"event_type": "completed"' in s or
-        '"event_type": "failed"' in s or
-        '"event_type": "cancelled"' in s
-        for s in history
+        (e.event_type.value if hasattr(e.event_type, 'value') else e.event_type) in _TERMINAL_EVENTS
+        for e in history
     )
 
     logger.info(f"[API /agent/stream] 重连回放 {len(history)} 个历史事件 | task_id={task.task_id} | 已完成={already_finished}")
 
-    # 创建 accumulator 用于重建步骤状态
-    accumulator = StepAccumulator()
-    task.step_accumulator = accumulator
+    # 创建 StreamPersister 用于重建步骤状态和持久化
+    persister = StreamPersister(task.conversation_id) if task.conversation_id else None
+    task.persister = persister
+    task.step_accumulator = persister.accumulator if persister else None
 
     # 1. 回放历史事件（跳过已持久化消息和流式内容片段）
-    #    - assistant_message: 已持久化，前端 loadSessionMessages 会加载
-    #    - 终端事件（completed/failed/cancelled）: 消息已持久化
-    #    - content_chunk/content_end: 流式内容片段，回放会导致幽灵消息
-    #    注意：stats_update 不跳过，用于恢复断连期间的统计显示
-    _SKIP_MARKERS = (
-        '"event_type": "assistant_message"',
-        '"event_type": "completed"', '"event_type": "failed"', '"event_type": "cancelled"',
-        '"event_type": "content_chunk"', '"event_type": "content_end"',
-    )
-    for sse_data in history:
-        if any(m in sse_data for m in _SKIP_MARKERS):
+    _SKIP_TYPES = {"assistant_message", "completed", "failed", "cancelled", "content_chunk", "content_end"}
+    for event in history:
+        etype = event.event_type.value if hasattr(event.event_type, 'value') else event.event_type
+        if etype in _SKIP_TYPES:
             continue
         # 回放时也经过 accumulator，重建步骤状态
-        event_info = _parse_sse_event(sse_data)
-        if event_info:
-            accumulator.process_event(event_info["type"], event_info["data"], event_info.get("step_id"))
-        yield sse_data
+        if persister:
+            persister.accumulator.process_event(etype, event.data, event.step_id)
+        yield event.to_sse_format()
 
     # 2. 如果任务已结束，只回放历史
     if already_finished:
@@ -784,35 +813,15 @@ async def _replay_and_stream_inner(task):
             event_count += 1
             yield event
 
-            # 后端统一持久化
-            if task.conversation_id:
+            # 统一持久化
+            if persister:
                 try:
                     event_info = _parse_sse_event(event)
                     if event_info:
-                        accumulator.process_event(
-                            event_info["type"], event_info["data"], event_info.get("step_id")
+                        await persister.process_event(
+                            event_info["type"], event_info["data"], event_info.get("step_id"),
+                            log_prefix="/Reconnect"
                         )
-
-                        # 子 agent 的 assistant_message/completed 不保存为独立消息
-                        is_child = bool(event_info["data"].get("agent_name"))
-
-                        if event_info["type"] == "assistant_message" and not is_child:
-                            msg = event_info["data"].get("message", "")
-                            if msg:
-                                steps = accumulator.get_steps()
-                                await _save_message(task.conversation_id, "assistant", msg, steps=steps)
-                                task.last_saved_content = msg
-                                accumulator.reset()
-                                logger.info(f"[Persist/Reconnect] assistant_message saved: {msg[:80]} | steps={len(steps)}")
-
-                        elif event_info["type"] == "completed" and not is_child:
-                            msg = event_info["data"].get("message", "")
-                            if msg and msg != task.last_saved_content:
-                                action_data = _extract_action_data(event_info["data"])
-                                steps = accumulator.get_steps()
-                                task_stats = event_info["data"].get("result", {}).get("task_stats")
-                                await _save_message(task.conversation_id, "assistant", msg, action_data=action_data, steps=steps, task_stats=task_stats)
-                                logger.info(f"[Persist/Reconnect] completed saved: {msg[:80]} | steps={len(steps)} | stats={'yes' if task_stats else 'no'}")
                 except Exception as e:
                     logger.warning(f"[Persist/Reconnect] 事件处理异常: {e}", exc_info=True)
 
@@ -828,15 +837,12 @@ async def _replay_history(task):
     history = task.stream.get_history()
     logger.info(f"[API /agent/stream] 回放已完成任务 | task_id={task.task_id} | {len(history)} 个事件")
 
-    _SKIP_MARKERS = (
-        '"event_type": "assistant_message"',
-        '"event_type": "completed"', '"event_type": "failed"', '"event_type": "cancelled"',
-        '"event_type": "content_chunk"', '"event_type": "content_end"',
-    )
-    for sse_data in history:
-        if any(m in sse_data for m in _SKIP_MARKERS):
+    _SKIP_TYPES = {"assistant_message", "completed", "failed", "cancelled", "content_chunk", "content_end"}
+    for event in history:
+        etype = event.event_type.value if hasattr(event.event_type, 'value') else event.event_type
+        if etype in _SKIP_TYPES:
             continue
-        yield sse_data
+        yield event.to_sse_format()
 
     if not task.finished_at:
         await task_manager.finish_task(task.task_id)
@@ -882,18 +888,18 @@ async def cancel_agent_task(
     # 标记用户主动取消
     task.user_cancelled = True
 
-    # 后端统一持久化：保存累积的 steps 和 content（仅在有实际内容时保存）
-    if task.conversation_id and task.step_accumulator:
+    # 统一持久化：保存累积的 steps 和 content
+    if task.conversation_id and hasattr(task, 'persister') and task.persister:
+        await task.persister.flush_on_cancel()
+    elif task.conversation_id and task.step_accumulator:
+        # 兼容旧路径（理论上不应走到这里）
         acc = task.step_accumulator
         content = acc.get_pending_content()
         steps = acc.get_steps()
-        if content and content != task.last_saved_content:
+        if content:
             await _save_message(task.conversation_id, "assistant", content, steps=steps)
-            logger.info(f"[Persist] 取消时保存累积内容: {content[:80]} | steps={len(steps)}")
         elif steps:
-            # 没有 content 但有 steps，保存 steps
             await _save_message(task.conversation_id, "assistant", "", steps=steps)
-            logger.info(f"[Persist] 取消时保存 steps: {len(steps)}")
 
     # 关闭 stream，使 runtime 中的循环收到信号
     if not task.stream.is_closed():

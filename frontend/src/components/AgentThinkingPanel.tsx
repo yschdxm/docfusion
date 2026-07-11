@@ -21,8 +21,8 @@ import {
   MessageSquare,
   Users,
 } from 'lucide-react'
-import { AgentStep } from '../services/agentStreamService'
-import { getTheme } from '../services/theme'
+import { AgentStep } from '../types/agent'
+import { useTheme } from '../hooks/useTheme'
 import { useI18n } from '../hooks/useI18n'
 
 interface AgentThinkingPanelProps {
@@ -36,15 +36,7 @@ interface AgentThinkingPanelProps {
 function StepDetails({ step }: { step: AgentStep }) {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
+  const isDarkMode = useTheme() === 'dark'
 
   return (
     <div className="px-3 pb-3 border-t border-slate-200">
@@ -166,15 +158,7 @@ function StepCard({
   expanded: boolean
   onToggle: (id: string) => void
 }) {
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
+  const isDarkMode = useTheme() === 'dark'
 
   const getStepIcon = (s: AgentStep) => {
     switch (s.type) {
@@ -247,17 +231,9 @@ function StepCard({
 export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPanelProps) {
   const [internalExpanded, setInternalExpanded] = useState<Set<string>>(new Set())
   const autoCollapsedRef = useRef<Set<string>>(new Set())
-  const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+  const isDarkMode = useTheme() === 'dark'
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDarkMode(document.documentElement.getAttribute('data-theme') === 'night-mode')
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
 
   const allStepIds = steps.flatMap(s => {
     const ids = [s.id]
