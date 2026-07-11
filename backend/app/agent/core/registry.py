@@ -6,10 +6,11 @@
 - 工具权限控制 (allow/deny lists)
 - 工具分组管理
 - 工具schema生成
+- 工具分类和权限级别过滤
 """
 
 from typing import Dict, List, Any, Optional, Set
-from app.agent.base.tool import BaseTool
+from app.agent.base.tool import BaseTool, ToolCategory, PermissionLevel
 
 
 class ToolRegistry:
@@ -130,6 +131,114 @@ class ToolRegistry:
                 groups["group:retrieval"].append(tool_name)
 
         return groups
+
+    def list_tools_by_category(self, category: ToolCategory) -> List[str]:
+        """按分类列出工具
+
+        Args:
+            category: 工具分类
+
+        Returns:
+            工具名称列表
+        """
+        return [
+            name for name, tool in self._tools.items()
+            if tool.category == category
+            and name not in self._deny_list
+            and (self._allow_list is None or name in self._allow_list)
+        ]
+
+    def list_tools_by_permission(self, permission_level: PermissionLevel) -> List[str]:
+        """按权限级别列出工具
+
+        Args:
+            permission_level: 权限级别
+
+        Returns:
+            工具名称列表
+        """
+        return [
+            name for name, tool in self._tools.items()
+            if tool.permission_level == permission_level
+            and name not in self._deny_list
+            and (self._allow_list is None or name in self._allow_list)
+        ]
+
+    def get_tools_by_categories(self, categories: List[ToolCategory]) -> List[BaseTool]:
+        """按多个分类获取工具
+
+        Args:
+            categories: 工具分类列表
+
+        Returns:
+            工具实例列表
+        """
+        return [
+            tool for tool in self._tools.values()
+            if tool.category in categories
+            and tool.name not in self._deny_list
+            and (self._allow_list is None or tool.name in self._allow_list)
+        ]
+
+    def get_safe_tools(self) -> List[BaseTool]:
+        """获取所有安全工具（自动执行）
+
+        Returns:
+            安全工具列表
+        """
+        return [
+            tool for tool in self._tools.values()
+            if tool.permission_level == PermissionLevel.SAFE
+            and tool.name not in self._deny_list
+        ]
+
+    def get_sensitive_tools(self) -> List[BaseTool]:
+        """获取所有敏感工具（需要询问用户）
+
+        Returns:
+            敏感工具列表
+        """
+        return [
+            tool for tool in self._tools.values()
+            if tool.permission_level == PermissionLevel.SENSITIVE
+            and tool.name not in self._deny_list
+        ]
+
+    def get_dangerous_tools(self) -> List[BaseTool]:
+        """获取所有危险工具（必须确认）
+
+        Returns:
+            危险工具列表
+        """
+        return [
+            tool for tool in self._tools.values()
+            if tool.permission_level == PermissionLevel.DANGEROUS
+            and tool.name not in self._deny_list
+        ]
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取工具统计信息
+
+        Returns:
+            统计信息字典，包含总数、按分类统计、按权限统计
+        """
+        tools = self.get_all_tools()
+        stats = {
+            "total": len(tools),
+            "by_category": {},
+            "by_permission": {}
+        }
+
+        for tool in tools:
+            # 按分类统计
+            cat = tool.category.value
+            stats["by_category"][cat] = stats["by_category"].get(cat, 0) + 1
+
+            # 按权限统计
+            perm = tool.permission_level.value
+            stats["by_permission"][perm] = stats["by_permission"].get(perm, 0) + 1
+
+        return stats
 
     def __contains__(self, tool_name: str) -> bool:
         """检查是否包含指定工具"""

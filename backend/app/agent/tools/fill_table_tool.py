@@ -13,7 +13,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from app.agent.base.tool import BaseTool, ToolContext, ToolResult
+from app.agent.base.tool import BaseTool, ToolContext, ToolResult, ToolCategory, PermissionLevel
 from app.db.postgres import async_session
 from app.models.document import Document, TemplateUsageEvent
 from sqlalchemy import select
@@ -78,6 +78,26 @@ class FillTableTool(BaseTool):
         ]
         for key in expired_keys:
             del cls._query_cache[key]
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.DATA_FILL
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        return PermissionLevel.SENSITIVE
+
+    @property
+    def timeout_ms(self) -> int:
+        return 60000  # 60秒
+
+    @property
+    def cacheable(self) -> bool:
+        return True
+
+    @property
+    def cache_ttl_seconds(self) -> int:
+        return 600  # 10分钟
 
     @property
     def name(self) -> str:
@@ -1047,3 +1067,623 @@ fill_mode 详解（针对指定表格的操作）：
         except Exception as e:
             logger.exception(f"[FillTableTool] 填写Word失败: {e}")
             return False
+
+
+class FillCellTool(BaseTool):
+    """填写单个单元格工具"""
+
+    @property
+    def name(self) -> str:
+        return "fill_cell"
+
+    @property
+    def description(self) -> str:
+        return """填写Excel单个单元格。
+
+使用场景：
+- 当需要修改单个单元格的内容时
+- 当需要精确填写某个特定位置的数据时
+
+注意事项：
+- 行和列索引从0开始
+- 如果单元格已有内容，会被覆盖"""
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.DATA_FILL
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        return PermissionLevel.SENSITIVE
+
+    @property
+    def timeout_ms(self) -> int:
+        return 5000  # 5秒
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "文档ID"
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "工作表名称（可选，默认第一个）"
+                },
+                "row": {
+                    "type": "integer",
+                    "description": "行号（从0开始）"
+                },
+                "col": {
+                    "type": "integer",
+                    "description": "列号（从0开始）"
+                },
+                "value": {
+                    "description": "要填写的值"
+                }
+            },
+            "required": ["file_id", "row", "col", "value"]
+        }
+
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        """填写单个单元格"""
+        try:
+            file_id = params.get("file_id", "")
+            sheet_name = params.get("sheet_name")
+            row = params.get("row")
+            col = params.get("col")
+            value = params.get("value")
+
+            if not file_id:
+                return ToolResult(success=False, error="文档ID不能为空")
+
+            if row is None or col is None:
+                return ToolResult(success=False, error="行号和列号不能为空")
+
+            # 验证UUID格式
+            uuid_error = BaseTool.validate_uuid(file_id, "file_id")
+            if uuid_error:
+                return ToolResult(success=False, error=uuid_error)
+
+            # 查询文档信息
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Document).where(Document.id == file_id)
+                )
+                doc = result.scalar_one_or_none()
+
+                if not doc:
+                    return ToolResult(success=False, error=f"文档不存在: {file_id}")
+
+                if doc.file_type != "xlsx":
+                    return ToolResult(success=False, error=f"不支持的文件类型: {doc.file_type}，仅支持xlsx")
+
+                if not os.path.exists(doc.file_path):
+                    return ToolResult(success=False, error=f"文件不存在: {doc.file_path}")
+
+                # 使用openpyxl填写单元格
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(doc.file_path)
+
+                    # 获取工作表
+                    if sheet_name:
+                        if sheet_name not in wb.sheetnames:
+                            return ToolResult(
+                                success=False,
+                                error=f"工作表不存在: {sheet_name}，可用工作表: {wb.sheetnames}"
+                            )
+                        ws = wb[sheet_name]
+                    else:
+                        ws = wb.active
+
+                    # 填写单元格（openpyxl从1开始）
+                    ws.cell(row=row + 1, column=col + 1, value=value)
+
+                    # 保存文件
+                    wb.save(doc.file_path)
+                    wb.close()
+
+                    return ToolResult(
+                        success=True,
+                        data={
+                            "file_id": file_id,
+                            "sheet_name": ws.title,
+                            "row": row,
+                            "col": col,
+                            "value": value,
+                            "message": f"已填写单元格 ({row}, {col})"
+                        }
+                    )
+
+                except ImportError:
+                    return ToolResult(success=False, error="openpyxl未安装，无法填写Excel")
+                except Exception as e:
+                    return ToolResult(success=False, error=f"填写单元格失败: {str(e)}")
+
+        except Exception as e:
+            logger.exception(f"填写单元格失败: {e}")
+            return ToolResult(success=False, error=f"填写单元格失败: {str(e)}")
+
+
+class FillRowTool(BaseTool):
+    """填写整行工具"""
+
+    @property
+    def name(self) -> str:
+        return "fill_row"
+
+    @property
+    def description(self) -> str:
+        return """填写Excel整行数据。
+
+使用场景：
+- 当需要添加一行新数据时
+- 当需要替换某一行的数据时
+
+注意事项：
+- 行索引从0开始
+- data参数是数组，对应行中的各个单元格"""
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.DATA_FILL
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        return PermissionLevel.SENSITIVE
+
+    @property
+    def timeout_ms(self) -> int:
+        return 10000  # 10秒
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "文档ID"
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "工作表名称（可选，默认第一个）"
+                },
+                "row": {
+                    "type": "integer",
+                    "description": "行号（从0开始）"
+                },
+                "data": {
+                    "type": "array",
+                    "description": "行数据（数组）"
+                }
+            },
+            "required": ["file_id", "row", "data"]
+        }
+
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        """填写整行"""
+        try:
+            file_id = params.get("file_id", "")
+            sheet_name = params.get("sheet_name")
+            row = params.get("row")
+            data = params.get("data", [])
+
+            if not file_id:
+                return ToolResult(success=False, error="文档ID不能为空")
+
+            if row is None:
+                return ToolResult(success=False, error="行号不能为空")
+
+            if not data:
+                return ToolResult(success=False, error="数据不能为空")
+
+            # 验证UUID格式
+            uuid_error = BaseTool.validate_uuid(file_id, "file_id")
+            if uuid_error:
+                return ToolResult(success=False, error=uuid_error)
+
+            # 查询文档信息
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Document).where(Document.id == file_id)
+                )
+                doc = result.scalar_one_or_none()
+
+                if not doc:
+                    return ToolResult(success=False, error=f"文档不存在: {file_id}")
+
+                if doc.file_type != "xlsx":
+                    return ToolResult(success=False, error=f"不支持的文件类型: {doc.file_type}，仅支持xlsx")
+
+                if not os.path.exists(doc.file_path):
+                    return ToolResult(success=False, error=f"文件不存在: {doc.file_path}")
+
+                # 使用openpyxl填写整行
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(doc.file_path)
+
+                    # 获取工作表
+                    if sheet_name:
+                        if sheet_name not in wb.sheetnames:
+                            return ToolResult(
+                                success=False,
+                                error=f"工作表不存在: {sheet_name}，可用工作表: {wb.sheetnames}"
+                            )
+                        ws = wb[sheet_name]
+                    else:
+                        ws = wb.active
+
+                    # 填写整行（openpyxl从1开始）
+                    for col_idx, value in enumerate(data):
+                        ws.cell(row=row + 1, column=col_idx + 1, value=value)
+
+                    # 保存文件
+                    wb.save(doc.file_path)
+                    wb.close()
+
+                    return ToolResult(
+                        success=True,
+                        data={
+                            "file_id": file_id,
+                            "sheet_name": ws.title,
+                            "row": row,
+                            "data": data,
+                            "columns_count": len(data),
+                            "message": f"已填写第 {row} 行，共 {len(data)} 列"
+                        }
+                    )
+
+                except ImportError:
+                    return ToolResult(success=False, error="openpyxl未安装，无法填写Excel")
+                except Exception as e:
+                    return ToolResult(success=False, error=f"填写整行失败: {str(e)}")
+
+        except Exception as e:
+            logger.exception(f"填写整行失败: {e}")
+            return ToolResult(success=False, error=f"填写整行失败: {str(e)}")
+
+
+class FillColumnTool(BaseTool):
+    """填写整列工具"""
+
+    @property
+    def name(self) -> str:
+        return "fill_column"
+
+    @property
+    def description(self) -> str:
+        return """填写Excel整列数据。
+
+使用场景：
+- 当需要添加一列新数据时
+- 当需要替换某一列的数据时
+
+注意事项：
+- 列索引从0开始
+- data参数是数组，对应列中的各个单元格"""
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.DATA_FILL
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        return PermissionLevel.SENSITIVE
+
+    @property
+    def timeout_ms(self) -> int:
+        return 10000  # 10秒
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "文档ID"
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "工作表名称（可选，默认第一个）"
+                },
+                "col": {
+                    "type": "integer",
+                    "description": "列号（从0开始）"
+                },
+                "data": {
+                    "type": "array",
+                    "description": "列数据（数组）"
+                }
+            },
+            "required": ["file_id", "col", "data"]
+        }
+
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        """填写整列"""
+        try:
+            file_id = params.get("file_id", "")
+            sheet_name = params.get("sheet_name")
+            col = params.get("col")
+            data = params.get("data", [])
+
+            if not file_id:
+                return ToolResult(success=False, error="文档ID不能为空")
+
+            if col is None:
+                return ToolResult(success=False, error="列号不能为空")
+
+            if not data:
+                return ToolResult(success=False, error="数据不能为空")
+
+            # 验证UUID格式
+            uuid_error = BaseTool.validate_uuid(file_id, "file_id")
+            if uuid_error:
+                return ToolResult(success=False, error=uuid_error)
+
+            # 查询文档信息
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Document).where(Document.id == file_id)
+                )
+                doc = result.scalar_one_or_none()
+
+                if not doc:
+                    return ToolResult(success=False, error=f"文档不存在: {file_id}")
+
+                if doc.file_type != "xlsx":
+                    return ToolResult(success=False, error=f"不支持的文件类型: {doc.file_type}，仅支持xlsx")
+
+                if not os.path.exists(doc.file_path):
+                    return ToolResult(success=False, error=f"文件不存在: {doc.file_path}")
+
+                # 使用openpyxl填写整列
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(doc.file_path)
+
+                    # 获取工作表
+                    if sheet_name:
+                        if sheet_name not in wb.sheetnames:
+                            return ToolResult(
+                                success=False,
+                                error=f"工作表不存在: {sheet_name}，可用工作表: {wb.sheetnames}"
+                            )
+                        ws = wb[sheet_name]
+                    else:
+                        ws = wb.active
+
+                    # 填写整列（openpyxl从1开始）
+                    for row_idx, value in enumerate(data):
+                        ws.cell(row=row_idx + 1, column=col + 1, value=value)
+
+                    # 保存文件
+                    wb.save(doc.file_path)
+                    wb.close()
+
+                    return ToolResult(
+                        success=True,
+                        data={
+                            "file_id": file_id,
+                            "sheet_name": ws.title,
+                            "col": col,
+                            "data": data,
+                            "rows_count": len(data),
+                            "message": f"已填写第 {col} 列，共 {len(data)} 行"
+                        }
+                    )
+
+                except ImportError:
+                    return ToolResult(success=False, error="openpyxl未安装，无法填写Excel")
+                except Exception as e:
+                    return ToolResult(success=False, error=f"填写整列失败: {str(e)}")
+
+        except Exception as e:
+            logger.exception(f"填写整列失败: {e}")
+            return ToolResult(success=False, error=f"填写整列失败: {str(e)}")
+
+
+class AutoFillSuggestionsTool(BaseTool):
+    """智能填充建议工具"""
+
+    @property
+    def name(self) -> str:
+        return "auto_fill_suggestions"
+
+    @property
+    def description(self) -> str:
+        return """根据上下文和已有数据为单元格提供填充建议。
+
+使用场景：
+- 当不确定某个单元格应该填什么值时
+- 当需要根据已有数据推断缺失值时
+- 当需要自动填充序列或模式时
+
+注意事项：
+- 此工具会分析上下文行的数据，生成建议
+- 建议包含置信度和原因
+- 可以接受或拒绝建议"""
+
+    @property
+    def category(self) -> ToolCategory:
+        return ToolCategory.DATA_FILL
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        return PermissionLevel.SAFE
+
+    @property
+    def timeout_ms(self) -> int:
+        return 30000  # 30秒
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "文档ID"
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "工作表名称（可选，默认第一个）"
+                },
+                "row": {
+                    "type": "integer",
+                    "description": "目标行号"
+                },
+                "col": {
+                    "type": "integer",
+                    "description": "目标列号"
+                },
+                "context_rows": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "上下文行数"
+                }
+            },
+            "required": ["file_id", "row", "col"]
+        }
+
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        """生成填充建议"""
+        try:
+            file_id = params.get("file_id", "")
+            sheet_name = params.get("sheet_name")
+            row = params.get("row")
+            col = params.get("col")
+            context_rows = params.get("context_rows", 5)
+
+            if not file_id:
+                return ToolResult(success=False, error="文档ID不能为空")
+
+            if row is None or col is None:
+                return ToolResult(success=False, error="行号和列号不能为空")
+
+            # 验证UUID格式
+            uuid_error = BaseTool.validate_uuid(file_id, "file_id")
+            if uuid_error:
+                return ToolResult(success=False, error=uuid_error)
+
+            # 查询文档信息
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Document).where(Document.id == file_id)
+                )
+                doc = result.scalar_one_or_none()
+
+                if not doc:
+                    return ToolResult(success=False, error=f"文档不存在: {file_id}")
+
+                if doc.file_type != "xlsx":
+                    return ToolResult(success=False, error=f"不支持的文件类型: {doc.file_type}，仅支持xlsx")
+
+                if not os.path.exists(doc.file_path):
+                    return ToolResult(success=False, error=f"文件不存在: {doc.file_path}")
+
+                # 使用openpyxl读取上下文
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(doc.file_path, data_only=True)
+
+                    # 获取工作表
+                    if sheet_name:
+                        if sheet_name not in wb.sheetnames:
+                            return ToolResult(
+                                success=False,
+                                error=f"工作表不存在: {sheet_name}，可用工作表: {wb.sheetnames}"
+                            )
+                        ws = wb[sheet_name]
+                    else:
+                        ws = wb.active
+
+                    # 读取上下文数据
+                    context_data = []
+                    start_row = max(0, row - context_rows)
+                    end_row = min(ws.max_row, row + context_rows)
+
+                    for r in range(start_row, end_row + 1):
+                        if r == row:
+                            continue  # 跳过目标行
+                        row_data = []
+                        for c in range(max(0, col - 2), min(ws.max_column, col + 3)):
+                            cell = ws.cell(row=r + 1, column=c + 1)
+                            row_data.append(cell.value)
+                        context_data.append({
+                            "row": r,
+                            "data": row_data
+                        })
+
+                    # 读取同列的其他值
+                    column_values = []
+                    for r in range(max(0, row - 10), min(ws.max_row, row + 10)):
+                        if r == row:
+                            continue
+                        cell_value = ws.cell(row=r + 1, column=col + 1).value
+                        if cell_value is not None:
+                            column_values.append({"row": r, "value": cell_value})
+
+                    wb.close()
+
+                    # 使用LLM生成建议
+                    from app.services.llm_service import llm_service
+
+                    prompt = f"""根据以下上下文数据，为单元格 ({row}, {col}) 生成填充建议。
+
+同列的其他值：
+{column_values}
+
+上下文行数据：
+{context_data}
+
+请返回JSON格式的建议，包含：
+1. suggested_value: 建议的值
+2. confidence: 置信度（0-1）
+3. reason: 建议原因
+
+只返回JSON，不要其他内容。"""
+
+                    response = await llm_service.generate(
+                        prompt=prompt,
+                        max_tokens=200,
+                        temperature=0
+                    )
+
+                    # 解析建议
+                    try:
+                        import json
+                        suggestion = json.loads(response)
+                    except:
+                        suggestion = {
+                            "suggested_value": None,
+                            "confidence": 0,
+                            "reason": "无法生成建议"
+                        }
+
+                    return ToolResult(
+                        success=True,
+                        data={
+                            "file_id": file_id,
+                            "sheet_name": ws.title,
+                            "row": row,
+                            "col": col,
+                            "suggestion": suggestion,
+                            "context_rows_count": len(context_data)
+                        }
+                    )
+
+                except ImportError:
+                    return ToolResult(success=False, error="openpyxl未安装，无法读取Excel")
+                except Exception as e:
+                    return ToolResult(success=False, error=f"生成填充建议失败: {str(e)}")
+
+        except Exception as e:
+            logger.exception(f"生成填充建议失败: {e}")
+            return ToolResult(success=False, error=f"生成填充建议失败: {str(e)}")

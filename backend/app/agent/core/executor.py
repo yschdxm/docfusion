@@ -7,14 +7,21 @@
 - 执行对应工具
 - 错误处理和重试
 - 流式事件推送
+- 并行执行
+- 超时控制
+- Hook集成
+- 缓存机制
 """
 
 import json
+import asyncio
 from typing import Dict, Any, Optional, List
 import logging
 
 from app.agent.base.tool import ToolContext, ToolResult
 from app.agent.core.registry import ToolRegistry
+from app.agent.core.cache import ToolResultCache
+from app.agent.core.hook_system import HookSystem
 
 
 logger = logging.getLogger(__name__)
@@ -24,10 +31,25 @@ class ToolExecutor:
     """工具执行器
 
     执行LLM发起的工具调用，管理执行流程。
+    支持并行执行、超时控制、Hook集成、缓存机制。
     """
 
-    def __init__(self, registry: ToolRegistry):
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        hook_system: Optional[HookSystem] = None,
+        cache: Optional[ToolResultCache] = None
+    ):
+        """初始化工具执行器
+
+        Args:
+            registry: 工具注册表
+            hook_system: 钩子系统（可选）
+            cache: 工具结果缓存（可选）
+        """
         self.registry = registry
+        self.hook_system = hook_system or HookSystem()
+        self.cache = cache or ToolResultCache()
         logger.info(f"ToolExecutor初始化完成 | 注册工具数: {len(registry.get_all_tools())}")
 
     async def execute(
@@ -35,7 +57,8 @@ class ToolExecutor:
         tool_name: str,
         tool_params: Dict[str, Any],
         context: ToolContext,
-        max_retries: int = 3
+        max_retries: int = 3,
+        use_cache: bool = True
     ) -> ToolResult:
         """执行工具调用
 
@@ -44,6 +67,7 @@ class ToolExecutor:
             tool_params: 工具参数
             context: 执行上下文
             max_retries: 最大重试次数
+            use_cache: 是否使用缓存
 
         Returns:
             ToolResult: 执行结果
@@ -74,12 +98,33 @@ class ToolExecutor:
                 error=error_msg
             )
 
-        # 执行工具（带重试）
+        # 检查缓存
+        if use_cache and tool.cacheable:
+            cached_result = self.cache.get(tool_name, tool_params)
+            if cached_result is not None:
+                logger.info(f"[ToolExecutor] {tool_name} | 使用缓存结果")
+                return cached_result
+
+        # 执行 before_tool 钩子
+        hook_result = await self.hook_system.before_tool(tool_name, tool_params)
+        if not hook_result.should_continue:
+            return ToolResult(success=False, error="工具执行被钩子阻止")
+
+        # 使用钩子修改后的参数
+        if hook_result.modified_params is not None:
+            tool_params = hook_result.modified_params
+
+        # 执行工具（带重试和超时）
         last_error = None
         for attempt in range(max_retries):
             try:
                 logger.info(f"[ToolExecutor] {tool_name} | 执行尝试 {attempt + 1}/{max_retries}")
-                result = await tool.run(tool_params, context)
+
+                # 带超时执行
+                result = await asyncio.wait_for(
+                    tool.run(tool_params, context),
+                    timeout=tool.timeout_ms / 1000  # 转换为秒
+                )
 
                 if result.success:
                     logger.info(f"[ToolExecutor] {tool_name} | 执行成功 | 耗时: {result.execution_time_ms}ms")
@@ -88,27 +133,45 @@ class ToolExecutor:
                         logger.debug(f"[ToolExecutor] {tool_name} | 结果预览: {data_preview}...")
                     if result.metadata:
                         logger.debug(f"[ToolExecutor] {tool_name} | 元数据: {result.metadata}")
+
+                    # 执行 after_tool 钩子
+                    after_result = await self.hook_system.after_tool(
+                        tool_name, tool_params, result
+                    )
+                    if after_result.modified_result is not None:
+                        result = after_result.modified_result
+
+                    # 缓存结果
+                    if tool.cacheable and use_cache:
+                        self.cache.set(
+                            tool_name,
+                            tool_params,
+                            result,
+                            tool.cache_ttl_seconds
+                        )
+
                     return result
 
                 # 记录错误，准备重试
                 last_error = result.error
                 logger.warning(f"[ToolExecutor] {tool_name} | 执行失败 (尝试 {attempt + 1}/{max_retries}): {result.error}")
 
-                if attempt < max_retries - 1:
-                    import asyncio
-                    wait_time = 0.5 * (attempt + 1)  # 递增等待时间
-                    logger.info(f"[ToolExecutor] {tool_name} | 等待 {wait_time}s 后重试...")
-                    await asyncio.sleep(wait_time)
+            except asyncio.TimeoutError:
+                last_error = f"工具执行超时 ({tool.timeout_ms}ms)"
+                logger.warning(f"[ToolExecutor] {tool_name} | {last_error}")
 
             except Exception as e:
                 last_error = str(e)
                 logger.exception(f"[ToolExecutor] {tool_name} | 执行异常 (尝试 {attempt + 1}/{max_retries}): {e}")
 
-                if attempt < max_retries - 1:
-                    import asyncio
-                    wait_time = 0.5 * (attempt + 1)
-                    logger.info(f"[ToolExecutor] {tool_name} | 等待 {wait_time}s 后重试...")
-                    await asyncio.sleep(wait_time)
+                # 执行 on_error 钩子
+                await self.hook_system.on_error(tool_name, tool_params, e)
+
+            # 重试前等待
+            if attempt < max_retries - 1:
+                wait_time = 0.5 * (attempt + 1)
+                logger.info(f"[ToolExecutor] {tool_name} | 等待 {wait_time}s 后重试...")
+                await asyncio.sleep(wait_time)
 
         # 所有重试都失败
         final_error = f"工具执行失败，已重试{max_retries}次。最后错误: {last_error}"
@@ -117,6 +180,53 @@ class ToolExecutor:
             success=False,
             error=final_error
         )
+
+    async def execute_parallel(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        context: ToolContext,
+        max_concurrent: int = 5
+    ) -> List[ToolResult]:
+        """并行执行多个工具调用
+
+        Args:
+            tool_calls: 工具调用列表，每个元素包含 tool_name 和 tool_params
+            context: 执行上下文
+            max_concurrent: 最大并发数
+
+        Returns:
+            工具执行结果列表
+        """
+        logger.info(f"[ToolExecutor] 并行执行 {len(tool_calls)} 个工具 | 最大并发: {max_concurrent}")
+
+        # 创建信号量控制并发
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def execute_with_semaphore(tool_call: Dict[str, Any]) -> ToolResult:
+            async with semaphore:
+                return await self.execute(
+                    tool_name=tool_call["tool_name"],
+                    tool_params=tool_call["tool_params"],
+                    context=context
+                )
+
+        # 并行执行
+        tasks = [execute_with_semaphore(call) for call in tool_calls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 处理异常
+        final_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[ToolExecutor] 工具 {tool_calls[i]['tool_name']} 执行异常: {result}")
+                final_results.append(ToolResult(
+                    success=False,
+                    error=f"工具执行异常: {str(result)}"
+                ))
+            else:
+                final_results.append(result)
+
+        return final_results
 
     def parse_tool_call(self, tool_call_data: Any) -> Optional[tuple[str, Dict[str, Any]]]:
         """解析LLM的工具调用数据

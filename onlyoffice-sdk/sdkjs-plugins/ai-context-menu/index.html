@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Context Menu</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
+            background: #ffffff;
+            color: #1f2f46;
+            padding: 16px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #d8e3f2;
+        }
+
+        .header-icon {
+            width: 32px;
+            height: 32px;
+            background: #0b5cab;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .header-info {
+            flex: 1;
+        }
+
+        .header-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .menu-section {
+            margin-bottom: 16px;
+        }
+
+        .menu-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .menu-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid #d8e3f2;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: #ffffff;
+        }
+
+        .menu-item:hover {
+            border-color: #0b5cab;
+            background: #f3f8ff;
+        }
+
+        .menu-item-icon {
+            width: 28px;
+            height: 28px;
+            background: #f3f8ff;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .menu-item-content {
+            flex: 1;
+        }
+
+        .menu-item-title {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .menu-item-desc {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .menu-item-arrow {
+            color: #64748b;
+            font-size: 12px;
+        }
+
+        .custom-input-section {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #d8e3f2;
+        }
+
+        .custom-input-label {
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .custom-input-wrapper {
+            display: flex;
+            gap: 8px;
+        }
+
+        .custom-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #d8e3f2;
+            border-radius: 6px;
+            font-size: 13px;
+            outline: none;
+        }
+
+        .custom-input:focus {
+            border-color: #0b5cab;
+        }
+
+        .custom-input-btn {
+            padding: 8px 12px;
+            background: #0b5cab;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .custom-input-btn:hover {
+            background: #084a8d;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-icon">AI</div>
+        <div class="header-info">
+            <div class="header-title">AI 智能操作</div>
+            <div class="header-subtitle" id="selectedInfo">未选中内容</div>
+        </div>
+    </div>
+
+    <div class="menu-section">
+        <div class="menu-section-title">文本操作</div>
+        <div class="menu-list">
+            <div class="menu-item" onclick="handleAction('rewrite')">
+                <div class="menu-item-icon">✏️</div>
+                <div class="menu-item-content">
+                    <div class="menu-item-title">智能改写</div>
+                    <div class="menu-item-desc">改写选中的文本</div>
+                </div>
+                <div class="menu-item-arrow">›</div>
+            </div>
+
+            <div class="menu-item" onclick="handleAction('translate')">
+                <div class="menu-item-icon">🌐</div>
+                <div class="menu-item-content">
+                    <div class="menu-item-title">翻译</div>
+                    <div class="menu-item-desc">翻译成其他语言</div>
+                </div>
+                <div class="menu-item-arrow">›</div>
+            </div>
+
+            <div class="menu-item" onclick="handleAction('summarize')">
+                <div class="menu-item-icon">📝</div>
+                <div class="menu-item-content">
+                    <div class="menu-item-title">总结</div>
+                    <div class="menu-item-desc">总结选中的内容</div>
+                </div>
+                <div class="menu-item-arrow">›</div>
+            </div>
+
+            <div class="menu-item" onclick="handleAction('extract')">
+                <div class="menu-item-icon">📊</div>
+                <div class="menu-item-content">
+                    <div class="menu-item-title">提取信息</div>
+                    <div class="menu-item-desc">提取关键信息</div>
+                </div>
+                <div class="menu-item-arrow">›</div>
+            </div>
+
+            <div class="menu-item" onclick="handleAction('format')">
+                <div class="menu-item-icon">🎨</div>
+                <div class="menu-item-content">
+                    <div class="menu-item-title">格式调整</div>
+                    <div class="menu-item-desc">调整格式和样式</div>
+                </div>
+                <div class="menu-item-arrow">›</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="custom-input-section">
+        <div class="custom-input-label">自定义指令</div>
+        <div class="custom-input-wrapper">
+            <input
+                type="text"
+                class="custom-input"
+                id="customInput"
+                placeholder="输入自定义指令..."
+                onkeydown="handleKeyDown(event)"
+            >
+            <button class="custom-input-btn" onclick="handleCustomAction()">执行</button>
+        </div>
+    </div>
+
+    <script>
+        var plugin = null;
+        var selectedText = '';
+
+        window.Asc = window.Asc || {};
+        window.Asc.plugin = {
+            init: function() {
+                plugin = this;
+                selectedText = this.info && this.info.selectedText ? this.info.selectedText : '';
+                updateSelectedInfo();
+            },
+            button: function(id) {
+                if (id === 0) {
+                    plugin.close();
+                }
+            }
+        };
+
+        function updateSelectedInfo() {
+            var info = document.getElementById('selectedInfo');
+            if (selectedText) {
+                var preview = selectedText.substring(0, 50) + (selectedText.length > 50 ? '...' : '');
+                info.textContent = '已选中: ' + preview;
+            } else {
+                info.textContent = '未选中内容';
+            }
+        }
+
+        function handleAction(action) {
+            if (window.parent) {
+                window.parent.postMessage({
+                    type: 'ai-context-menu-action',
+                    action: action,
+                    selectedText: selectedText
+                }, '*');
+            }
+            if (plugin) {
+                plugin.close();
+            }
+        }
+
+        function handleCustomAction() {
+            var input = document.getElementById('customInput');
+            var instruction = input.value.trim();
+            if (!instruction) return;
+            handleAction('custom:' + instruction);
+        }
+
+        function handleKeyDown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                handleCustomAction();
+            }
+        }
+    </script>
+</body>
+</html>

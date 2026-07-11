@@ -18,6 +18,7 @@ services:
       - ./onlyoffice-sdk/sdkjs:/var/www/onlyoffice/documentserver/sdkjs
       - ./onlyoffice-sdk/web-apps:/var/www/onlyoffice/documentserver/web-apps
       - ./onlyoffice-sdk/server:/var/www/onlyoffice/documentserver/server
+      - ./onlyoffice-sdk/sdkjs-plugins:/var/www/onlyoffice/documentserver/sdkjs-plugins
       # 保留原有配置
       - ./onlyoffice/local.json:/etc/onlyoffice/documentserver/local.json:ro
       - ./onlyoffice/ds.conf:/etc/onlyoffice/documentserver/nginx/ds.conf:ro

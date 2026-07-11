@@ -47,6 +47,20 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      '/themes.json': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+        rewrite: (path) => '/web-apps' + path,
+      },
+      '/plugins.json': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+        rewrite: (path) => '/web-apps' + path,
+      },
+      '/sdkjs-plugins': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+      },
       '/sdk': {
         target: onlyofficeTarget,
         changeOrigin: true,

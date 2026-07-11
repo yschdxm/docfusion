@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import api from '../services/api'
 import { useI18n } from '../hooks/useI18n'
+import { getTheme } from '../services/theme'
 
 interface OfficeConfigResponse {
   serverUrl: string
@@ -15,9 +16,10 @@ interface RefreshUrlResponse {
 interface OnlyOfficeEditorProps {
   documentId: string
   mode?: 'view' | 'edit'
+  onAIAction?: (action: string, params: any) => void
 }
 
-export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOfficeEditorProps) {
+export default function OnlyOfficeEditor({ documentId, mode = 'edit', onAIAction }: OnlyOfficeEditorProps) {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
 
@@ -26,6 +28,10 @@ export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOffi
   const loadedScriptRef = useRef<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  // 获取当前主题
+  const currentTheme = getTheme()
+  const isDarkMode = currentTheme === 'night-mode'
 
   const destroyEditor = () => {
     if (editorRef.current) {
@@ -114,7 +120,34 @@ export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOffi
         documentServerUrl: '',
         editorConfig: {
           ...response.data.config.editorConfig,
+          // 主题和品牌配置
+          customization: {
+            ...(response.data.config.editorConfig as any)?.customization,
+            forcesave: false,
+            compactHeader: true,
+            toolbarNoTabs: false,
+            // 设置主题 - 使用uiTheme属性
+            uiTheme: isDarkMode ? 'theme-docfusion-dark' : 'theme-docfusion-light',
+            // 顶栏 Logo（允许自定义）
+            logo: {
+              image: '/logo.png',
+              imageDark: '/logo.png',
+              url: '/',
+              visible: true
+            },
+            // 关于页面客户信息（允许自定义）
+            customer: {
+              name: '知融云枢',
+              address: '中国',
+              www: 'docfusion.example.com',
+              logo: '/logo.png',
+              logoDark: '/logo.png',
+            },
+            // 隐藏反馈按钮
+            feedback: { visible: false },
+          }
         },
+        // 插件配置通过 web-apps/plugins.json 文件加载，不在这里传入
         events: {
           onRequestRefreshToken: async () => {
             const newUrl = await refreshDocumentUrl()
@@ -122,14 +155,31 @@ export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOffi
               editorRef.current.refreshHistory?.()
             }
           },
+          // 监听插件事件
+          onPluginEvent: (event: any) => {
+            if (event.type === 'onClick') {
+              // 处理右键菜单点击
+              handlePluginEvent(event)
+            }
+          }
         },
       }
       editorRef.current = new window.DocsAPI.DocEditor(`onlyoffice-editor-${documentId}`, config)
+
+      // 编辑器加载完成后禁用主题选择
+      handleEditorReady()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'OnlyOffice load failed'
       setError(message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 处理插件事件
+  const handlePluginEvent = (event: any) => {
+    if (onAIAction) {
+      onAIAction(event.action, event.params)
     }
   }
 
@@ -140,6 +190,43 @@ export default function OnlyOfficeEditor({ documentId, mode = 'edit' }: OnlyOffi
       destroyEditor()
     }
   }, [documentId, mode])
+
+  // 监听主题变化，通过 postMessage 同步到 OnlyOffice iframe
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      const theme = getTheme()
+      const isDark = theme === 'night-mode'
+      const themeId = isDark ? 'theme-docfusion-dark' : 'theme-docfusion-light'
+
+      // 通过 postMessage 通知 OnlyOffice iframe 切换主题
+      const iframe = containerRef.current?.querySelector('iframe') as HTMLIFrameElement
+      if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({
+          type: 'set-theme',
+          themeId: themeId
+        }, '*')
+      }
+    })
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    })
+
+    return () => observer.disconnect()
+  }, [])
+
+  // 编辑器加载完成后禁用主题选择
+  const handleEditorReady = useCallback(() => {
+    setTimeout(() => {
+      const iframe = containerRef.current?.querySelector('iframe') as HTMLIFrameElement
+      if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({
+          type: 'disable-theme-switch'
+        }, '*')
+      }
+    }, 2000) // 延迟 2 秒确保编辑器完全加载
+  }, [])
 
   return (
     <div className="h-full flex flex-col">

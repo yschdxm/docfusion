@@ -6,6 +6,7 @@ Agent运行时 - 核心协调器
 - 协调LLM调用和工具执行
 - 维护对话上下文
 - 生成流式事件
+- 集成ContextManager、HookSystem、ToolResultCache
 """
 
 import json
@@ -18,6 +19,9 @@ from app.agent.core.registry import ToolRegistry
 from app.agent.core.executor import ToolExecutor
 from app.agent.core.stream import StreamManager, AgentEventType, AgentEvent
 from app.agent.core.tracker import StepTracker, StepType
+from app.agent.core.context_manager import ContextManager, TokenBudget, Message
+from app.agent.core.hook_system import HookSystem
+from app.agent.core.cache import ToolResultCache
 from app.agent.base.tool import ToolContext
 
 from app.services.llm_service import llm_service
@@ -285,6 +289,7 @@ class AgentRuntime:
     """Agent运行时
 
     协调LLM调用和工具执行，支持流式输出。
+    集成ContextManager、HookSystem、ToolResultCache。
     """
 
     def __init__(
@@ -292,14 +297,41 @@ class AgentRuntime:
         registry: ToolRegistry,
         max_iterations: int = 30,
         max_tool_retries: int = 3,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        context_manager: Optional[ContextManager] = None,
+        hook_system: Optional[HookSystem] = None,
+        cache: Optional[ToolResultCache] = None
     ):
+        """初始化Agent运行时
+
+        Args:
+            registry: 工具注册表
+            max_iterations: 最大迭代次数
+            max_tool_retries: 工具最大重试次数
+            system_prompt: 系统提示词
+            context_manager: 上下文管理器（可选）
+            hook_system: 钩子系统（可选）
+            cache: 工具结果缓存（可选）
+        """
         self.registry = registry
-        self.executor = ToolExecutor(registry)
         self.max_iterations = max_iterations
         self.max_tool_retries = max_tool_retries
         self.system_prompt = system_prompt or SYSTEM_PROMPT_TEMPLATE
+
+        # 初始化新组件
+        self.context_manager = context_manager or ContextManager()
+        self.hook_system = hook_system or HookSystem()
+        self.cache = cache or ToolResultCache()
+
+        # 使用增强的 ToolExecutor
+        self.executor = ToolExecutor(
+            registry=registry,
+            hook_system=self.hook_system,
+            cache=self.cache
+        )
+
         logger.info(f"[AgentRuntime] 初始化 | max_iterations={max_iterations}, max_tool_retries={max_tool_retries}")
+        logger.info(f"[AgentRuntime] 组件 | ContextManager, HookSystem, ToolResultCache 已集成")
 
     async def run(
         self,
@@ -327,8 +359,43 @@ class AgentRuntime:
         logger.info(f"[AgentRuntime.run] file_ids={file_ids}, template_id={template_id}")
         logger.info("=" * 60)
 
-        tracker = step_tracker or StepTracker()
+        # 检查是否适合快速模式
+        from app.agent.core.adaptive_mode_selector import adaptive_mode_selector
         stream = stream_manager or StreamManager()
+
+        try:
+            result = await adaptive_mode_selector.select_and_execute(
+                user_message=message,
+                file_ids=file_ids,
+                template_id=template_id,
+                context=context,
+                stream_manager=stream
+            )
+
+            # 如果快速模式成功，直接返回
+            if result.get("success"):
+                logger.info(f"[AgentRuntime.run] 快速模式完成 | 耗时: {result.get('duration_ms', 0)}ms")
+                return result
+
+            # 如果快速模式失败，降级到普通模式
+            logger.info("[AgentRuntime.run] 快速模式失败，降级到普通模式")
+
+        except Exception as e:
+            logger.warning(f"[AgentRuntime.run] 快速模式异常: {e}，降级到普通模式")
+
+        # 添加用户消息到上下文管理器
+        self.context_manager.add_message(Message(
+            role="user",
+            content=message,
+            token_count=len(message) * 2  # 估算
+        ))
+
+        # 检查是否需要自动压缩
+        if self.context_manager.should_force_compact():
+            summary = await self.context_manager.auto_compact()
+            logger.info(f"[AgentRuntime.run] 自动压缩完成 | 摘要长度: {len(summary)}")
+
+        tracker = step_tracker or StepTracker()
 
         try:
             result = await self._execute_loop(
@@ -384,6 +451,20 @@ class AgentRuntime:
         logger.info(f"[AgentRuntime.run_stream] Session: {context.session_id}")
         logger.info(f"[AgentRuntime.run_stream] 用户输入: {message[:100]}..." if len(message) > 100 else f"[AgentRuntime.run_stream] 用户输入: {message}")
         logger.info("=" * 60)
+
+        # 添加用户消息到上下文管理器
+        self.context_manager.add_message(Message(
+            role="user",
+            content=message,
+            token_count=len(message) * 2  # 估算
+        ))
+
+        # 检查是否需要自动压缩
+        if self.context_manager.should_force_compact():
+            summary = await self.context_manager.auto_compact()
+            logger.info(f"[AgentRuntime.run_stream] 自动压缩完成 | 摘要长度: {len(summary)}")
+            # 发送摘要事件
+            await stream.emit_system_message(f"对话已自动压缩:\n{summary}")
 
         # 启动执行任务
         logger.debug("[AgentRuntime.run_stream] 创建执行task")

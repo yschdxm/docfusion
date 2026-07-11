@@ -20,6 +20,8 @@ import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
 import { useI18n } from '../hooks/useI18n'
 import DocumentPreviewModal from '../components/DocumentPreviewModal'
 import OnlyOfficeEditor from '../components/OnlyOfficeEditor'
+import AISidebar from '../components/ai/AISidebar'
+import ResizeHandle from '../components/ai/ResizeHandle'
 
 type CategoryFilter = 'all' | 'source' | 'template' | 'output'
 
@@ -98,6 +100,18 @@ export default function DocumentWorkspace() {
     { id: 'home', title: tr('主页', 'Home', 'ホーム'), type: 'home' },
   ])
   const [activeTabId, setActiveTabId] = useState('home')
+
+  // AI 边栏状态
+  const SIDEBAR_DEFAULT = Math.max(320, Math.floor(window.innerWidth / 6))
+  const SIDEBAR_MIN = 280
+  const SIDEBAR_MAX = Math.floor(window.innerWidth * 0.4)
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT)
+
+  // 处理边栏拖动
+  // delta > 0 表示向左拖动（增大边栏宽度），delta < 0 表示向右拖动（减小边栏宽度）
+  const handleSidebarResize = useCallback((delta: number) => {
+    setSidebarWidth(prev => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, prev + delta)))
+  }, [SIDEBAR_MAX])
 
   const notifyBell = (title: string, message: string) => {
     window.dispatchEvent(
@@ -695,27 +709,46 @@ export default function DocumentWorkspace() {
       </div>
 
       {/* 主内容区域 */}
-      <div className="flex-1 overflow-hidden relative">
-        {/* 首页内容 */}
-        <div className={`h-full ${activeTabId === 'home' ? '' : 'hidden'}`}>
-          {renderHomeContent()}
+      <div className="flex-1 overflow-hidden flex">
+        {/* 左侧：首页/编辑器 */}
+        <div className="flex-1 overflow-hidden relative">
+          {/* 首页内容 */}
+          <div className={`h-full ${activeTabId === 'home' ? '' : 'hidden'}`}>
+            {renderHomeContent()}
+          </div>
+          {/* 文档编辑器 - 为每个打开的文档创建实例，使用 display控制显示 */}
+          {documentTabs.map((tab) => {
+            const doc = documents.find((d) => d.id === tab.documentId)
+            if (!doc) return null
+            return (
+              <div
+                key={tab.id}
+                className={`h-full absolute inset-0 ${activeTabId === tab.id ? '' : 'hidden'}`}
+              >
+                <OnlyOfficeEditor
+                  documentId={tab.documentId!}
+                  mode="edit"
+                />
+              </div>
+            )
+          })}
         </div>
-        {/* 文档编辑器 - 为每个打开的文档创建实例，使用 display控制显示 */}
-        {documentTabs.map((tab) => {
-          const doc = documents.find((d) => d.id === tab.documentId)
-          if (!doc) return null
-          return (
+
+        {/* 右侧：AI 边栏（仅在打开文档时显示） */}
+        {activeTabId !== 'home' && documentTabs.some(t => t.id === activeTabId) && (
+          <>
+            <ResizeHandle onResize={handleSidebarResize} direction="left" />
             <div
-              key={tab.id}
-              className={`h-full absolute inset-0 ${activeTabId === tab.id ? '' : 'hidden'}`}
+              className="shrink-0 overflow-hidden"
+              style={{ width: sidebarWidth }}
             >
-              <OnlyOfficeEditor
-                documentId={tab.documentId!}
-                mode="edit"
+              <AISidebar
+                documentId={tabs.find(t => t.id === activeTabId)?.documentId}
+                documentName={tabs.find(t => t.id === activeTabId)?.title}
               />
             </div>
-          )
-        })}
+          </>
+        )}
       </div>
 
       {/* 预览模态框 */}

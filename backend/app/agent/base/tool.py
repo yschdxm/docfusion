@@ -6,13 +6,38 @@
 - description: 工具描述，告诉LLM这个工具是做什么的
 - parameters: 参数schema (JSON Schema格式)
 - execute: 执行工具的方法
+- category: 工具分类
+- permission_level: 权限级别
+- timeout_ms: 超时时间（毫秒）
+- cacheable: 是否可缓存
+- cache_ttl_seconds: 缓存TTL（秒）
 """
 
 import re
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any, Dict, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
+
+
+class ToolCategory(str, Enum):
+    """工具分类"""
+    DOCUMENT_READ = "document_read"      # 文档读取
+    DOCUMENT_EDIT = "document_edit"      # 文档编辑
+    DOCUMENT_CONVERT = "document_convert" # 文档转换
+    DATA_QUERY = "data_query"            # 数据查询
+    DATA_FILL = "data_fill"              # 数据填写
+    KNOWLEDGE = "knowledge"              # 知识图谱
+    SEARCH = "search"                    # 搜索
+    SYSTEM = "system"                    # 系统工具
+
+
+class PermissionLevel(str, Enum):
+    """权限级别"""
+    SAFE = "safe"          # 安全：自动执行（如 read、search）
+    SENSITIVE = "sensitive" # 敏感：询问用户（如 edit、fill）
+    DANGEROUS = "dangerous" # 危险：必须确认（如 delete、convert）
 
 # UUID格式校验正则
 _UUID_PATTERN = re.compile(
@@ -55,6 +80,13 @@ class BaseTool(ABC):
     - parameters: 返回参数schema (JSON Schema格式)
     - execute: 执行工具
 
+    可选属性（子类可覆盖）:
+    - category: 工具分类（默认为 SYSTEM）
+    - permission_level: 权限级别（默认为 SENSITIVE）
+    - timeout_ms: 超时时间（毫秒，默认30秒）
+    - cacheable: 是否可缓存（默认False）
+    - cache_ttl_seconds: 缓存TTL（秒，默认300秒）
+
     示例:
         class MyTool(BaseTool):
             @property
@@ -64,6 +96,14 @@ class BaseTool(ABC):
             @property
             def description(self) -> str:
                 return "这是一个示例工具"
+
+            @property
+            def category(self) -> ToolCategory:
+                return ToolCategory.SYSTEM
+
+            @property
+            def permission_level(self) -> PermissionLevel:
+                return PermissionLevel.SAFE
 
             @property
             def parameters(self) -> Dict[str, Any]:
@@ -100,6 +140,31 @@ class BaseTool(ABC):
     def description(self) -> str:
         """工具描述，告诉LLM这个工具是做什么的"""
         pass
+
+    @property
+    def category(self) -> ToolCategory:
+        """工具分类，默认为 SYSTEM"""
+        return ToolCategory.SYSTEM
+
+    @property
+    def permission_level(self) -> PermissionLevel:
+        """权限级别，默认为 SENSITIVE"""
+        return PermissionLevel.SENSITIVE
+
+    @property
+    def timeout_ms(self) -> int:
+        """超时时间（毫秒），默认30秒"""
+        return 30000
+
+    @property
+    def cacheable(self) -> bool:
+        """是否可缓存，默认False"""
+        return False
+
+    @property
+    def cache_ttl_seconds(self) -> int:
+        """缓存TTL（秒），默认300秒"""
+        return 300
 
     @property
     @abstractmethod
@@ -146,7 +211,11 @@ class BaseTool(ABC):
                 "name": self.name,
                 "description": self.description,
                 "parameters": self.parameters
-            }
+            },
+            "category": self.category.value,
+            "permission_level": self.permission_level.value,
+            "timeout_ms": self.timeout_ms,
+            "cacheable": self.cacheable
         }
 
     def to_json(self) -> Dict[str, Any]:
@@ -154,7 +223,11 @@ class BaseTool(ABC):
         return {
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters
+            "parameters": self.parameters,
+            "category": self.category.value,
+            "permission_level": self.permission_level.value,
+            "timeout_ms": self.timeout_ms,
+            "cacheable": self.cacheable
         }
 
     async def run(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
