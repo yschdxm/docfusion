@@ -117,10 +117,10 @@ export interface TaskStats {
 export interface AgentStreamRequest {
   message: string
   file_ids: string[]
-  template_id?: string | null
   conversation_id?: string | null
   task_type?: 'auto' | 'fill_table' | 'query' | 'operation'
   task_id?: string
+  current_doc_id?: string | null
 }
 
 // ============================================================

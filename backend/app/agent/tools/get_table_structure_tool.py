@@ -60,33 +60,60 @@ class GetTableStructureTool(BaseTool):
             "properties": {
                 "template_id": {
                     "type": "string",
-                    "description": "模板文档ID"
+                    "description": "模板文档ID（已废弃，请使用 current_doc_id）"
+                },
+                "current_doc_id": {
+                    "type": "string",
+                    "description": "当前在OnlyOffice中打开的文档ID（优先使用）"
                 }
             },
-            "required": ["template_id"]
+            "required": []
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
         """执行获取表格结构"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
+            # 优先使用 current_doc_id，其次使用 template_id
+            # 从 params 或 context.metadata 中获取
+            current_doc_id_from_params = params.get("current_doc_id", "")
+            current_doc_id_from_context = context.metadata.get("current_doc_id", "") if context.metadata else ""
             template_id = params.get("template_id", "")
 
+            # 调试日志
+            logger.info(f"[GetTableStructure] params: {params}")
+            logger.info(f"[GetTableStructure] context.metadata: {context.metadata}")
+            logger.info(f"[GetTableStructure] current_doc_id from params: {current_doc_id_from_params}")
+            logger.info(f"[GetTableStructure] current_doc_id from context: {current_doc_id_from_context}")
+            logger.info(f"[GetTableStructure] template_id from params: {template_id}")
+
+            # 确定要使用的文档ID
+            doc_id = current_doc_id_from_params or current_doc_id_from_context or template_id
+
+            if not doc_id:
+                return ToolResult(
+                    success=False,
+                    error="必须提供 current_doc_id 或 template_id"
+                )
+
             # UUID格式校验
-            uuid_error = BaseTool.validate_uuid(template_id, "template_id")
+            uuid_error = BaseTool.validate_uuid(doc_id, "doc_id")
             if uuid_error:
                 return ToolResult(success=False, error=uuid_error)
 
             # 查询文档
             async with async_session() as db:
                 result = await db.execute(
-                    select(Document).where(Document.id == template_id)
+                    select(Document).where(Document.id == doc_id)
                 )
                 doc = result.scalar_one_or_none()
 
                 if not doc:
                     return ToolResult(
                         success=False,
-                        error=f"模板文档不存在: {template_id}"
+                        error=f"文档不存在: {doc_id}"
                     )
 
                 file_path = doc.file_path
@@ -106,7 +133,7 @@ class GetTableStructureTool(BaseTool):
                 return ToolResult(
                     success=True,
                     data={
-                        "template_id": template_id,
+                        "doc_id": doc_id,
                         "filename": doc.original_filename,
                         "file_type": file_type,
                         "structure": structure

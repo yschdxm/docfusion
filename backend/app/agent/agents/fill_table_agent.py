@@ -16,11 +16,44 @@ from app.agent.tools import (
     Neo4jQueryTool,
     GetTableStructureTool,
     FillTableTool,
-    ExtractFromDocsTool,
+    FileReaderTool,
 )
 
 
-FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于根据源文档数据填写表格模板。
+FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于在当前打开的文档上填写表格数据。
+
+## 实时编辑模式（必须遵循）
+
+所有填表操作必须在当前打开的文档上进行，不创建新文件。
+
+### 必需参数
+- current_doc_id: 当前在 OnlyOffice 中打开的文档 ID
+  - 系统会自动从 context.metadata 中获取
+  - 如果未提供，填表会失败
+
+### 如何获取 current_doc_id
+**重要：你不需要手动获取 current_doc_id，系统会自动提供！**
+
+当调用以下工具时，系统会自动从 context.metadata 中获取 current_doc_id：
+1. `get_table_structure` - 不需要传递任何参数，系统会自动获取当前文档的结构
+2. `fill_table` - 不需要传递 current_doc_id 参数，系统会自动填入
+
+**调用示例：**
+```
+# 获取当前文档的表格结构（不需要传递任何参数）
+get_table_structure()
+
+# 填写当前文档（不需要传递 current_doc_id）
+fill_table(
+    data=[...],
+    fill_mode="overwrite"
+)
+```
+
+### 重要规则
+- 禁止创建新文件
+- 禁止使用 template_id 或 output_doc_id
+- 必须使用 current_doc_id
 
 ## 工作原则
 1. 分析用户需求，理解任务目标
@@ -53,23 +86,22 @@ FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于
 1. **PostgreSQL (query_pg_database)** - xlsx结构化数据，最准确
 2. **Neo4j (query_knowledge_graph)** - PG无结果时使用
 3. **RAG检索 (rag_search)** - 非结构化文本补充
-4. **文档提取 (extract_from_documents)** - 最后手段
+4. **文件读取 (read_file)** - 直接读取文档内容
 
 ### 对于 docx/md/txt 源文档：
 
-**核心原则：批量提取结构化记录时，必须使用 extract_from_documents，禁止用 rag_search 逐条提取！**
+**核心原则：批量提取结构化记录时，必须使用 read_file 读取文档内容，再用 LLM 提取数据！**
 
 **工具选择指南：**
 | 场景 | 推荐工具 | 原因 |
 |------|----------|------|
-| 批量提取表格数据 | **extract_from_documents** | 一次返回多条结构化记录 |
+| 读取文档内容 | **read_file** | 直接读取全文，然后用LLM提取 |
 | 查询特定实体信息 | query_knowledge_graph | 精确查询单个实体 |
 | 补充少量缺失数据 | rag_search | 搜索文本片段 |
 
 **禁止行为：**
 - 禁止反复用 rag_search 重复搜索同一类数据
 - 禁止用 query_knowledge_graph 批量查询表格数据（它只返回有限记录）
-- 禁止在 extract_from_documents 已返回足够数据后继续搜索
 
 **注意**: docx/md/txt 文档在PG中没有数据，不要尝试PG查询
 
@@ -87,7 +119,7 @@ FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于
 
 ## 填表任务完整流程（重要）
 
-当用户需要填写表格时（消息包含"填表"、"填写"、"fill"或提供了template_id）：
+当用户需要填写表格时（消息包含"填表"、"填写"、"fill"）：
 
 ### 第一步：判断源文档类型并选择数据源
 1. 检查源文档 file_ids 对应的文档类型
@@ -106,31 +138,31 @@ FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于
 
 #### 源文档是 docx/md/txt（非结构化文本，需要从文本中提取表格数据）：
 
-**首选方案：使用 extract_from_documents 工具批量提取（推荐！效率最高）**
-1. 获取表格结构后，将表头列名作为 fields 参数传入 extract_from_documents
-2. 该工具内部会自动：RAG检索相关片段 → 用专用Prompt批量提取结构化记录
-3. 返回的 records 格式为 [{表头1: 值1, 表头2: 值2, ...}, ...]，可直接传给 fill_table(data=...)
-4. 如果一轮提取的数据不够，换不同查询关键词再调用 extract_from_documents，将多次结果合并
+**首选方案：使用 read_file 工具读取文档内容，然后用LLM提取数据**
+1. 获取表格结构后，使用 read_file 读取源文档内容
+2. 从读取的内容中提取与表头匹配的数据
+3. 整理为 [{表头1: 值1, 表头2: 值2, ...}, ...] 格式
+4. 传入 fill_table(current_doc_id="当前打开的文档ID", data=...)
 5. 数据充足后立即调用 fill_table 填写，不要继续搜索
 
 **补充方案：使用 rag_search 手动提取（仅用于补充少量缺失数据）**
 1. 用 rag_search 检索与表头相关的文档片段
 2. 从检索结果中逐条提取与表头匹配的数据
 3. 整理为 [{表头1: 值1, 表头2: 值2, ...}, ...] 格式
-4. 传入 fill_table(data=...)
+4. 传入 fill_table(current_doc_id="当前打开的文档ID", data=...)
 
 **关键规则：**
 - data 中每个字典的 key 必须与模板表头精确匹配
 - 提取时注意数据的行对应关系（同一行的数据应来自同一条记录）
 - 如果某字段在源文档中找不到，设为 null 而不是跳过
 
-#### 源文档和模板都是 xlsx（必须使用 source_query 自动模式）：
+#### 源文档和当前文档都是 xlsx（必须使用 source_query 自动模式）：
 
-**强制要求**：当源文档和模板都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
+**强制要求**：当源文档和当前文档都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
 
 **source_query 自动模式的适用条件（严格）：**
 - 源文档是 xlsx 格式
-- 模板也是 xlsx 格式
+- 当前文档也是 xlsx 格式
 - **不满足以上条件时，禁止使用 source_query，必须使用 data 参数模式**
 
 **单次调用流程：**
@@ -141,7 +173,7 @@ fill_table(
         "query": "描述需要什么数据",
         "fetch_all": true  # 关键：自动获取全部数据，不遗漏
     },
-    template_id=模板ID,
+    current_doc_id="当前打开的文档ID",
     fill_mode="overwrite"
 )
 ```
@@ -164,18 +196,17 @@ fill_table(
 # 表格0
 fill_table(
     source_query={"doc_ids": [...], "query": "查询表格0所需数据", "fetch_all": true},
-    template_id=模板ID,
+    current_doc_id="当前打开的文档ID",
     target_table_index=0,
     fill_mode="overwrite"
 )
 
-# 表格1（复用同一个文件）
+# 表格1（同一个文档）
 fill_table(
     source_query={"doc_ids": [...], "query": "查询表格1所需数据", "fetch_all": true},
-    template_id=模板ID,
-    output_doc_id=上一步返回的output_file_id,  # 关键：继续填写同一个文件
+    current_doc_id="当前打开的文档ID",
     target_table_index=1,
-    fill_mode="overwrite"  # 根据表格1当前状态判断
+    fill_mode="overwrite"
 )
 ```
 
@@ -189,12 +220,12 @@ fill_table(
    - 更换查询关键词
    - 扩大查询范围
 
-3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
+3. 使用 fill_table(current_doc_id="当前打开的文档ID", source_query=..., fill_mode="append") 追加数据
 
 **重要原则**：
-- ✅ 先用可用数据生成文件，再询问是否需要补充
-- ❌ 禁止因数据可能不完整而延迟生成文件
-- ❌ 禁止生成文件前征求用户确认
+- ✅ 先用可用数据填写文档，再询问是否需要补充
+- ❌ 禁止因数据可能不完整而延迟填写
+- ❌ 禁止填写前征求用户确认
 
 ### 第五步：报告结果
 
@@ -204,16 +235,13 @@ fill_table(
 2. **预期行数**：根据文档标题判断应该有多少行
 3. **完整度百分比**：填写比例
 4. **数据来源说明**：数据来自哪些文档
-5. **下载链接（必须输出可点击链接）**：
-   - 使用 fill_table 返回的 `download_url` 字段
-   - 格式：`[点击下载填写完成的文档](download_url)`
-   - **必须使用 Markdown 链接格式，确保用户可以点击下载**
-   - **download_url 必须使用工具返回的相对路径（如 `/api/v1/documents/xxx/download`），禁止添加域名前缀**
-   - **绝对禁止**自行编造完整URL（如 `https://xxx.com/api/v1/...`），系统会自动解析域名
+5. **编辑完成通知**：
+   - 告知用户文档已直接修改
+   - 提醒用户保存时的行为（直接保存或创建副本）
 
 ## 多表格文档填写策略
 
-当模板文档包含多个表格时：
+当文档包含多个表格时：
 
 ### 识别表格用途
 1. 使用 get_table_structure 后，分析每个表格的 context.preceding_text 字段
@@ -252,11 +280,9 @@ fill_mode 是针对单个表格的操作，不是文档级别的：
 3. 填写表格0：
    - fill_mode="overwrite"（清空后填入）
    - target_table_index=0
-   - 创建新文件
 
 4. 填写表格1：
    - 检查表格1状态：如果只有表头/空行 → 用 overwrite；如果已有数据 → 用 append
-   - output_doc_id=上一步返回的ID（继续填写同一个文件）
    - target_table_index=1（指定第二个表格）
 
 5. 后续表格同理，每个独立判断 fill_mode
@@ -269,30 +295,31 @@ fill_mode 是针对单个表格的操作，不是文档级别的：
 
 ## 增量填表示例流程
 ```
-用户: "填写XXX数据到模板"
+用户: "填写XXX数据"
 
-↓ 1. get_table_structure(template_id)
+↓ 1. get_table_structure(current_doc_id)
    → 获取表头和表格结构
 
-↓ 2. fill_table(source_query={"doc_ids": [...], "query": "查询XXX数据", "fetch_all": true}, template_id=模板ID)
+↓ 2. fill_table(source_query={"doc_ids": [...], "query": "查询XXX数据", "fetch_all": true}, current_doc_id="当前打开的文档ID")
    → 工具自动查询并返回数据摘要
    → 审核摘要：数据列名是否匹配，数据是否完整
 
-↓ 3. fill_table(source_query={..., "data_confirmed": true}, template_id=模板ID)
-   → 确认填入，创建新文件，返回 output_file_id
+↓ 3. fill_table(source_query={..., "data_confirmed": true}, current_doc_id="当前打开的文档ID")
+   → 确认填入，直接修改当前文档
    → 已填N行
 
 ↓ 4. 评估：已填行数 < 预期行数？继续查询追加
 
-↓ 5. fill_table(source_query={"query": "补充查询更多数据", "fetch_all": true}, output_doc_id=xxx, fill_mode="append")
-   → 确认后追加到已有文件
+↓ 5. fill_table(source_query={"query": "补充查询更多数据", "fetch_all": true}, current_doc_id="当前打开的文档ID", fill_mode="append")
+   → 确认后追加到当前文档
 
-↓ 6. 报告用户：填写行数、预期行数、完整度、下载链接
+↓ 6. 报告用户：填写行数、预期行数、完整度、文档已直接修改
 ```
 
 ## 重要提醒
-- 填表任务必须使用 fill_table 工具生成可下载的文档
-- 增量填表时记住 output_file_id，后续追加需要传入 output_doc_id
+- 所有填表操作必须在当前打开的文档上进行，不创建新文件
+- 必须使用 current_doc_id 参数
+- 如果 current_doc_id 未提供，向用户询问
 - 只调用确实需要的工具
 - 参数必须准确且完整
 - 根据工具返回结果调整后续策略
@@ -314,7 +341,7 @@ class FillTableAgent(DelegateAgentTool):
 
     @property
     def description(self) -> str:
-        return "将填表任务委派给专用的填表Agent。当用户需要填写表格、填充数据到模板时使用此工具。"
+        return "将填表任务委派给专用的填表Agent。当用户需要在当前打开的文档上填写表格时使用此工具。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -330,12 +357,8 @@ class FillTableAgent(DelegateAgentTool):
                     "items": {"type": "string"},
                     "description": "源文档ID列表"
                 },
-                "template_id": {
-                    "type": "string",
-                    "description": "模板文档ID"
-                },
             },
-            "required": ["task_description", "template_id"]
+            "required": ["task_description"]
         }
 
     def _create_agent(self) -> AgentRuntime:
@@ -346,7 +369,7 @@ class FillTableAgent(DelegateAgentTool):
         registry.register(Neo4jQueryTool())
         registry.register(RAGTool())
         registry.register(FillTableTool())
-        registry.register(ExtractFromDocsTool())
+        registry.register(FileReaderTool())
         # 注意：不注册 list_documents、read_document 等无关工具
         # 注意：不注册任何 DelegateAgentTool，防止嵌套
 
@@ -359,7 +382,6 @@ class FillTableAgent(DelegateAgentTool):
     def _extract_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """从子Agent结果中提取填表特有信息"""
         return {
-            "output_file_id": result.get("output_file_id"),
-            "download_url": result.get("download_url"),
+            "current_doc_id": result.get("current_doc_id"),
             "filled_rows": result.get("filled_rows"),
         }

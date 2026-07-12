@@ -47,6 +47,9 @@ class AgentEventType(str, Enum):
     FILL_TABLE_PROGRESS = "fill_table_progress"  # 填表进度
     FILL_TABLE_END = "fill_table_end"        # 填表结束
 
+    # 编辑器事件
+    OPEN_EDITOR = "open_editor"              # 打开编辑器
+
     # 内容事件
     CONTENT_CHUNK = "content_chunk"          # 回复内容片段
     CONTENT_END = "content_end"              # 回复内容结束

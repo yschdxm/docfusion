@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Fill Table Plugin</title>
+</head>
+<body>
+<script>
+(function() {
+    var lastId = 0;
+    var API_BASE = "http://172.18.0.1:8000/api/v1/fill-table-plugin";
+    var isReady = false;
+
+    // 等待 window.Asc.plugin 可用
+    function waitForReady(cb) {
+        if (window.Asc && window.Asc.plugin) {
+            cb();
+            return;
+        }
+        var timer = setInterval(function() {
+            if (window.Asc && window.Asc.plugin) {
+                clearInterval(timer);
+                cb();
+            }
+        }, 100);
+    }
+
+    waitForReady(function() {
+        window.Asc.plugin.init = function() {
+            isReady = true;
+        };
+        window.Asc.plugin.button = function(id) {};
+
+        // 轮询后端获取待处理请求
+        setInterval(function() {
+            if (!isReady) return;
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open("GET", API_BASE + "/pending", true);
+                xhr.onload = function() {
+                    if (xhr.status !== 200) return;
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (!resp || !resp.id || resp.id <= lastId) return;
+                        lastId = resp.id;
+                        executeFill(resp);
+                    } catch (e) {}
+                };
+                xhr.send();
+            } catch (e) {}
+        }, 500);
+    });
+
+    function executeFill(req) {
+        window.Asc.plugin.info = {
+            headers: req.headers,
+            rows: req.data,
+            fillMode: req.fillMode,
+            targetTableIndex: req.targetTableIndex,
+            fileType: req.fileType
+        };
+
+        window.Asc.plugin.callCommand(function() {
+            var info = Asc.plugin.info;
+            var headers = info.headers;
+            var rows = info.rows;
+            var fillMode = info.fillMode;
+            var idx = info.targetTableIndex;
+            var ft = info.fileType;
+
+            try {
+                if (ft === "xlsx") {
+                    var ws = Api.GetActiveSheet();
+                    if (!ws) return "ERR:No active sheet";
+                    var startRow = 1;
+                    if (fillMode === "overwrite") {
+                        startRow = 2;
+                        var used = ws.GetUsedRange();
+                        if (used) {
+                            var rc = used.GetRows().GetCount();
+                            var cc = used.GetCols().GetCount();
+                            if (rc > 1) {
+                                for (var r = rc - 1; r >= 1; r--) {
+                                    for (var c = 0; c < cc; c++) {
+                                        ws.GetRangeByNumber(r, c).SetValue("");
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        var used = ws.GetUsedRange();
+                        if (used) startRow = used.GetRow() + used.GetRows().GetCount();
+                    }
+                    for (var i = 0; i < rows.length; i++) {
+                        for (var j = 0; j < headers.length; j++) {
+                            var v = rows[i][headers[j]];
+                            if (v === null || v === undefined) v = "";
+                            ws.GetRangeByNumber(startRow + i, j).SetValue(v);
+                        }
+                    }
+                    return "OK:" + rows.length;
+                } else if (ft === "docx") {
+                    var doc = Api.GetDocument();
+                    if (!doc) return "ERR:No document";
+                    var tables = doc.GetAllTables();
+                    if (!tables || !tables.length) return "ERR:No tables";
+                    var t = tables[idx || 0];
+                    if (fillMode === "overwrite") {
+                        var rc = t.GetRowsCount();
+                        for (var i = rc - 1; i >= 1; i--) t.RemoveRow(i);
+                    }
+                    for (var i = 0; i < rows.length; i++) {
+                        var row = t.AddRow();
+                        for (var j = 0; j < headers.length; j++) {
+                            var v = rows[i][headers[j]];
+                            if (v === null || v === undefined) v = "";
+                            var cell = row.GetCell(j);
+                            var el = cell.GetContent().GetElement(0);
+                            if (el) el.SetText(String(v));
+                        }
+                    }
+                    return "OK:" + rows.length;
+                }
+                return "ERR:Unsupported";
+            } catch (e) {
+                return "ERR:" + (e.message || String(e));
+            }
+        }, false, function(result) {
+            var success = result && result.indexOf("OK:") === 0;
+            var filled = success ? parseInt(result.split(":")[1]) : 0;
+            var error = success ? null : result;
+            reportResult(req.id, {success: success, filled: filled, error: error});
+        });
+    }
+
+    function reportResult(id, result) {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", API_BASE + "/result", true);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.send(JSON.stringify({id: id, success: result.success, error: result.error, filled: result.filled}));
+        } catch (e) {}
+    }
+})();
+</script>
+</body>
+</html>

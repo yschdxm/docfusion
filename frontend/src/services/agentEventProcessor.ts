@@ -250,6 +250,10 @@ export function processEvent(state: StepState, event: AgentEvent): AgentStep[] {
       break
     }
 
+    case 'open_editor':
+      // 打开编辑器事件，由上层处理
+      break
+
     case 'failed': {
       const fid = event.step_id || `step_fail_${Date.now()}`
       ensureStep(state, fid, {

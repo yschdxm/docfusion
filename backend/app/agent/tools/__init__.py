@@ -52,7 +52,7 @@ from .neo4j_query_tool import Neo4jQueryTool
 from .list_docs_tool import ListDocumentsTool
 from .fill_table_tool import FillTableTool, FillCellTool, FillRowTool, FillColumnTool, AutoFillSuggestionsTool
 from .get_table_structure_tool import GetTableStructureTool
-from .extract_from_docs_tool import ExtractFromDocsTool
+from .file_reader_tool import FileReaderTool
 from .document_edit_tools import (
     ReplaceTextTool,
     RewriteParagraphTool,
@@ -89,7 +89,7 @@ __all__ = [
     "FillColumnTool",
     "AutoFillSuggestionsTool",
     "GetTableStructureTool",
-    "ExtractFromDocsTool",
+    "FileReaderTool",
     "ReplaceTextTool",
     "RewriteParagraphTool",
     "InsertAfterTool",
@@ -137,7 +137,7 @@ def get_all_tools():
         FillColumnTool(),
         AutoFillSuggestionsTool(),
         GetTableStructureTool(),
-        ExtractFromDocsTool(),
+        FileReaderTool(),
         ReplaceTextTool(),
         RewriteParagraphTool(),
         InsertAfterTool(),

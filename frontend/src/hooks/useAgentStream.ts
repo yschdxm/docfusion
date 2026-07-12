@@ -15,15 +15,29 @@ interface UseAgentStreamOptions {
   onMessageComplete?: (sessionId: string, content: string, steps: AgentStep[], stats?: TaskStats) => void
 }
 
+export interface FillTablePluginData {
+  action: string
+  current_doc_id: string
+  file_type: string
+  headers: string[]
+  data: Record<string, unknown>[]
+  fill_mode: 'overwrite' | 'append'
+  target_table_index: number
+}
+
 interface UseAgentStreamReturn {
   isStreaming: boolean
   streamingContent: string
   currentSteps: AgentStep[]
   streamingStats: TaskStats | null
   streamingDuration: number
+  editorDocumentId: string | null
+  fillTablePluginData: FillTablePluginData | null
   startStream: (request: AgentStreamRequest, sessionId?: string) => void
   stopStream: () => Promise<void>
   reconnectToTask: (taskId: string) => void
+  clearEditorDocumentId: () => void
+  clearFillTablePluginData: () => void
 }
 
 export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamOptions): UseAgentStreamReturn {
@@ -32,6 +46,8 @@ export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamO
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
   const [streamingStats, setStreamingStats] = useState<TaskStats | null>(null)
   const [streamingDuration, setStreamingDuration] = useState(0)
+  const [editorDocumentId, setEditorDocumentId] = useState<string | null>(null)
+  const [fillTablePluginData, setFillTablePluginData] = useState<FillTablePluginData | null>(null)
 
   const contentRef = useRef('')
   const stepsRef = useRef<AgentStep[]>([])
@@ -124,6 +140,17 @@ export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamO
         statsRef.current = stats
         setStreamingStats(stats)
       }
+      // open_editor 事件：设置要打开的文档ID
+      if (event.event_type === 'open_editor' && event.data.document_id) {
+        setEditorDocumentId(event.data.document_id as string)
+      }
+      // tool_result 事件：检测 fill_table_via_plugin 数据
+      if (event.event_type === 'tool_result' && event.data.result) {
+        const result = event.data.result as Record<string, unknown>
+        if (result.action === 'fill_table_via_plugin' && result.current_doc_id) {
+          setFillTablePluginData(result as unknown as FillTablePluginData)
+        }
+      }
       // steps 始终更新（processor 已正确路由子 agent 事件到步骤的 children）
       stepsRef.current = steps
       setCurrentSteps([...steps])
@@ -205,14 +232,26 @@ export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamO
     agentStreamService.reconnectToTask(targetSessionId, taskId, buildCallbacks(targetSessionId))
   }, [startDurationTimer, buildCallbacks])
 
+  const clearEditorDocumentId = useCallback(() => {
+    setEditorDocumentId(null)
+  }, [])
+
+  const clearFillTablePluginData = useCallback(() => {
+    setFillTablePluginData(null)
+  }, [])
+
   return {
     isStreaming,
     streamingContent,
     currentSteps,
     streamingStats,
     streamingDuration,
+    editorDocumentId,
+    fillTablePluginData,
     startStream,
     stopStream,
     reconnectToTask,
+    clearEditorDocumentId,
+    clearFillTablePluginData,
   }
 }

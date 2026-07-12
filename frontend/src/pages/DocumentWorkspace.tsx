@@ -19,7 +19,7 @@ import api from '../services/api'
 import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
 import { useI18n } from '../hooks/useI18n'
 import DocumentPreviewModal from '../components/DocumentPreviewModal'
-import OnlyOfficeEditor from '../components/OnlyOfficeEditor'
+import OnlyOfficeEditor, { type OnlyOfficeEditorHandle } from '../components/OnlyOfficeEditor'
 import AISidebar from '../components/ai/AISidebar'
 import ResizeHandle from '../components/ai/ResizeHandle'
 
@@ -106,6 +106,24 @@ export default function DocumentWorkspace() {
   const SIDEBAR_MIN = 280
   const SIDEBAR_MAX = Math.floor(window.innerWidth * 0.4)
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT)
+
+  // 编辑器 ref 管理
+  const editorRefs = useRef<Map<string, OnlyOfficeEditorHandle>>(new Map())
+
+  const setEditorRef = useCallback((docId: string) => (ref: OnlyOfficeEditorHandle | null) => {
+    if (ref) {
+      editorRefs.current.set(docId, ref)
+    } else {
+      editorRefs.current.delete(docId)
+    }
+  }, [])
+
+  // 获取当前活跃文档的编辑器 ref
+  const getActiveEditorRef = useCallback((): OnlyOfficeEditorHandle | null => {
+    const activeDocId = tabs.find(t => t.id === activeTabId)?.documentId
+    if (!activeDocId) return null
+    return editorRefs.current.get(activeDocId) || null
+  }, [activeTabId, tabs])
 
   // 处理边栏拖动
   // delta > 0 表示向左拖动（增大边栏宽度），delta < 0 表示向右拖动（减小边栏宽度）
@@ -675,6 +693,29 @@ export default function DocumentWorkspace() {
   // 获取所有打开的文档标签页
   const documentTabs = tabs.filter((tab) => tab.type === 'document' && tab.documentId)
 
+  // 处理打开编辑器事件（填表完成后自动打开新文档）
+  const handleOpenEditor = useCallback((docId: string) => {
+    // 检查是否已经有这个文档的标签页
+    const existingTab = tabs.find(tab => tab.documentId === docId)
+    if (existingTab) {
+      setActiveTabId(existingTab.id)
+      return
+    }
+
+    // 创建新的标签页
+    const newTab: Tab = {
+      id: `doc-${docId}`,
+      title: tr('填表结果', 'Fill Result', '入力結果'),
+      type: 'document',
+      documentId: docId,
+    }
+    setTabs(prev => [...prev, newTab])
+    setActiveTabId(newTab.id)
+
+    // 刷新文档列表以显示新文档
+    fetchDocuments()
+  }, [tabs, fetchDocuments, tr])
+
   return (
     <div className="h-full flex flex-col bg-white rounded-xl shadow-sm overflow-hidden">
       {/* 顶部标签栏 */}
@@ -726,6 +767,7 @@ export default function DocumentWorkspace() {
                 className={`h-full absolute inset-0 ${activeTabId === tab.id ? '' : 'hidden'}`}
               >
                 <OnlyOfficeEditor
+                  ref={setEditorRef(tab.documentId!)}
                   documentId={tab.documentId!}
                   mode="edit"
                 />
@@ -745,6 +787,8 @@ export default function DocumentWorkspace() {
               <AISidebar
                 documentId={tabs.find(t => t.id === activeTabId)?.documentId}
                 documentName={tabs.find(t => t.id === activeTabId)?.title}
+                onOpenEditor={handleOpenEditor}
+                getEditorRef={getActiveEditorRef}
               />
             </div>
           </>

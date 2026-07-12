@@ -67,7 +67,7 @@ class StreamBridge:
                     break
                 event_count += 1
                 adapted = self._adapt_event(event)
-                logger.info(f"[StreamBridge] 转发事件 #{event_count}: type={event.event_type}, step_id={adapted.step_id}")
+                logger.debug(f"[StreamBridge] 转发事件 #{event_count}: type={event.event_type}, step_id={adapted.step_id}")
                 await self.parent_stream.emit(adapted)
             logger.info(f"[StreamBridge] 桥接完成，共转发 {event_count} 个事件")
         except asyncio.TimeoutError:
@@ -117,8 +117,19 @@ class DelegateAgentTool(BaseTool):
         """获取显示名称"""
         return AGENT_DISPLAY_NAMES.get(self.name, self.name)
 
+    @property
+    def timeout_ms(self) -> int:
+        """子Agent执行超时时间（毫秒），默认10分钟
+
+        子Agent的执行时间可能很长（特别是填表任务需要查询数据、提取信息、填写表格等），
+        因此需要设置一个较长的超时时间。
+        """
+        return 600000  # 10分钟
+
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
         """执行子Agent"""
+        import logging
+        logger = logging.getLogger(__name__)
 
         # 1. 创建独立的子Agent上下文（隔离）
         timestamp = datetime.utcnow().timestamp()
@@ -128,14 +139,24 @@ class DelegateAgentTool(BaseTool):
         # 只取最近的几条，避免子Agent被过多无关历史干扰
         recent_history = parent_history[-6:] if len(parent_history) > 6 else parent_history
 
+        # 从父级 context 中获取 current_doc_id
+        current_doc_id = context.metadata.get("current_doc_id") if context.metadata else None
+        logger.info(f"[Delegation] 父级 context.metadata: {context.metadata}")
+        logger.info(f"[Delegation] 获取到的 current_doc_id: {current_doc_id}")
+
         child_context = ToolContext(
             session_id=f"{context.session_id}_{self.name}_{timestamp}",
             user_id=context.user_id,
             file_ids=params.get("file_ids", context.file_ids),
-            template_id=params.get("template_id", context.template_id),
+            template_id=None,  # 移除 template_id
             conversation_history=recent_history,
-            metadata={"parent_session_id": context.session_id},
+            metadata={
+                "parent_session_id": context.session_id,
+                "current_doc_id": current_doc_id,  # 传递 current_doc_id
+            },
         )
+
+        logger.info(f"[Delegation] 子Agent context.metadata: {child_context.metadata}")
 
         # 2. 创建子Agent的流桥接
         parent_stream = self.parent_stream_provider() if self.parent_stream_provider else None
@@ -166,11 +187,12 @@ class DelegateAgentTool(BaseTool):
             result = await agent.run(
                 message=params.get("task_description", ""),
                 file_ids=child_context.file_ids,
-                template_id=child_context.template_id,
+                template_id=None,  # 移除 template_id
                 conversation_history=recent_history,
                 stream_manager=child_stream,
                 step_tracker=StepTracker(),
                 user_id=child_context.user_id,
+                current_doc_id=current_doc_id,
             )
 
             # 5. 等待桥接任务完成

@@ -94,6 +94,8 @@ interface DisplayMessage {
   isStreaming?: boolean
 }
 
+import type { OnlyOfficeEditorHandle, FillTableData } from '../OnlyOfficeEditor'
+
 interface AISidebarProps {
   /** 当前打开的文档ID */
   documentId?: string
@@ -101,9 +103,13 @@ interface AISidebarProps {
   documentName?: string
   /** 获取选中文本的回调 */
   onGetSelectedText?: () => Promise<string | null>
+  /** 当填表完成时，通知父组件打开编辑器 */
+  onOpenEditor?: (documentId: string) => void
+  /** 获取编辑器ref的回调 */
+  getEditorRef?: () => OnlyOfficeEditorHandle | null
 }
 
-export default function AISidebar({ documentId, documentName }: AISidebarProps) {
+export default function AISidebar({ documentId, documentName, onOpenEditor, getEditorRef }: AISidebarProps) {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
   const isDarkMode = useTheme() === 'dark'
@@ -157,9 +163,13 @@ export default function AISidebar({ documentId, documentName }: AISidebarProps) 
     currentSteps,
     streamingStats,
     streamingDuration,
+    editorDocumentId,
+    fillTablePluginData,
     startStream,
     stopStream,
     reconnectToTask,
+    clearEditorDocumentId,
+    clearFillTablePluginData,
   } = useAgentStream({
     sessionId: activeSessionId,
     onMessageComplete: handleMessageComplete,
@@ -169,6 +179,38 @@ export default function AISidebar({ documentId, documentName }: AISidebarProps) 
   useEffect(() => {
     if (isStreaming) setIsLoading(false)
   }, [isStreaming])
+
+  // 当收到 fill_table_via_plugin 数据时，调用编辑器插件填表
+  useEffect(() => {
+    if (fillTablePluginData && getEditorRef) {
+      const editorRef = getEditorRef()
+      if (editorRef) {
+        const fillData: FillTableData = {
+          headers: fillTablePluginData.headers,
+          data: fillTablePluginData.data as Record<string, any>[],
+          fill_mode: fillTablePluginData.fill_mode,
+          target_table_index: fillTablePluginData.target_table_index,
+          file_type: fillTablePluginData.file_type,
+        }
+        editorRef.fillTableViaPlugin(fillData).then((success) => {
+          if (success) {
+            toast(tr('填表完成', 'Fill complete', '入力完了'), { icon: '✅' })
+          } else {
+            toast(tr('填表失败', 'Fill failed', '入力失敗'), { icon: '❌' })
+          }
+        })
+        clearFillTablePluginData()
+      }
+    }
+  }, [fillTablePluginData, getEditorRef, clearFillTablePluginData, tr])
+
+  // 当收到 open_editor 事件时，通知父组件打开编辑器
+  useEffect(() => {
+    if (editorDocumentId && onOpenEditor) {
+      onOpenEditor(editorDocumentId)
+      clearEditorDocumentId()
+    }
+  }, [editorDocumentId, onOpenEditor, clearEditorDocumentId])
 
   // 构建显示用的消息列表：store 消息 + 流式中的虚拟消息
   const displayMessages: DisplayMessage[] = useMemo(() => {
@@ -297,6 +339,7 @@ export default function AISidebar({ documentId, documentName }: AISidebarProps) 
       message: userMessage,
       file_ids: documentId ? [documentId] : [],
       conversation_id: currentSessionId,
+      current_doc_id: documentId || null,
     }, currentSessionId)
   }
 

@@ -66,12 +66,12 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 1. **PostgreSQL (query_pg_database)** - xlsx结构化数据，最准确
 2. **Neo4j (query_knowledge_graph)** - PG无结果时使用
 3. **RAG检索 (rag_search)** - 非结构化文本补充
-4. **文档提取 (extract_from_documents)** - 最后手段
+4. **文件读取 (read_file)** - 直接读取文档内容
 
 ### 对于 docx/md/txt 源文档：
 1. **Neo4j (query_knowledge_graph)** - 实体关系数据，必须优先使用
 2. **RAG检索 (rag_search)** - 文本片段补充
-3. **文档提取 (extract_from_documents)** - 最后手段
+3. **文件读取 (read_file)** - 直接读取文档内容
 4. **注意**: 这些文档在PG中没有数据，不要尝试PG查询
 
 ## 查询失败处理策略（根据文档类型）
@@ -88,7 +88,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 
 ## 填表任务完整流程（重要）
 
-当用户需要填写表格时（消息包含"填表"、"填写"、"fill"或提供了template_id）：
+当用户需要填写表格时（消息包含"填表"、"填写"、"fill"）：
 
 ### 第一步：判断源文档类型并选择数据源
 1. 检查源文档 file_ids 对应的文档类型
@@ -105,9 +105,9 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 
 **重要：不要搬运数据！不要把 query_pg_database 返回的 records 数组原样传给 fill_table 的 data 参数。**
 
-#### 源文档和模板都是 xlsx（必须使用 source_query 自动模式）：
+#### 源文档和当前文档都是 xlsx（必须使用 source_query 自动模式）：
 
-**强制要求**：当源文档和模板都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
+**强制要求**：当源文档和当前文档都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
 
 **单次调用流程：**
 ```
@@ -117,7 +117,7 @@ fill_table(
         "query": "描述需要什么数据",
         "fetch_all": true  # 关键：自动获取全部数据，不遗漏
     },
-    template_id=模板ID,
+    current_doc_id="当前打开的文档ID",
     fill_mode="overwrite"
 )
 ```
@@ -140,22 +140,21 @@ fill_table(
 # 表格0
 fill_table(
     source_query={"doc_ids": [...], "query": "查询表格0所需数据", "fetch_all": true},
-    template_id=模板ID,
+    current_doc_id="当前打开的文档ID",
     target_table_index=0,
     fill_mode="overwrite"
 )
 
-# 表格1（复用同一个文件）
+# 表格1（同一个文档）
 fill_table(
     source_query={"doc_ids": [...], "query": "查询表格1所需数据", "fetch_all": true},
-    template_id=模板ID,
-    output_doc_id=上一步返回的output_file_id,  # 关键：继续填写同一个文件
+    current_doc_id="当前打开的文档ID",
     target_table_index=1,
-    fill_mode="overwrite"  # 根据表格1当前状态判断
+    fill_mode="overwrite"
 )
 ```
 
-#### 其他情况（源文档或模板不是 xlsx）：
+#### 其他情况（源文档或当前文档不是 xlsx）：
 1. 使用 query_pg_database / query_knowledge_graph 查询数据
 2. 将查询结果作为 data 参数传给 fill_table
 3. 必要时使用 rag_search 补充
@@ -170,12 +169,12 @@ fill_table(
    - 更换查询关键词
    - 扩大查询范围
 
-3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
+3. 使用 fill_table(current_doc_id="当前打开的文档ID", source_query=..., fill_mode="append") 追加数据
 
 **重要原则**：
-- ✅ 先用可用数据生成文件，再询问是否需要补充
-- ❌ 禁止因数据可能不完整而延迟生成文件
-- ❌ 禁止生成文件前征求用户确认
+- ✅ 先用可用数据填写文档，再询问是否需要补充
+- ❌ 禁止因数据可能不完整而延迟填写
+- ❌ 禁止填写前征求用户确认
 
 ### 第五步：报告结果
 
@@ -185,14 +184,13 @@ fill_table(
 2. **预期行数**：根据文档标题判断应该有多少行
 3. **完整度百分比**：填写比例
 4. **数据来源说明**：数据来自哪些文档
-5. **下载链接（必须输出可点击链接）**：
-   - 使用 fill_table 返回的 `download_url` 字段
-   - 格式：`[点击下载填写完成的文档](download_url)`
-   - **必须使用 Markdown 链接格式，确保用户可以点击下载**
+5. **编辑完成通知**：
+   - 告知用户文档已直接修改
+   - 提醒用户保存时的行为（直接保存或创建副本）
 
 ## 多表格文档填写策略
 
-当模板文档包含多个表格时：
+当文档包含多个表格时：
 
 ### 识别表格用途
 1. 使用 get_table_structure 后，分析每个表格的 context.preceding_text 字段
@@ -231,11 +229,9 @@ fill_mode 是针对单个表格的操作，不是文档级别的：
 3. 填写表格0：
    - fill_mode="overwrite"（清空后填入）
    - target_table_index=0
-   - 创建新文件
 
 4. 填写表格1：
    - 检查表格1状态：如果只有表头/空行 → 用 overwrite；如果已有数据 → 用 append
-   - output_doc_id=上一步返回的ID（继续填写同一个文件）
    - target_table_index=1（指定第二个表格）
 
 5. 后续表格同理，每个独立判断 fill_mode
@@ -250,33 +246,33 @@ fill_mode 是针对单个表格的操作，不是文档级别的：
 ```
 用户: "填写空气质量监测数据"
 
-↓ 1. get_table_structure(template_id)
+↓ 1. get_table_structure(current_doc_id)
    → 获取表头: [城市, 区, 站点, AQI, PM10, PM2.5]
 
 ↓ 2. query_pg_database("查询环境空气质量监测数据")
    → 返回100条记录
 
-↓ 3. fill_table(fill_mode="overwrite", data=100条)
-   → 创建新文件，返回 output_file_id=doc-001
-   → 已填100行
+↓ 3. fill_table(current_doc_id="当前打开的文档ID", fill_mode="overwrite", data=100条)
+   → 直接修改当前文档，已填100行
 
 ↓ 4. 评估：数据可能还有更多，继续查询
 
 ↓ 5. query_pg_database("查询更多空气质量监测数据")
    → 返回100条记录
 
-↓ 6. fill_table(fill_mode="append", output_doc_id=doc-001, data=100条)
-   → 追加到已有文件
+↓ 6. fill_table(current_doc_id="当前打开的文档ID", fill_mode="append", data=100条)
+   → 追加到当前文档
    → 总计200行
 
 ↓ 7. 重复直到数据完整...
 
-↓ 8. 报告用户："已完成表格填写，共填写500行数据，下载链接: xxx"
+↓ 8. 报告用户："已完成表格填写，共填写500行数据，文档已直接修改。"
 ```
 
 ## 重要提醒
-- 填表任务必须使用 fill_table 工具生成可下载的文档
-- 增量填表时记住 output_file_id，后续追加需要传入 output_doc_id
+- 所有填表操作必须在当前打开的文档上进行，不创建新文件
+- 必须使用 current_doc_id 参数
+- 如果 current_doc_id 未提供，向用户询问
 - 只调用确实需要的工具
 - 参数必须准确且完整
 - 根据工具返回结果调整后续策略
@@ -341,7 +337,8 @@ class AgentRuntime:
         conversation_history: List[Dict[str, str]] = None,
         stream_manager: Optional[StreamManager] = None,
         step_tracker: Optional[StepTracker] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        current_doc_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """运行Agent（非流式）"""
         context = ToolContext(
@@ -349,39 +346,18 @@ class AgentRuntime:
             user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
-            conversation_history=conversation_history or []
+            conversation_history=conversation_history or [],
+            metadata={"current_doc_id": current_doc_id} if current_doc_id else {}
         )
 
         logger.info("=" * 60)
         logger.info("[AgentRuntime.run] 任务开始")
         logger.info(f"[AgentRuntime.run] Session: {context.session_id}")
         logger.info(f"[AgentRuntime.run] 用户输入: {message[:100]}..." if len(message) > 100 else f"[AgentRuntime.run] 用户输入: {message}")
-        logger.info(f"[AgentRuntime.run] file_ids={file_ids}, template_id={template_id}")
+        logger.info(f"[AgentRuntime.run] file_ids={file_ids}")
         logger.info("=" * 60)
 
-        # 检查是否适合快速模式
-        from app.agent.core.adaptive_mode_selector import adaptive_mode_selector
         stream = stream_manager or StreamManager()
-
-        try:
-            result = await adaptive_mode_selector.select_and_execute(
-                user_message=message,
-                file_ids=file_ids,
-                template_id=template_id,
-                context=context,
-                stream_manager=stream
-            )
-
-            # 如果快速模式成功，直接返回
-            if result.get("success"):
-                logger.info(f"[AgentRuntime.run] 快速模式完成 | 耗时: {result.get('duration_ms', 0)}ms")
-                return result
-
-            # 如果快速模式失败，降级到普通模式
-            logger.info("[AgentRuntime.run] 快速模式失败，降级到普通模式")
-
-        except Exception as e:
-            logger.warning(f"[AgentRuntime.run] 快速模式异常: {e}，降级到普通模式")
 
         # 添加用户消息到上下文管理器
         self.context_manager.add_message(Message(
@@ -423,6 +399,7 @@ class AgentRuntime:
         user_id: Optional[str] = None,
         user_selected_model: Optional[str] = None,
         db=None,
+        current_doc_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
@@ -432,6 +409,7 @@ class AgentRuntime:
             stream_manager: 外部传入的StreamManager（用于断线重连场景）
             user_selected_model: 用户选择的模型名称
             db: 数据库会话
+            current_doc_id: 当前在OnlyOffice中打开的文档ID
         """
         stream = stream_manager or StreamManager()
         if on_stream_created:
@@ -443,7 +421,8 @@ class AgentRuntime:
             user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
-            conversation_history=conversation_history or []
+            conversation_history=conversation_history or [],
+            metadata={"current_doc_id": current_doc_id} if current_doc_id else {}
         )
 
         logger.info("=" * 60)
@@ -953,8 +932,6 @@ class AgentRuntime:
 
         # 查询文档详情
         all_file_ids = list(context.file_ids)
-        if context.template_id:
-            all_file_ids.append(context.template_id)
 
         doc_details = {}
         if all_file_ids:
@@ -992,25 +969,23 @@ class AgentRuntime:
                     context_parts.append(f"- ID: {fid}")
             context_parts.append("\n这些文档包含用户想要处理的数据。请根据需要查询这些文档的内容。")
 
-        # 添加模板文档信息
-        if context.template_id:
-            context_parts.append("\n## 用户已选择的模板")
-            doc = doc_details.get(context.template_id)
+        # 添加当前打开文档的信息
+        current_doc_id = context.metadata.get("current_doc_id")
+        if current_doc_id:
+            context_parts.append("\n## 当前打开的文档")
+            doc = doc_details.get(current_doc_id)
             if doc:
-                context_parts.append(f"- ID: {context.template_id}")
+                context_parts.append(f"- ID: {current_doc_id}")
                 context_parts.append(f"  文件名: {doc.original_filename}")
                 context_parts.append(f"  类型: {doc.file_type}")
             else:
-                context_parts.append(f"- ID: {context.template_id}")
-            context_parts.append("\n这是用户提供的表格模板，需要填入数据。")
+                context_parts.append(f"- ID: {current_doc_id}")
+            context_parts.append("\n所有填表和编辑操作都会直接在这个文档上进行。")
 
         # 添加文件使用提示
-        if context.file_ids or context.template_id:
+        if context.file_ids:
             context_parts.append("\n## 文件使用提示")
-            if context.file_ids:
-                context_parts.append("- 源文档是用户指定的数据来源，必须优先使用这些文档")
-                context_parts.append("- 不要询问用户选择了什么文档，直接使用上述文件信息")
-            if context.template_id:
-                context_parts.append("- 填表时必须使用指定的template_id作为输出目标")
+            context_parts.append("- 源文档是用户指定的数据来源，必须优先使用这些文档")
+            context_parts.append("- 不要询问用户选择了什么文档，直接使用上述文件信息")
 
         return "\n".join(context_parts) if context_parts else ""

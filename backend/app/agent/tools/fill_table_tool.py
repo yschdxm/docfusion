@@ -9,18 +9,11 @@
 
 from typing import Any, Dict, List
 import os
-import shutil
-import uuid
-from pathlib import Path
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult, ToolCategory, PermissionLevel
 from app.db.postgres import async_session
-from app.models.document import Document, TemplateUsageEvent
+from app.models.document import Document
 from sqlalchemy import select
-from app.core.config import get_settings
-
-# 获取settings
-settings = get_settings()
 
 
 class FillTableTool(BaseTool):
@@ -105,12 +98,17 @@ class FillTableTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """使用提供的数据填写表格模板。支持增量填表和多表格文档。
+        return """在当前打开的文档上填写表格数据。支持增量填表和多表格文档。
 
 使用场景：
-- 首次填写表格（基于模板创建新文件）
-- 增量追加数据到已生成的输出文件
-- 将提取的数据填入模板（支持多表格Word文档）
+- 在当前打开的文档上填写表格
+- 增量追加数据到当前文档
+- 将提取的数据填入当前文档（支持多表格Word文档）
+
+重要规则：
+- 所有填表操作都在当前打开的文档上进行，不创建新文件
+- 必须提供 current_doc_id 参数
+- 如果 current_doc_id 未提供，填表会失败
 
 支持格式：
 - Excel (.xlsx)
@@ -146,17 +144,14 @@ fill_mode 详解（针对指定表格的操作）：
 3. 填写表格0：
    - fill_mode="overwrite"（因为表格通常只有表头或空行）
    - target_table_index=0
-   - 这会创建新文件
 4. 填写表格1：
    - 检查表格1状态：如果只有表头/空行 → 用 overwrite；如果已有有效数据 → 用 append
-   - output_doc_id=上一步返回的ID（必须提供，表示继续填写同一个文件）
    - target_table_index=1（指定填写第二个表格）
 5. 后续表格同理，每个独立判断 fill_mode
 
 注意：
 - 数据格式必须是数组，每个元素是一行的数据
 - 字段名必须与表头匹配
-- 首次填写后output_file_id会返回在结果中，后续追加需要传入output_doc_id
 - 本工具只会填写文档中已有的表格，不会创建新表格
 - **多表格文档必须指定target_table_index，否则数据会填错位**"""
 
@@ -165,13 +160,9 @@ fill_mode 详解（针对指定表格的操作）：
         return {
             "type": "object",
             "properties": {
-                "template_id": {
+                "current_doc_id": {
                     "type": "string",
-                    "description": "模板文档ID（首次填写时必需，增量追加时也需要提供）"
-                },
-                "output_doc_id": {
-                    "type": "string",
-                    "description": "已生成的输出文档ID（增量追加时提供，首次填写不传）"
+                    "description": "当前在OnlyOffice中打开的文档ID（必需）"
                 },
                 "data": {
                     "type": "array",
@@ -223,7 +214,7 @@ fill_mode 详解（针对指定表格的操作）：
                     "description": "目标表格索引（从0开始），用于多表格文档。如果不指定，自动选择第一个合适的表格"
                 }
             },
-            "required": []
+            "required": ["current_doc_id"]
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
@@ -232,34 +223,36 @@ fill_mode 详解（针对指定表格的操作）：
         logger = logging.getLogger(__name__)
 
         try:
-            template_id = params.get("template_id", "")
-            output_doc_id = params.get("output_doc_id", "")
+            current_doc_id = params.get("current_doc_id", "") or (context.metadata.get("current_doc_id", "") if context.metadata else "")
             data = params.get("data", [])
             source_query = params.get("source_query")
             fill_mode = params.get("fill_mode", "overwrite")
             target_table_index = params.get("target_table_index")
 
-            # UUID校验（仅在需要时校验）
-            if template_id:
-                uuid_error = BaseTool.validate_uuid(template_id, "template_id")
+            # UUID校验
+            if current_doc_id:
+                uuid_error = BaseTool.validate_uuid(current_doc_id, "current_doc_id")
                 if uuid_error:
                     return ToolResult(success=False, error=uuid_error)
-            if output_doc_id:
-                uuid_error = BaseTool.validate_uuid(output_doc_id, "output_doc_id")
-                if uuid_error:
-                    return ToolResult(success=False, error=uuid_error)
+
+            # 必须提供 current_doc_id
+            if not current_doc_id:
+                return ToolResult(
+                    success=False,
+                    error="必须提供 current_doc_id，所有填表操作必须在当前打开的文档上进行"
+                )
 
             # source_query 模式：自动查询数据并填充
             if source_query and not data:
                 # 检查是否已确认（LLM 已审核过数据摘要）
                 if source_query.get("data_confirmed"):
                     return await self._execute_confirmed_source_query(
-                        source_query, template_id, output_doc_id,
+                        source_query, current_doc_id,
                         fill_mode, target_table_index, context, logger
                     )
                 else:
                     return await self._execute_with_source_query(
-                        source_query, template_id, output_doc_id,
+                        source_query, current_doc_id,
                         fill_mode, target_table_index, context, logger
                     )
 
@@ -269,27 +262,11 @@ fill_mode 详解（针对指定表格的操作）：
                     error="填表数据不能为空"
                 )
 
-            # 判断是新建文件还是操作已有文件
-            # 只要有 output_doc_id，就是操作已有文件（不管 fill_mode 是 overwrite 还是 append）
-            is_update_existing = bool(output_doc_id)
-
-            if not is_update_existing and not template_id:
-                return ToolResult(
-                    success=False,
-                    error="首次填写必须提供template_id"
-                )
-
+            # 直接修改当前打开的文档
             async with async_session() as db:
-                if is_update_existing:
-                    # 操作已有输出文件（可能是覆盖某个表格，也可能是追加）
-                    return await self._update_existing_file(
-                        db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
-                    )
-                else:
-                    # 首次填写，基于模板创建新文件
-                    return await self._create_new_file(
-                        db, template_id, data, fill_mode, target_table_index, logger, context
-                    )
+                return await self._fill_current_document(
+                    db, current_doc_id, data, fill_mode, target_table_index, logger, context
+                )
 
         except Exception as e:
             logger.exception(f"表格填写失败: {e}")
@@ -299,10 +276,10 @@ fill_mode 详解（针对指定表格的操作）：
             )
 
     async def _execute_with_source_query(
-        self, source_query: Dict, template_id: str, output_doc_id: str,
+        self, source_query: Dict, current_doc_id: str,
         fill_mode: str, target_table_index: int, context: ToolContext, logger
     ) -> ToolResult:
-        """source_query 模式：自动查询源数据并填入模板。
+        """source_query 模式：自动查询源数据并填入当前文档。
 
         LLM 不需要搬运数据，只需传查询描述。
         工具内部自动完成：查询 → 列名匹配 → 填充。
@@ -314,8 +291,8 @@ fill_mode 详解（针对指定表格的操作）：
 
         if not sq_query:
             return ToolResult(success=False, error="source_query.query 不能为空")
-        if not template_id:
-            return ToolResult(success=False, error="source_query 模式下必须提供 template_id")
+        if not current_doc_id:
+            return ToolResult(success=False, error="source_query 模式下必须提供 current_doc_id")
 
         # 检查源文档类型：source_query 自动模式仅适用于 xlsx 源文档
         if sq_doc_ids:
@@ -331,20 +308,20 @@ fill_mode 详解（针对指定表格的操作）：
                         error=(
                             f"source_query 自动模式仅适用于xlsx源文档。"
                             f"当前源文档包含非xlsx格式: {', '.join(non_xlsx)}。"
-                            f"对于非xlsx文档，请先使用 extract_from_documents 或 rag_search 提取数据，"
+                            f"对于非xlsx文档，请先使用 read_file 或 rag_search 提取数据，"
                             f"再通过 data 参数传入 fill_table。"
                         )
                     )
 
-        # 1. 获取模板表头
+        # 1. 获取模板表头（使用当前打开的文档）
         async with async_session() as db:
             result = await db.execute(
-                select(Document).where(Document.id == template_id)
+                select(Document).where(Document.id == current_doc_id)
             )
             template_doc = result.scalar_one_or_none()
 
         if not template_doc:
-            return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
+            return ToolResult(success=False, error=f"当前文档不存在: {current_doc_id}")
 
         # 获取模板表头
         template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
@@ -409,7 +386,7 @@ fill_mode 详解（针对指定表格的操作）：
                 ]
 
         # 3. 缓存数据供确认阶段使用
-        cache_key = f"fill_table_cache_{template_id}_{hash(sq_query)}_{target_table_index or 0}"
+        cache_key = f"fill_table_cache_{current_doc_id}_{hash(sq_query)}_{target_table_index or 0}"
         self._set_cached_data(cache_key, sq_query, source_records, template_headers, sq_doc_ids)
         # 同时存入 context.metadata（如果 context 可用）
         if context:
@@ -431,7 +408,7 @@ fill_mode 详解（针对指定表格的操作）：
         )
 
     async def _execute_confirmed_source_query(
-        self, source_query: Dict, template_id: str, output_doc_id: str,
+        self, source_query: Dict, current_doc_id: str,
         fill_mode: str, target_table_index: int, context: ToolContext, logger
     ) -> ToolResult:
         """source_query 确认模式：LLM 已审核过数据摘要，执行实际填入。"""
@@ -443,20 +420,20 @@ fill_mode 详解（针对指定表格的操作）：
         if not sq_query:
             return ToolResult(success=False, error="source_query.query 不能为空")
 
-        # 1. 获取模板表头
+        # 1. 获取模板表头（使用当前打开的文档）
         async with async_session() as db:
-            result = await db.execute(select(Document).where(Document.id == template_id))
+            result = await db.execute(select(Document).where(Document.id == current_doc_id))
             template_doc = result.scalar_one_or_none()
 
         if not template_doc:
-            return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
+            return ToolResult(success=False, error=f"当前文档不存在: {current_doc_id}")
 
         template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
         if not template_headers:
             return ToolResult(success=False, error="无法获取模板表头")
 
         # 2. 尝试从缓存获取数据（优先使用缓存，避免重复查询）
-        cache_key = f"fill_table_cache_{template_id}_{hash(sq_query)}_{target_table_index or 0}"
+        cache_key = f"fill_table_cache_{current_doc_id}_{hash(sq_query)}_{target_table_index or 0}"
 
         # 首先尝试从 context.metadata 获取（同一会话）
         cached = context.metadata.get(cache_key) if context else None
@@ -520,23 +497,17 @@ fill_mode 详解（针对指定表格的操作）：
                     for record in source_records
                 ]
 
-        # 3. 填入
+        # 3. 填入（直接修改当前文档）
         if fetch_all:
             data = source_records  # fetch_all 模式不截断
         else:
             data = source_records[:sq_max_rows]
         logger.info(f"[FillTableTool][source_query-confirmed] 填入 {len(data)} 行数据 (fetch_all={fetch_all}, total={len(source_records)})")
 
-        if output_doc_id:
-            async with async_session() as db:
-                return await self._update_existing_file(
-                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
-                )
-        else:
-            async with async_session() as db:
-                return await self._create_new_file(
-                    db, template_id, data, fill_mode, target_table_index, logger, context
-                )
+        async with async_session() as db:
+            return await self._fill_current_document(
+                db, current_doc_id, data, fill_mode, target_table_index, logger, context
+            )
 
     def _build_data_summary(self, records: List[Dict], template_headers: List[str]) -> str:
         """构建数据摘要：前5行 + 中间3行 + 末尾2行 + 列名 + 行数 + 数据质量统计"""
@@ -684,175 +655,62 @@ fill_mode 详解（针对指定表格的操作）：
                         for i, cell in enumerate(table.rows[0].cells)]
         return []
 
-    async def _create_new_file(
-        self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
+    async def _fill_current_document(
+        self, db, current_doc_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
     ) -> ToolResult:
-        """基于模板创建新输出文件"""
-        # 查询模板文档
+        """返回填表数据，由前端通过 OnlyOffice 插件实时写入编辑器（不修改文件）
+
+        Args:
+            db: 数据库会话
+            current_doc_id: 当前打开的文档 ID
+            data: 填表数据
+            fill_mode: 填写模式（overwrite/append）
+            target_table_index: 目标表格索引
+            logger: 日志记录器
+            context: 工具上下文
+
+        Returns:
+            ToolResult
+        """
+        # 查询文档
         result = await db.execute(
-            select(Document).where(Document.id == template_id)
+            select(Document).where(Document.id == current_doc_id)
         )
-        template_doc = result.scalar_one_or_none()
+        doc = result.scalar_one_or_none()
 
-        if not template_doc:
+        if not doc:
             return ToolResult(
                 success=False,
-                error=f"模板文档不存在: {template_id}"
+                error=f"文档不存在: {current_doc_id}"
             )
 
-        file_path = template_doc.file_path
-        file_type = template_doc.file_type
-
-        # 创建输出文件
-        upload_dir = Path(settings.UPLOAD_DIR)
-        output_dir = upload_dir / "outputs"
-        output_dir.mkdir(exist_ok=True)
-
-        output_filename = f"filled_{uuid.uuid4().hex[:8]}_{template_doc.original_filename}"
-        output_path = output_dir / output_filename
-
-        # 复制模板到输出位置
-        shutil.copy2(file_path, output_path)
-
-        # 根据文件类型填写
-        if file_type == "xlsx":
-            success = await self._fill_excel(output_path, data, fill_mode)
-        elif file_type == "docx":
-            success = await self._fill_word(output_path, data, fill_mode, target_table_index)
-        else:
+        # 获取表头
+        template_headers = self._get_template_headers(doc.file_path, doc.file_type, target_table_index)
+        if not template_headers:
             return ToolResult(
                 success=False,
-                error=f"不支持的文件格式: {file_type}"
+                error="无法获取表头"
             )
 
-        if not success:
-            return ToolResult(
-                success=False,
-                error="表格填写失败"
-            )
-
-        # 创建输出文档记录
-        output_doc = Document(
-            filename=output_filename,
-            original_filename=output_filename,
-            file_path=str(output_path),
-            file_type=file_type,
-            doc_category="output",
-            status="completed",
-            file_size=os.path.getsize(output_path),
-            user_id=context.user_id
-        )
-        db.add(output_doc)
-        await db.commit()
-        await db.refresh(output_doc)
-
-        # 记录模板使用事件
-        usage_event = TemplateUsageEvent(
-            user_id=context.user_id,
-            template_id=template_id,
-            template_name=template_doc.original_filename,
-            source_file_count=len(context.file_ids) if context and context.file_ids else 0,
-            output_file_id=str(output_doc.id),
-        )
-        db.add(usage_event)
-        await db.commit()
-
-        logger.info(f"[FillTableTool] 创建新文件成功: {output_filename}, 填写{len(data)}行")
+        logger.info(f"[FillTableTool] 返回填表数据供插件调用: {current_doc_id}, {len(data)}行, {doc.file_type}")
 
         return ToolResult(
             success=True,
             data={
+                "action": "fill_table_via_plugin",
                 "filled_rows": len(data),
                 "total_rows": len(data),
-                "output_file_id": str(output_doc.id),
-                "output_filename": output_filename,
-                "download_url": f"/api/v1/documents/{output_doc.id}/download"
+                "current_doc_id": current_doc_id,
+                "file_type": doc.file_type,
+                "headers": template_headers,
+                "data": data,
+                "fill_mode": fill_mode,
+                "target_table_index": target_table_index or 0,
+                "message": f"✅ 已完成填表，共填写 {len(data)} 行数据。",
             },
             metadata={
-                "template_id": template_id,
                 "fill_mode": fill_mode,
-                "is_new_file": True
-            }
-        )
-
-    async def _update_existing_file(
-        self, db, output_doc_id: str, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
-    ) -> ToolResult:
-        """更新已有输出文件（覆盖或追加指定表格）"""
-        # 查询输出文档
-        result = await db.execute(
-            select(Document).where(Document.id == output_doc_id)
-        )
-        output_doc = result.scalar_one_or_none()
-
-        if not output_doc:
-            return ToolResult(
-                success=False,
-                error=f"输出文档不存在: {output_doc_id}"
-            )
-
-        file_path = Path(output_doc.file_path)
-        file_type = output_doc.file_type
-
-        if not file_path.exists():
-            return ToolResult(
-                success=False,
-                error=f"输出文件不存在: {file_path}"
-            )
-
-        # 根据 fill_mode 更新数据
-        if file_type == "xlsx":
-            success = await self._fill_excel(file_path, data, fill_mode)
-        elif file_type == "docx":
-            success = await self._fill_word(file_path, data, fill_mode, target_table_index)
-        else:
-            return ToolResult(
-                success=False,
-                error=f"不支持的文件格式: {file_type}"
-            )
-
-        if not success:
-            return ToolResult(
-                success=False,
-                error="表格更新失败"
-            )
-
-        # 更新文件大小
-        output_doc.file_size = os.path.getsize(file_path)
-        await db.commit()
-
-        # 记录模板使用事件
-        if template_id:
-            template_name = template_id  # fallback
-            tpl_result = await db.execute(select(Document).where(Document.id == template_id))
-            tpl_doc = tpl_result.scalar_one_or_none()
-            if tpl_doc:
-                template_name = tpl_doc.original_filename
-            usage_event = TemplateUsageEvent(
-                user_id=context.user_id if context else None,
-                template_id=template_id,
-                template_name=template_name,
-                source_file_count=len(context.file_ids) if context and context.file_ids else 0,
-                output_file_id=output_doc_id,
-            )
-            db.add(usage_event)
-            await db.commit()
-
-        logger.info(f"[FillTableTool] 更新文件成功: {fill_mode}模式，{len(data)}行到 {output_doc.filename}")
-
-        return ToolResult(
-            success=True,
-            data={
-                "filled_rows": len(data),
-                "output_file_id": str(output_doc.id),
-                "output_filename": output_doc.original_filename,
-                "download_url": f"/api/v1/documents/{output_doc.id}/download"
-            },
-            metadata={
-                "output_doc_id": output_doc_id,
-                "template_id": template_id,
-                "fill_mode": fill_mode,
-                "is_update_existing": True
+                "is_current_doc_update": True,
             }
         )
 

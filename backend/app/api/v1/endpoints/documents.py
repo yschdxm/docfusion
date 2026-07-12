@@ -44,6 +44,64 @@ def _user_doc_filter(user_id: UUID):
     return or_(Document.user_id == user_id, Document.is_shared == True)
 
 
+async def _create_document_copy(original_doc: Document, content: bytes, db: AsyncSession) -> Document:
+    """
+    基于原始文档创建可编辑副本
+
+    Args:
+        original_doc: 原始文档记录
+        content: 文件内容
+        db: 数据库会话
+
+    Returns:
+        新创建的文档记录
+    """
+    import uuid
+    from datetime import datetime
+    from pathlib import Path
+
+    # 生成新文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name_parts = original_doc.original_filename.rsplit('.', 1)
+    if len(name_parts) == 2:
+        new_filename = f"{name_parts[0]}_{timestamp}.{name_parts[1]}"
+    else:
+        new_filename = f"{original_doc.original_filename}_{timestamp}"
+
+    # 复制文件到 outputs 目录
+    upload_dir = Path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads")
+    output_dir = upload_dir / "outputs"
+    output_dir.mkdir(exist_ok=True)
+
+    new_path = output_dir / f"{uuid.uuid4().hex[:8]}_{new_filename}"
+    async with aiofiles.open(new_path, "wb") as f:
+        await f.write(content)
+
+    # 创建数据库记录
+    new_doc = Document(
+        filename=new_path.name,
+        original_filename=new_filename,
+        file_type=original_doc.file_type,
+        doc_category="output",
+        status="ready",
+        file_size=len(content),
+        file_path=str(new_path),
+        user_id=original_doc.user_id,
+        is_shared=False,
+        metadata_info={
+            "source_document_id": str(original_doc.id),
+            "source_filename": original_doc.original_filename,
+            "created_from": "onlyoffice_copy"
+        }
+    )
+    db.add(new_doc)
+    await db.commit()
+    await db.refresh(new_doc)
+
+    logger.info(f"创建文档副本成功: {original_doc.original_filename} -> {new_filename}")
+    return new_doc
+
+
 async def _get_user_document(document_id: UUID, user_id: UUID, db: AsyncSession) -> Document:
     """获取文档并确保属于当前用户（或为无主数据）"""
     result = await db.execute(
@@ -138,6 +196,34 @@ def _resolve_document_path(file_path: str | None) -> str | None:
 def _build_onlyoffice_document_key(doc: Document) -> str:
     updated = int(doc.updated_at.timestamp()) if doc.updated_at else int(datetime.utcnow().timestamp())
     return f"{doc.id}-{doc.file_size or 0}-{updated}"
+
+
+@router.post("/{document_id}/refresh-key")
+async def refresh_document_key(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """刷新文档的 OnlyOffice key，强制编辑器重新加载
+
+    用于文件被外部修改后，让 OnlyOffice 编辑器重新加载文档。
+    """
+    is_admin = current_user.role in ('admin', 'super_admin')
+    doc = await _get_document_as_admin(document_id, current_user.id, db, is_admin)
+
+    # 更新 updated_at 时间戳，使 key 变化
+    from datetime import datetime
+    doc.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(doc)
+
+    new_key = _build_onlyoffice_document_key(doc)
+
+    return {
+        "document_id": str(document_id),
+        "new_key": new_key,
+        "message": "Document key refreshed. Please close and reopen the document in editor."
+    }
 
 
 def _onlyoffice_signing_secret() -> str:
@@ -825,13 +911,21 @@ async def onlyoffice_callback(
             response = await client.get(download_url)
             response.raise_for_status()
 
-        async with aiofiles.open(doc.file_path, "wb") as output_file:
-            await output_file.write(response.content)
+        # 检查是否为原文档（source/template），如果是则创建副本
+        if doc.doc_category in ["source", "template"]:
+            # 创建副本而不是覆写原文档
+            new_doc = await _create_document_copy(doc, response.content, db)
+            logger.info(f"原文档 {document_id} 保存为副本 {new_doc.id}")
+            return {"error": 0, "status": "saved_as_copy", "new_document_id": str(new_doc.id)}
+        else:
+            # output 类型文档可以直接更新
+            async with aiofiles.open(doc.file_path, "wb") as output_file:
+                await output_file.write(response.content)
 
-        doc.file_size = len(response.content)
-        doc.status = "updated"
-        await db.commit()
-        return {"error": 0}
+            doc.file_size = len(response.content)
+            doc.status = "updated"
+            await db.commit()
+            return {"error": 0}
     except Exception as exc:
         logger.error("OnlyOffice callback error for %s: %s", document_id, exc)
         await db.rollback()

@@ -544,10 +544,10 @@ class AgentStreamRequest(BaseModel):
     """流式Agent请求"""
     message: str = Field("", description="用户消息")
     file_ids: List[str] = Field(default_factory=list, description="源文档ID列表")
-    template_id: Optional[str] = Field(None, description="模板文档ID")
     conversation_id: Optional[str] = Field(None, description="对话ID")
     task_type: str = Field("auto", description="任务类型: auto/fill_table/query/operation")
     task_id: Optional[str] = Field(None, description="重连时携带的任务ID")
+    current_doc_id: Optional[str] = Field(None, description="当前在OnlyOffice中打开的文档ID")
 
 
 @router.post("/stream")
@@ -603,7 +603,7 @@ async def agent_stream(
     logger.info("[API /agent/stream] 收到新任务请求")
     logger.info(f"[API /agent/stream] 消息: {request.message[:100]}..." if len(request.message) > 100 else f"[API /agent/stream] 消息: {request.message}")
     logger.info(f"[API /agent/stream] 文件数: {len(request.file_ids)} | 文件IDs: {request.file_ids}")
-    logger.info(f"[API /agent/stream] 模板ID: {request.template_id}")
+    logger.info(f"[API /agent/stream] 当前文档ID: {request.current_doc_id}")
     logger.info(f"[API /agent/stream] 任务类型: {request.task_type}")
     logger.info(f"[API /agent/stream] 对话ID: {request.conversation_id}")
 
@@ -704,12 +704,13 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
         async for event in agent.run_stream(
             message=request.message,
             file_ids=request.file_ids,
-            template_id=request.template_id,
+            template_id=None,  # 移除 template_id
             conversation_history=conversation_history,
             stream_manager=task.stream,
             user_id=user_id,
             user_selected_model=user_selected_model,
             db=None,
+            current_doc_id=request.current_doc_id,
         ):
             event_count += 1
 
