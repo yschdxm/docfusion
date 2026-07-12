@@ -41,7 +41,9 @@ Thumbs.db
 docker-compose.override.yml
 
 dataset/
-doc
+docs/
+.claude/
+.mimocode/
 
 temp
 logs

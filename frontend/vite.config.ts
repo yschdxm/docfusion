@@ -1,10 +1,28 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import { execSync } from 'child_process'
 
-const onlyofficeTarget = 'http://localhost:8088'
+function detectOnlyOfficeUrl(): string {
+  // 1. 环境变量优先
+  if (process.env.VITE_ONLYOFFICE_URL) return process.env.VITE_ONLYOFFICE_URL
+
+  // 2. 自动检测宿主机 IP（WSL2 场景）
+  try {
+    const ips = execSync("hostname -I 2>/dev/null", { encoding: 'utf-8' }).trim().split(/\s+/)
+    const hostIp = ips.find(ip => /^192\.168\./.test(ip))
+    if (hostIp) return `http://${hostIp}:8088`
+  } catch {}
+
+  // 3. 默认 localhost
+  return 'http://localhost:8088'
+}
+
+const onlyofficeTarget = detectOnlyOfficeUrl()
+console.log(`[vite] OnlyOffice target: ${onlyofficeTarget}`)
 
 export default defineConfig({
+  appType: 'spa',
   plugins: [react()],
   resolve: {
     alias: {
@@ -29,6 +47,20 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      '/themes.json': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+        rewrite: (path) => '/web-apps' + path,
+      },
+      '/plugins.json': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+        rewrite: (path) => '/web-apps' + path,
+      },
+      '/sdkjs-plugins': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+      },
       '/sdk': {
         target: onlyofficeTarget,
         changeOrigin: true,
@@ -46,7 +78,21 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      '/doc/': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+        ws: true,
+      },
       '/command': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+      },
+      '/document_editor_service_worker.js': {
+        target: onlyofficeTarget,
+        changeOrigin: true,
+      },
+      // OnlyOffice 字体文件（allfontsgen 生成的二进制字体数据）
+      '/fonts': {
         target: onlyofficeTarget,
         changeOrigin: true,
       },

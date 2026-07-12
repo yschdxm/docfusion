@@ -35,12 +35,17 @@ services:
   onlyoffice:
     image: docker.1ms.run/onlyoffice/documentserver:latest
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8088:80"
     environment:
       - JWT_ENABLED=false
     volumes:
       - onlyoffice_data:/var/www/onlyoffice/Data
+      - ./onlyoffice/local.json:/etc/onlyoffice/documentserver/local.json:ro
+      - ./onlyoffice/ds.conf:/etc/onlyoffice/documentserver/nginx/ds.conf:ro
+      - ./onlyoffice/ds-docservice.conf:/etc/nginx/includes/ds-docservice.conf:ro
 
 volumes:
   postgres_data:

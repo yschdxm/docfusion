@@ -92,7 +92,11 @@ export function useDocumentPreview() {
         params: { mode: 'view' },
       })
 
-      editorInstanceRef.current = new window.DocsAPI.DocEditor('onlyoffice-preview', response.data.config)
+      const config = {
+        ...response.data.config,
+        documentServerUrl: '',
+      }
+      editorInstanceRef.current = new window.DocsAPI.DocEditor('onlyoffice-preview', config)
     } catch (err) {
       console.error('[DocumentPreview] 编辑器创建失败:', err)
     }
