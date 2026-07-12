@@ -455,7 +455,7 @@ export default function DocumentOperation() {
           'heading_promote', 'list_format', 'paragraph_split',
           'set_text_style', 'convert'
         ]
-        const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table'
+        const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table' || toolName === 'fill_form'
         if (isEditOrFill && result && result.download_url) {
           const filename = result.output_filename || result.output_file || 'output'
           const file: PreviewFile = {

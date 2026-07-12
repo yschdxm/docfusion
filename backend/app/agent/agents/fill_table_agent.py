@@ -12,11 +12,11 @@ from app.agent.core.registry import ToolRegistry
 from app.agent.core.runtime import AgentRuntime
 from app.agent.tools import (
     RAGTool,
+    DocReaderTool,
     PGQueryTool,
     Neo4jQueryTool,
     GetTableStructureTool,
     FillTableTool,
-    ExtractFromDocsTool,
 )
 
 
@@ -53,23 +53,17 @@ FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于
 1. **PostgreSQL (query_pg_database)** - xlsx结构化数据，最准确
 2. **Neo4j (query_knowledge_graph)** - PG无结果时使用
 3. **RAG检索 (rag_search)** - 非结构化文本补充
-4. **文档提取 (extract_from_documents)** - 最后手段
 
 ### 对于 docx/md/txt 源文档：
-
-**核心原则：批量提取结构化记录时，必须使用 extract_from_documents，禁止用 rag_search 逐条提取！**
-
-**工具选择指南：**
-| 场景 | 推荐工具 | 原因 |
-|------|----------|------|
-| 批量提取表格数据 | **extract_from_documents** | 一次返回多条结构化记录 |
-| 查询特定实体信息 | query_knowledge_graph | 精确查询单个实体 |
-| 补充少量缺失数据 | rag_search | 搜索文本片段 |
+1. **read_document** - 最优先，直接阅读文档获取完整内容
+2. **rag_search** - 搜索向量数据库，补充检索
+3. **query_knowledge_graph** - 补充查询知识图谱
 
 **禁止行为：**
+- 禁止使用 extract_from_documents（已废弃）
 - 禁止反复用 rag_search 重复搜索同一类数据
-- 禁止用 query_knowledge_graph 批量查询表格数据（它只返回有限记录）
-- 禁止在 extract_from_documents 已返回足够数据后继续搜索
+- 禁止对xlsx源文档反复使用rag_search（应先用PG）
+- 禁止对docx源文档反复使用query_pg_database（数据不在PG中）
 
 **注意**: docx/md/txt 文档在PG中没有数据，不要尝试PG查询
 
@@ -106,18 +100,12 @@ FILL_TABLE_SYSTEM_PROMPT = """你是一个专业的表格填写Agent，专注于
 
 #### 源文档是 docx/md/txt（非结构化文本，需要从文本中提取表格数据）：
 
-**首选方案：使用 extract_from_documents 工具批量提取（推荐！效率最高）**
-1. 获取表格结构后，将表头列名作为 fields 参数传入 extract_from_documents
-2. 该工具内部会自动：RAG检索相关片段 → 用专用Prompt批量提取结构化记录
-3. 返回的 records 格式为 [{表头1: 值1, 表头2: 值2, ...}, ...]，可直接传给 fill_table(data=...)
-4. 如果一轮提取的数据不够，换不同查询关键词再调用 extract_from_documents，将多次结果合并
-5. 数据充足后立即调用 fill_table 填写，不要继续搜索
+**数据查找优先级（严格按顺序！）：**
+1. **rag_search** - 最优先，搜索向量数据库
+2. **read_document** - 直接阅读文档获取详细内容
+3. **query_knowledge_graph** - 补充查询知识图谱
 
-**补充方案：使用 rag_search 手动提取（仅用于补充少量缺失数据）**
-1. 用 rag_search 检索与表头相关的文档片段
-2. 从检索结果中逐条提取与表头匹配的数据
-3. 整理为 [{表头1: 值1, 表头2: 值2, ...}, ...] 格式
-4. 传入 fill_table(data=...)
+**禁止使用 extract_from_documents（已废弃）！**
 
 **关键规则：**
 - data 中每个字典的 key 必须与模板表头精确匹配
@@ -345,9 +333,8 @@ class FillTableAgent(DelegateAgentTool):
         registry.register(PGQueryTool())
         registry.register(Neo4jQueryTool())
         registry.register(RAGTool())
+        registry.register(DocReaderTool())
         registry.register(FillTableTool())
-        registry.register(ExtractFromDocsTool())
-        # 注意：不注册 list_documents、read_document 等无关工具
         # 注意：不注册任何 DelegateAgentTool，防止嵌套
 
         return AgentRuntime(

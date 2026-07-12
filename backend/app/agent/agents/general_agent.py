@@ -13,10 +13,11 @@ from app.agent.tools import (
     PGQueryTool,
     Neo4jQueryTool,
     ListDocumentsTool,
-    ExtractFromDocsTool,
+    GetTemplateTypeTool,
 )
 from app.agent.agents.fill_table_agent import FillTableAgent
 from app.agent.agents.document_edit_agent import DocumentEditAgent
+from app.agent.agents.fill_form_agent import FillFormAgent
 
 
 GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度中心。你的职责是：
@@ -31,27 +32,41 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
 
 ## 任务分配规则
 
-### 填表任务 -> delegate_fill_table（最高优先级）
-**强制规则**：当用户需要填写表格、填充数据到模板时，或者提供了template_id时：
-1. **必须立即**调用 `delegate_fill_table`
-2. **禁止**尝试使用 `read_document`、`list_documents`、`query_pg_database`、`query_knowledge_graph`、`rag_search` 或其他工具预研文档内容
-3. **禁止**尝试自己处理填表任务
-4. 将用户的原始需求（task_description）和所有相关ID（file_ids, template_id）原封不动传递给填表Agent
+### 第一步：快速判断模板类型（必须执行！）
 
-**判断标准（满足任一即为填表任务）**：
-- 请求中包含 `template_id` 参数
-- 用户消息包含"填表"、"填写"、"填充"、"写入表格"、"填入"等关键词
-- 用户要求将数据从一个文档搬到另一个模板中
-- 用户提到"模板"并要求填充数据
-- 用户说"整理数据到表格"、"把数据写入Excel"等类似表述
-- 用户提供了一个模板文件和源文档，要求把源文档的数据填入模板
+当用户提供了template_id时，**必须先调用 get_template_type 快速判断模板类型**，然后根据结果决定路由：
 
-**常见填表表述（不要遗漏）**：
+1. 调用 `get_template_type(template_id=模板ID)`
+2. **查看返回结果中的 `structure_type` 字段**：
+   - `"data_table"` → 数据表格 → **delegate_fill_table**
+   - `"form"` → 表单 → **delegate_fill_form**
+   - `"mixed"` → 混合类型 → 根据具体情况判断
+3. 根据 `structure_type` 选择路由，**不要根据字段名称或文件类型猜测**
+
+### 填表任务 -> delegate_fill_table
+**适用场景**：数据搬运，将源文档中的多条记录填入模板的多个数据行
+
+**触发条件**：
+- `structure_type == "data_table"`
+
+**常见表述**：
 - "把XX数据填到模板里"
-- "根据XX文档填写表格"
+- "根据XX文档填写报表"
 - "用这个模板生成报表"
-- "帮我把数据整理到Excel里"
-- "按照模板格式填写数据"
+
+### 表单填写任务 -> delegate_fill_form
+**适用场景**：信息填写，将零散信息填入表单的各个字段
+
+**触发条件**：
+- `structure_type == "form"`
+
+**常见表述**：
+- "帮我填写这个报名表"
+- "根据XX信息填写合同"
+- "填写这个申请表"
+- "填写开题表"、"填写审批表"、"填写登记表"
+
+**重要**：必须根据 `structure_type` 判断，不要根据字段名称或文件类型猜测！
 
 ### 源文档自动匹配规则（重要！）
 
@@ -66,6 +81,23 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
    - 如果有多个候选，优先选择与模板主题最相关的
    - 如果确实无法确定，才询问用户
 4. **注意**：自动匹配源文档时，不要调用任何工具预研文档内容，直接将匹配到的file_ids传给填表Agent
+
+### 数据查找优先级（重要！）
+
+不同源文档类型有不同的数据查找优先级：
+
+**对于xlsx源文档**：
+1. query_pg_database - 最优先
+2. rag_search - PG无结果时
+3. query_knowledge_graph - 补充查询
+4. read_document - 最后手段
+
+**对于docx/md/txt源文档**：
+1. read_document - 最优先，直接阅读文档获取完整内容
+2. rag_search - 搜索向量数据库，补充检索
+3. query_knowledge_graph - 补充查询
+
+**禁止使用 extract_from_documents（已废弃）！**
 
 ### 文档编辑任务 -> delegate_document_edit
 当用户需要修改文档内容、调整格式、重写段落时（关键词：修改、替换、重写、格式、转换、插入、删除）
@@ -83,16 +115,15 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
 - 只有你可以调用其他Agent，专用Agent不能调用Agent
 - 每次只应委派一个Agent，不要同时调用多个
 - 将专用Agent的结果整理后向用户汇报
-- **绝对不要**在填表任务中浪费时间自行探索文档，直接委派
-- 如果不确定是否是填表任务，但用户提到了template_id或模板文件，直接当作填表任务处理
-- 当用户只说"填表"且提供了template_id时，自动匹配源文档后直接委派，不要先探索文档内容
+- **必须先检测模板结构再决定路由**，不要猜测
 
-## 填表任务的特殊规则（优先级最高）
+## 填表任务的处理流程（优先级最高）
 当用户已提供template_id时：
-1. **禁止询问用户具体需求**，直接委派给填表Agent
-2. 填表Agent会自动分析文档结构、提取数据、填写表格
-3. task_description可以简单写"根据源文档填写模板"，不需要用户详细说明
-4. 如果用户只说"帮我填表"、"填表"、"填写"等简单表述，且已提供template_id和file_ids，**必须立即委派**
+1. **先调用 get_template_type 快速判断模板类型**
+2. 根据返回的 structure_type 判断是表格任务还是表单任务
+3. 自动匹配源文档（如果用户没有指定）
+4. 委派给对应的Agent（delegate_fill_table 或 delegate_fill_form）
+5. task_description 中必须包含：源文档ID、模板ID、任务描述
 
 ## 绝对规则：一次性委派，禁止重复调用
 - **你只有一次调用子Agent的机会**，系统会在你调用一次后阻止后续调用
@@ -126,10 +157,11 @@ def create_general_agent(stream_manager_provider=None) -> AgentRuntime:
     registry.register(PGQueryTool())
     registry.register(Neo4jQueryTool())
     registry.register(ListDocumentsTool())
-    registry.register(ExtractFromDocsTool())
+    registry.register(GetTemplateTypeTool())  # 用于快速判断模板类型，决定路由
 
     # 注册Agent委派工具（关键：通用Agent可以调用子Agent）
     registry.register(FillTableAgent(parent_stream_provider=stream_manager_provider))
+    registry.register(FillFormAgent(parent_stream_provider=stream_manager_provider))
     registry.register(DocumentEditAgent(parent_stream_provider=stream_manager_provider))
 
     # 注意：不注册 fill_table 和 get_table_structure，

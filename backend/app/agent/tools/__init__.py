@@ -27,6 +27,9 @@ from .neo4j_query_tool import Neo4jQueryTool
 from .list_docs_tool import ListDocumentsTool
 from .fill_table_tool import FillTableTool
 from .get_table_structure_tool import GetTableStructureTool
+from .get_form_structure_tool import GetFormStructureTool
+from .get_template_type_tool import GetTemplateTypeTool
+from .fill_form_tool import FillFormTool
 from .extract_from_docs_tool import ExtractFromDocsTool
 from .document_edit_tools import (
     ReplaceTextTool,
@@ -47,6 +50,9 @@ __all__ = [
     "ListDocumentsTool",
     "FillTableTool",
     "GetTableStructureTool",
+    "GetFormStructureTool",
+    "GetTemplateTypeTool",
+    "FillFormTool",
     "ExtractFromDocsTool",
     "ReplaceTextTool",
     "RewriteParagraphTool",

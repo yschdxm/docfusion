@@ -15,7 +15,7 @@ export interface AgentStreamRequest {
   file_ids: string[]
   template_id?: string | null
   conversation_id?: string | null
-  task_type?: 'auto' | 'fill_table' | 'query' | 'operation'
+  task_type?: 'auto' | 'fill_table' | 'fill_form' | 'query' | 'operation'
   task_id?: string  // 重连时携带
 }
 
@@ -28,7 +28,7 @@ export interface AgentEvent {
 
 export interface AgentStep {
   id: string
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'data_retrieval' | 'fill_table' | 'assistant_reply' | 'agent_delegation'
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'data_retrieval' | 'fill_table' | 'fill_form' | 'assistant_reply' | 'agent_delegation'
   name: string
   description: string
   status: 'pending' | 'running' | 'completed' | 'error'
@@ -691,6 +691,12 @@ class AgentStreamService {
         s.progress = event.data.progress || 0
         break
       }
+      case 'fill_form_progress': {
+        let s = state.steps.get(stepId)
+        if (!s) { s = { id: stepId, type: 'fill_form', name: tr('填写表单', 'Filling form', 'フォーム入力'), description: tr('正在将数据填入表单', 'Filling data into form', 'データをフォームに入力中'), status: 'running', progress: 0 }; state.steps.set(stepId, s) }
+        s.progress = event.data.progress || 0
+        break
+      }
       case 'stats_update': break  // 统计更新事件，由onEvent回调处理
       case 'completed': { const s = state.steps.get(stepId); if (s && s.type === 'thinking') { s.status = 'completed'; s.progress = 100 } break }
       case 'failed': {
@@ -710,6 +716,7 @@ class AgentStreamService {
 
   private _inferStepType(stepName: string): AgentStep['type'] {
     if (stepName.includes('查询') || stepName.includes('检索')) return 'data_retrieval'
+    if (stepName.includes('填写表单') || stepName.includes('表单')) return 'fill_form'
     if (stepName.includes('填写') || stepName.includes('填表')) return 'fill_table'
     if (stepName.includes('调用')) return 'tool_call'
     if (stepName.includes('思考')) return 'thinking'

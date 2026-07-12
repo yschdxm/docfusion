@@ -10,6 +10,7 @@ import remarkGfm from 'remark-gfm'
 import {
   Brain,
   Database,
+  FileText,
   Search,
   Table,
   Wrench,
@@ -186,6 +187,8 @@ function StepCard({
         return <Database className="w-4 h-4 text-green-500" />
       case 'fill_table':
         return <Table className="w-4 h-4 text-orange-500" />
+      case 'fill_form':
+        return <FileText className="w-4 h-4 text-orange-500" />
       case 'assistant_reply':
         return <MessageSquare className="w-4 h-4 text-blue-500" />
       case 'agent_delegation':
@@ -362,6 +365,7 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
               }`}>
                 <p className={`text-xs font-medium ${isDarkMode ? 'text-cyan-300' : 'text-cyan-600'}`}>
                   {step.agentName === 'delegate_fill_table' ? tr('填表Agent', 'Table Fill Agent', '表入力Agent') :
+                   step.agentName === 'delegate_fill_form' ? tr('表单Agent', 'Form Fill Agent', 'フォーム入力Agent') :
                    step.agentName === 'delegate_document_edit' ? tr('文档编辑Agent', 'Doc Edit Agent', '文書編集Agent') :
                    step.agentName || tr('子Agent', 'Sub-Agent', 'サブAgent')} {tr('执行过程:', 'Execution:', '実行過程:')}
                 </p>

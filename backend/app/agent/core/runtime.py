@@ -62,13 +62,13 @@ SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮�
 1. **PostgreSQL (query_pg_database)** - xlsx结构化数据，最准确
 2. **Neo4j (query_knowledge_graph)** - PG无结果时使用
 3. **RAG检索 (rag_search)** - 非结构化文本补充
-4. **文档提取 (extract_from_documents)** - 最后手段
 
 ### 对于 docx/md/txt 源文档：
-1. **Neo4j (query_knowledge_graph)** - 实体关系数据，必须优先使用
-2. **RAG检索 (rag_search)** - 文本片段补充
-3. **文档提取 (extract_from_documents)** - 最后手段
-4. **注意**: 这些文档在PG中没有数据，不要尝试PG查询
+1. **read_document** - 最优先，直接阅读文档获取完整内容
+2. **rag_search** - 搜索向量数据库，补充检索
+3. **query_knowledge_graph** - 补充查询知识图谱
+
+**禁止使用 extract_from_documents（已废弃）！**
 
 ## 查询失败处理策略（根据文档类型）
 

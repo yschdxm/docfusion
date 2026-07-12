@@ -311,7 +311,7 @@ fill_mode 详解（针对指定表格的操作）：
                         error=(
                             f"source_query 自动模式仅适用于xlsx源文档。"
                             f"当前源文档包含非xlsx格式: {', '.join(non_xlsx)}。"
-                            f"对于非xlsx文档，请先使用 extract_from_documents 或 rag_search 提取数据，"
+                            f"对于非xlsx文档，请先使用 rag_search 或 read_document 提取数据，"
                             f"再通过 data 参数传入 fill_table。"
                         )
                     )
