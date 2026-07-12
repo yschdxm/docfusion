@@ -6,6 +6,7 @@ import DocumentManager from './pages/DocumentManager'
 import DocumentOperation from './pages/DocumentOperation'
 import KnowledgeGraph from './pages/KnowledgeGraph'
 import WorkLog from './pages/WorkLog'
+import EmailManagement from './pages/EmailManagement'
 import ProfileCenter from './pages/ProfileCenter'
 import AdminCenter from './pages/AdminCenter'
 import Login from './pages/Login'
@@ -77,6 +78,7 @@ function App() {
         <Route path="document-operation" element={<DocumentOperation />} />
         <Route path="knowledge" element={<KnowledgeGraph />} />
         <Route path="work-log" element={<WorkLog />} />
+        <Route path="email-management" element={<EmailManagement />} />
         <Route path="profile" element={<ProfileCenter />} />
         <Route
           path="admin"

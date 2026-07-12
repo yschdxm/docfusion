@@ -54,6 +54,23 @@ class Settings(BaseSettings):
     ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
     ONLYOFFICE_PUBLIC_SIGNING_SECRET: Optional[str] = None
 
+    # SMTP Mail
+    SMTP_SERVER: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+
+    # Tencent Agent Mail / agently-cli
+    AGENTLY_CLI_BIN: str = "agently-cli"
+    AGENTLY_MAIL_LIST_COMMAND: str = ""
+    AGENTLY_MAIL_DETAIL_COMMAND: str = ""
+    AGENTLY_MAIL_SEND_COMMAND: str = ""
+    AGENTLY_MAIL_ATTACHMENT_COMMAND: str = ""
+    AGENTLY_MAIL_TIMEOUT_SECONDS: int = 120
+
+    # Agently OAuth 配置（通过 agently-cli 处理，通常不需要修改）
+    AGENTLY_OAUTH_LOGOUT_URL: str = "https://auth.agent.qq.com/oauth/logout_session"
+
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800

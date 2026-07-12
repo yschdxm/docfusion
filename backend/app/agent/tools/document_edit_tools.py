@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -58,6 +59,14 @@ async def _get_doc_info(file_id: str) -> Optional[Dict[str, Any]]:
                 "is_output": (doc.doc_category == "output"),
             }
     return None
+
+
+def _safe_output_filename(filename: str, default_suffix: str = ".docx") -> str:
+    clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (filename or "").strip())
+    clean = clean.strip(" ._") or f"generated_{uuid4().hex[:8]}{default_suffix}"
+    if "." not in clean:
+        clean = f"{clean}{default_suffix}"
+    return clean
 
 
 async def _register_output_file(output_path: str, file_type: str, user_id: Optional[str] = None) -> Dict[str, str]:
@@ -196,6 +205,86 @@ def _get_parser(file_type: str):
 
 
 # ──────────────────────────── 文档编辑工具 ────────────────────────────
+
+def _add_docx_content(doc, content: str) -> None:
+    """按常见 Markdown/纯文本结构写入 docx。"""
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            doc.add_paragraph()
+            continue
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading_match:
+            doc.add_heading(heading_match.group(2).strip(), level=min(len(heading_match.group(1)), 6))
+            continue
+        bullet_match = re.match(r"^[-*]\s+(.+)$", line)
+        if bullet_match:
+            doc.add_paragraph(bullet_match.group(1).strip(), style="List Bullet")
+            continue
+        number_match = re.match(r"^\d+[.)]\s+(.+)$", line)
+        if number_match:
+            doc.add_paragraph(number_match.group(1).strip(), style="List Number")
+            continue
+        doc.add_paragraph(line)
+
+
+class CreateWordDocumentTool(BaseTool):
+    """从零创建 Word 文档工具"""
+
+    @property
+    def name(self) -> str:
+        return "create_word_document"
+
+    @property
+    def description(self) -> str:
+        return "未选择模板或没有现成文档时，根据用户提供的标题和正文内容新建一个Word(.docx)文档，并自动保存到文档管理的输出文件中。"
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "文档标题"},
+                "content": {"type": "string", "description": "文档正文，支持简单Markdown标题、列表"},
+                "filename": {"type": "string", "description": "输出文件名，可选"},
+            },
+            "required": ["title", "content"],
+        }
+
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        title = str(params.get("title", "")).strip()
+        content = str(params.get("content", "")).strip()
+        if not title:
+            return ToolResult(success=False, error="文档标题不能为空")
+        if not content:
+            return ToolResult(success=False, error="文档正文不能为空")
+
+        output_dir = Path(settings.UPLOAD_DIR) / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        requested_filename = params.get("filename") or f"{title}.docx"
+        output_filename = f"generated_{uuid4().hex[:8]}_{_safe_output_filename(str(requested_filename), '.docx')}"
+        if not output_filename.lower().endswith(".docx"):
+            output_filename = f"{output_filename}.docx"
+        output_path = str(output_dir / output_filename)
+
+        doc = DocxDocument()
+        styles = doc.styles
+        styles["Normal"].font.name = "宋体"
+        styles["Normal"]._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        styles["Normal"].font.size = Pt(11)
+        title_para = doc.add_heading(title, level=0)
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _add_docx_content(doc, content)
+        doc.save(output_path)
+
+        reg = await _register_output_file(output_path, "docx", user_id=getattr(context, "user_id", None))
+        return ToolResult(success=True, data={"message": "已新建Word文档并保存到文档管理", "output_file": output_path, **reg, "output_format": "docx"})
+
 
 class ReplaceTextTool(BaseTool):
     """文本替换工具"""

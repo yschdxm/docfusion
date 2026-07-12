@@ -14,9 +14,233 @@ DocFusion 是一个全栈 Web 应用，通过大语言模型实现文档的智�
 - **信息自动提取**: 从 docx、xlsx、md、txt 等格式中提取实体、表格、自定义字段
 - **智能表格填写**: 根据源文档自动填写模板表格，支持多源数据合并
 - **知识图谱构建**: 自动抽取实体关系，支持可视化查询和跨文档关联发现
+- **邮件管理**: 集成 Agently 邮件服务，支持 OAuth 授权、邮件收发和附件导入
+- **LLM 流控**: 智能限制 API 调用频率和 token 使用量，避免超额费用
 - **任务队列管理**: 异步任务队列控制并发处理，避免资源竞争和 API 过载
 - **管理面板**: 用户管理、系统配置、文档管理等管理员功能
 - **多语言支持**: 支持中文、英文、日文界面切换
+
+## Agent Harness 框架设计
+
+DocFusion 采用 Harness 框架架构，参考 OpenClaw 的 Agent 设计模式，实现了一个灵活、可扩展的智能 Agent 系统。
+
+### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        用户请求                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     AgentRuntime (运行时)                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │  StreamManager │  │  StepTracker │  │  ToolExecutor │           │
+│  │  (流管理)    │  │  (步骤追踪)  │  │  (工具执行)  │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│   ToolRegistry │    │   DelegateAgent│    │   SubAgent    │
+│   (工具注册表) │    │   (委派工具)   │    │   (子Agent)   │
+└───────────────┘    └───────────────┘    └───────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        工具层                                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
+│  │ 数据查询 │ │ 文档操作 │ │ 检索工具 │ │ 外部服务 │          │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 核心组件
+
+#### 1. AgentRuntime (运行时)
+
+Agent 运行时是整个 Harness 框架的核心协调器，负责：
+
+- **生命周期管理**: 管理 Agent 从启动到完成的整个生命周期
+- **LLM 调用协调**: 协调与大语言模型的交互，支持流式输出
+- **工具执行**: 解析 LLM 的工具调用请求并执行
+- **上下文维护**: 维护对话历史和执行上下文
+- **流式事件生成**: 生成 SSE (Server-Sent Events) 事件流
+
+```python
+from app.agent import AgentRuntime, ToolRegistry, BaseTool
+
+# 创建注册表
+registry = ToolRegistry()
+
+# 注册工具
+registry.register(MyTool())
+
+# 创建运行时
+runtime = AgentRuntime(registry)
+
+# 运行Agent
+result = await runtime.run(
+    message="请帮我填写表格",
+    file_ids=["doc1", "doc2"],
+    template_id="template1"
+)
+```
+
+#### 2. BaseTool (工具基类)
+
+所有工具必须继承 `BaseTool` 并实现以下接口：
+
+```python
+class BaseTool(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """工具名称，LLM 通过这个名称调用"""
+
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        """工具描述，告诉 LLM 这个工具是做什么的"""
+
+    @property
+    @abstractmethod
+    def parameters(self) -> Dict[str, Any]:
+        """参数 schema，JSON Schema 格式"""
+
+    @abstractmethod
+    async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        """执行工具"""
+```
+
+#### 3. ToolRegistry (工具注册表)
+
+管理所有可用工具，支持：
+
+- **工具注册和发现**: 动态注册和获取工具
+- **权限控制**: allow/deny 列表控制工具可用性
+- **分组管理**: 按功能对工具进行分组
+- **Schema 生成**: 自动生成 OpenAI Function Calling 格式的 schema
+
+```python
+registry = ToolRegistry()
+
+# 注册工具
+registry.register(SearchTool())
+registry.register(FillTableTool())
+
+# 权限控制
+registry.set_deny_list(["dangerous_tool"])
+
+# 获取工具分组
+groups = registry.get_tool_groups()
+```
+
+#### 4. StreamManager (流管理器)
+
+管理 Agent 的流式输出，支持 SSE 格式：
+
+- **事件类型**: 思考、工具调用、步骤、数据检索、填表、完成、失败等
+- **断线重连**: 支持事件历史回放
+- **心跳保活**: 自动发送 keepalive 防止连接断开
+
+```python
+stream = StreamManager()
+
+# 发送事件
+await stream.emit_thinking_start(step_id, "正在思考...")
+await stream.emit_tool_call("search", {"query": "..."})
+await stream.emit_completed("任务完成")
+
+# 流式输出
+async for event in stream.stream():
+    yield event  # SSE 格式
+```
+
+#### 5. StepTracker (步骤追踪器)
+
+追踪 Agent 的执行步骤：
+
+```python
+tracker = StepTracker()
+
+# 创建步骤
+step = tracker.create_step(
+    step_type=StepType.TOOL_CALL,
+    name="调用搜索工具",
+    description="搜索相关文档"
+)
+
+# 更新步骤状态
+tracker.start_step(step.id)
+tracker.complete_step(step.id, result={"found": 10})
+```
+
+#### 6. DelegateAgent (委派 Agent)
+
+支持 Agent 委派机制，将复杂任务拆分给专门的子 Agent：
+
+```python
+class FillTableAgent(DelegateAgentTool):
+    @property
+    def name(self) -> str:
+        return "delegate_fill_table"
+
+    def _create_agent(self) -> AgentRuntime:
+        # 创建专门的填表 Agent
+        registry = ToolRegistry()
+        registry.register(FillTableTool())
+        registry.register(GetTableStructureTool())
+        return AgentRuntime(registry)
+```
+
+### 工具分类
+
+| 分类 | 工具 | 说明 |
+|------|------|------|
+| 数据查询 | `query_pg_database` | 查询 PostgreSQL 结构化数据 |
+| | `query_knowledge_graph` | 查询 Neo4j 知识图谱 |
+| | `rag_search` | 向量数据库检索 |
+| 文档操作 | `read_document` | 读取文档内容 |
+| | `fill_table` | 填写表格 |
+| | `get_table_structure` | 获取表格结构 |
+| 检索工具 | `extract_from_docs` | 从文档提取信息 |
+| | `list_documents` | 列出可用文档 |
+| 外部服务 | `web_search` | 网络搜索 |
+
+### Agent 类型
+
+| Agent | 用途 | 特点 |
+|-------|------|------|
+| GeneralAgent | 通用助手 | 处理一般性问题 |
+| FillTableAgent | 表格填写 | 专门处理表格填写任务 |
+| DocumentEditAgent | 文档编辑 | 处理文档修改任务 |
+
+### 事件流
+
+Agent 通过 SSE 流式输出事件，支持以下事件类型：
+
+```typescript
+// 思考事件
+thinking_start → thinking_chunk → thinking_end
+
+// 工具事件
+tool_call → tool_result / tool_error
+
+// 步骤事件
+step_start → step_progress → step_end
+
+// 数据检索事件
+data_retrieval_start → data_retrieval_progress → data_retrieval_end
+
+// 填表事件
+fill_table_start → fill_table_progress → fill_table_end
+
+// 完成事件
+completed / failed / cancelled
+```
 
 ## 技术栈
 
@@ -80,19 +304,109 @@ DocFusion 是一个全栈 Web 应用，通过大语言模型实现文档的智�
 
 ## 系统要求
 
+### 开发环境
+
+- **Python**: 3.11+
+- **Node.js**: 20+
+- **PostgreSQL**: 17+
+- **Neo4j**: 5+
+- **Qdrant**: latest
+
+### 生产环境
+
 - **Docker**: 20.10+
 - **Docker Compose**: 2.0+
 
-## 部署步骤
+## 快速开始
 
-### 1. 克隆代码
+### 方式一：开发环境（本地运行）
+
+#### 1. 克隆代码
 
 ```bash
 git clone https://github.com/yschdxm/docfusion.git
 cd docfusion
 ```
 
-### 2. 配置环境变量
+#### 2. 配置环境变量
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，填入数据库连接信息和 API 密钥：
+
+```env
+# 数据库配置
+POSTGRES_URL=postgresql://docfusion:docfusion123@localhost:5432/docfusion
+NEO4J_URL=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=neo4j123
+
+# AI 模型配置
+MIMO_API_KEY=your_api_key_here
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+MIMO_MODEL=mimo-v2-flash
+
+# 应用配置
+APP_SECRET_KEY=your_secret_key_here
+```
+
+#### 3. 启动后端服务
+
+```bash
+cd backend
+
+# 创建虚拟环境
+python -m venv venv
+
+# 激活虚拟环境
+# Windows
+venv\Scripts\activate
+# Linux/macOS
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动服务
+uvicorn app.main:app --reload --port 8000
+```
+
+后端服务将在 http://localhost:8000 启动。
+
+#### 4. 启动前端服务
+
+```bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+```
+
+前端服务将在 http://localhost:5173 启动。
+
+#### 5. 启动依赖服务
+
+需要单独启动以下服务：
+
+- **PostgreSQL**: 创建数据库 `docfusion`
+- **Neo4j**: 启动图数据库服务
+- **Qdrant**: 启动向量数据库服务
+
+### 方式二：生产环境（Docker 部署）
+
+#### 1. 克隆代码
+
+```bash
+git clone https://github.com/yschdxm/docfusion.git
+cd docfusion
+```
+
+#### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
@@ -101,7 +415,6 @@ cp .env.example .env
 编辑 `.env` 文件，填入以下配置：
 
 ```env
-
 # ============================================
 # 数据库密码（请使用强密码）
 # ============================================
@@ -141,7 +454,7 @@ ADMIN_PASSWORD=your_admin_password_here
 # 首次启动后请访问 /admin 页面进行配置
 ```
 
-### 3. 启动服务
+#### 3. 启动服务
 
 ```bash
 docker-compose up -d
@@ -149,7 +462,7 @@ docker-compose up -d
 
 首次启动会自动构建镜像，约需 5-10 分钟。
 
-### 4. 验证部署
+#### 4. 验证部署
 
 ```bash
 # 检查服务状态（所有服务应为 Up 状态，postgres/neo4j 应为 healthy）
@@ -183,6 +496,7 @@ curl -I http://localhost:3000
 - **文档管理**: 上传、管理和组织文档
 - **智能助手**: 通过自然语言指令操作文档，支持文档预览和搜索
 - **知识图谱**: 可视化查看和查询文档知识图谱
+- **邮件管理**: 收发邮件，导入附件到文档系统
 - **工作日志**: 查看和管理工作记录
 - **个人中心**: 个人信息管理
 
@@ -215,6 +529,8 @@ curl -I http://localhost:3000
 
 ## 常用运维命令
 
+### Docker 环境
+
 ```bash
 # 查看实时日志
 docker-compose logs -f
@@ -243,6 +559,21 @@ docker stats
 
 # 进入容器调试
 docker exec -it docfusion-backend /bin/bash
+```
+
+### 开发环境
+
+```bash
+# 后端代码检查
+cd backend
+ruff check app/
+
+# 前端代码检查
+cd frontend
+npm run lint
+
+# 前端构建
+npm run build
 ```
 
 ## 故障排除
@@ -297,6 +628,7 @@ docfusion/
 │   │   │   └── endpoints/     # API 端点
 │   │   │       ├── admin.py   # 管理面板接口
 │   │   │       ├── agent.py   # 智能助手接口
+│   │   │       ├── agent_mail.py # 邮件服务接口
 │   │   │       ├── auth.py    # 认证接口
 │   │   │       └── documents.py # 文档接口
 │   │   ├── core/              # 核心配置
@@ -304,8 +636,31 @@ docfusion/
 │   │   ├── schemas/           # Pydantic 模式
 │   │   ├── services/          # 业务逻辑服务
 │   │   │   ├── task_queue.py  # 任务队列管理
-│   │   │   └── config_service.py # 配置服务
+│   │   │   ├── config_service.py # 配置服务
+│   │   │   ├── llm_service.py # LLM 服务（含流控）
+│   │   │   ├── email_service.py # 邮件服务
+│   │   │   └── agently_mail_service.py # Agently 邮件集成
 │   │   ├── agent/             # AI Agent 系统
+│   │   │   ├── base/          # 基础组件
+│   │   │   │   └── tool.py    # 工具基类
+│   │   │   ├── core/          # 核心组件
+│   │   │   │   ├── runtime.py # Agent 运行时
+│   │   │   │   ├── registry.py # 工具注册表
+│   │   │   │   ├── executor.py # 工具执行器
+│   │   │   │   ├── stream.py # 流管理器
+│   │   │   │   ├── tracker.py # 步骤追踪器
+│   │   │   │   └── delegation.py # Agent 委派
+│   │   │   ├── agents/        # Agent 实现
+│   │   │   │   ├── general_agent.py # 通用 Agent
+│   │   │   │   ├── fill_table_agent.py # 填表 Agent
+│   │   │   │   └── document_edit_agent.py # 文档编辑 Agent
+│   │   │   └── tools/         # 工具实现
+│   │   │       ├── doc_reader_tool.py # 文档读取
+│   │   │       ├── fill_table_tool.py # 表格填写
+│   │   │       ├── pg_query_tool.py # PG 查询
+│   │   │       ├── neo4j_query_tool.py # Neo4j 查询
+│   │   │       ├── rag_tool.py # RAG 检索
+│   │   │       └── web_search_tool.py # 网络搜索
 │   │   └── main.py            # 应用入口
 │   ├── requirements.txt       # Python 依赖
 │   └── Dockerfile
@@ -316,9 +671,11 @@ docfusion/
 │   │   ├── pages/             # 页面
 │   │   │   ├── AdminCenter.tsx # 管理中心
 │   │   │   ├── Login.tsx      # 登录页
-│   │   │   └── Register.tsx   # 注册页
+│   │   │   ├── Register.tsx   # 注册页
+│   │   │   └── EmailManagement.tsx # 邮件管理页
 │   │   ├── hooks/             # 自定义 Hooks
 │   │   ├── services/          # API 服务
+│   │   │   └── agentMailService.ts # 邮件服务 API
 │   │   └── stores/            # 状态管理
 │   ├── package.json           # Node.js 依赖
 │   └── Dockerfile

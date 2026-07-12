@@ -40,6 +40,7 @@ async def init_db():
         await _ensure_is_shared_column(conn)
         await _ensure_selected_model_column(conn)
         await _ensure_super_admin(conn)
+        await _ensure_agently_token_table(conn)
     logger.info("PostgreSQL database initialized")
 
 
@@ -159,3 +160,25 @@ async def _ensure_super_admin(conn):
             logger.info(f"Promoted first user to super admin")
         else:
             logger.warning("No users found in database. Super admin will be created on first user registration.")
+
+
+async def _ensure_agently_token_table(conn):
+    """幂等地创建 user_agently_tokens 表（向后兼容）"""
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_agently_tokens (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            token_type VARCHAR(50) DEFAULT 'Bearer',
+            expires_at TIMESTAMP,
+            email VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(user_id)
+        )
+    """))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_user_agently_tokens_user_id ON user_agently_tokens(user_id)"
+    ))
+    logger.info("user_agently_tokens table ensured")
