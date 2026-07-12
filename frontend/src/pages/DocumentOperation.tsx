@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square } from 'lucide-react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Mail, Mic, Globe } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -103,6 +103,41 @@ interface PreviewState {
   items: PreviewItem[]
 }
 
+interface EmailFormState {
+  to_email: string
+  subject: string
+  body: string
+}
+
+type BrowserSpeechRecognition = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  start: () => void
+  stop: () => void
+  onstart: (() => void) | null
+  onresult: ((event: any) => void) | null
+  onerror: ((event: any) => void) | null
+  onend: (() => void) | null
+}
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
+
+const getSpeechRecognitionConstructor = (): BrowserSpeechRecognitionConstructor | null => {
+  const speechApi = window as typeof window & {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
+  }
+
+  return speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition || null
+}
+
+const mergeInputWithTranscript = (baseText: string, transcript: string) => {
+  if (!transcript.trim()) return baseText
+  if (!baseText.trim()) return transcript.trim()
+  return /[\s。！？.!?，,]$/.test(baseText) ? `${baseText}${transcript.trim()}` : `${baseText} ${transcript.trim()}`
+}
+
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
   useEffect(() => {
@@ -152,6 +187,16 @@ export default function DocumentOperation() {
   const [localMessages, setLocalMessages] = useState<Message[]>([])
   const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [isSendingEmail, setIsSendingEmail] = useState(false)
+  const [emailForm, setEmailForm] = useState<EmailFormState>({
+    to_email: '',
+    subject: '',
+    body: '',
+  })
+  const [speechSupported, setSpeechSupported] = useState(false)
+  const [isListening, setIsListening] = useState(false)
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true)
 
   // SSE 流式状态
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
@@ -169,7 +214,14 @@ export default function DocumentOperation() {
   const docDropdownRef = useRef<HTMLDivElement>(null)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
+  const speechBaseInputRef = useRef('')
+  const finalTranscriptRef = useRef('')
+  const speechStopRequestedRef = useRef(false)
   const [isCompactToolbar, setIsCompactToolbar] = useState(false)
+
+  const assistantName = tr('小知', 'XiaoZhi', '小知')
+  const speechLang = language === 'zh-CN' ? 'zh-CN' : language === 'ja-JP' ? 'ja-JP' : 'en-US'
 
   // 预览面板宽度与拖动
   const PREVIEW_DEFAULT = 640
@@ -205,6 +257,10 @@ export default function DocumentOperation() {
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
+  const selectedEmailDocument =
+    documents.find((d) => d.id === selectedDocIds[selectedDocIds.length - 1]) ||
+    documents.find((d) => d.id === selectedTemplateId) ||
+    null
 
   useEffect(() => {
     fetchDocuments()
@@ -331,6 +387,113 @@ export default function DocumentOperation() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  const getSpeechErrorMessage = useCallback((error?: string) => {
+    switch (error) {
+      case 'not-allowed':
+      case 'service-not-allowed':
+        return tr('麦克风权限被拒绝，请在浏览器中允许访问麦克风。', 'Microphone permission denied. Please allow microphone access in your browser.', 'マイク権限が拒否されました。ブラウザでマイクへのアクセスを許可してください。')
+      case 'audio-capture':
+        return tr('未检测到可用麦克风，请检查录音设备。', 'No microphone detected. Please check your recording device.', '利用可能なマイクが見つかりません。録音デバイスを確認してください。')
+      case 'network':
+        return tr('语音识别网络异常，请稍后重试。', 'Speech recognition network error. Please try again later.', '音声認識のネットワークエラーです。しばらくしてから再試行してください。')
+      case 'no-speech':
+        return tr('没有识别到语音，请重新尝试。', 'No speech detected. Please try again.', '音声が認識されませんでした。もう一度お試しください。')
+      default:
+        return tr('语音输入失败，请稍后重试。', 'Voice input failed. Please try again later.', '音声入力に失敗しました。しばらくしてから再試行してください。')
+    }
+  }, [language])
+
+  const stopSpeechInput = useCallback(() => {
+    if (!recognitionRef.current) return
+    speechStopRequestedRef.current = true
+    recognitionRef.current.stop()
+  }, [])
+
+  const handleSpeechToggle = useCallback(() => {
+    if (isListening) {
+      stopSpeechInput()
+      return
+    }
+
+    if (!recognitionRef.current) {
+      setSpeechSupported(false)
+      toast.error(tr('当前浏览器不支持语音输入，推荐使用 Chrome 或 Edge。', 'Voice input is not supported in this browser. Please use Chrome or Edge.', 'このブラウザは音声入力に対応していません。Chrome または Edge を使用してください。'))
+      return
+    }
+
+    speechBaseInputRef.current = inputValue
+    finalTranscriptRef.current = ''
+    speechStopRequestedRef.current = false
+
+    try {
+      recognitionRef.current.start()
+    } catch {
+      toast.error(tr('语音输入启动失败，请检查麦克风权限后重试。', 'Failed to start voice input. Please check microphone permission and try again.', '音声入力を開始できませんでした。マイク権限を確認してから再試行してください。'))
+    }
+  }, [inputValue, isListening, stopSpeechInput, language])
+
+  useEffect(() => {
+    const SpeechRecognitionConstructor = getSpeechRecognitionConstructor()
+    setSpeechSupported(Boolean(SpeechRecognitionConstructor))
+
+    if (!SpeechRecognitionConstructor) {
+      recognitionRef.current = null
+      return
+    }
+
+    const recognition = new SpeechRecognitionConstructor()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = speechLang
+
+    recognition.onstart = () => {
+      setIsListening(true)
+    }
+
+    recognition.onresult = (event: any) => {
+      let latestFinalTranscript = finalTranscriptRef.current
+      let interimTranscript = ''
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i]
+        const transcript = result?.[0]?.transcript ?? ''
+
+        if (result?.isFinal) {
+          latestFinalTranscript += transcript
+        } else {
+          interimTranscript += transcript
+        }
+      }
+
+      finalTranscriptRef.current = latestFinalTranscript
+      const mergedTranscript = `${latestFinalTranscript} ${interimTranscript}`.trim()
+      setInputValue(mergeInputWithTranscript(speechBaseInputRef.current, mergedTranscript))
+    }
+
+    recognition.onerror = (event: any) => {
+      if (speechStopRequestedRef.current || event?.error === 'aborted') return
+      toast.error(getSpeechErrorMessage(event?.error))
+    }
+
+    recognition.onend = () => {
+      setIsListening(false)
+      speechStopRequestedRef.current = false
+    }
+
+    recognitionRef.current = recognition
+
+    return () => {
+      speechStopRequestedRef.current = true
+      recognition.onstart = null
+      recognition.onresult = null
+      recognition.onerror = null
+      recognition.onend = null
+      recognition.stop()
+      recognitionRef.current = null
+      setIsListening(false)
+    }
+  }, [getSpeechErrorMessage, speechLang])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -522,12 +685,13 @@ export default function DocumentOperation() {
         file_ids: session.fileIds || [],
         template_id: session.templateId || undefined,
         conversation_id: session.id,
+        web_search_enabled: webSearchEnabled,
       },
       onEvent, onComplete, onError,
       taskId
     )
     currentConnectionRef.current = connId
-  }, [createStreamCallbacks])
+  }, [createStreamCallbacks, webSearchEnabled])
 
   // ===== fro 原有函数 =====
 
@@ -576,6 +740,11 @@ export default function DocumentOperation() {
   }, [addOperatedFile])
 
   const handleSend = async (actionConfirmed = false) => {
+    if (isListening) {
+      stopSpeechInput()
+      return
+    }
+
     const userMessage = inputValue.trim()
     if (!userMessage && !actionConfirmed) return
 
@@ -647,6 +816,7 @@ export default function DocumentOperation() {
         file_ids: selectedDocIds,
         template_id: selectedTemplateId || undefined,
         conversation_id: currentSessionId,
+        web_search_enabled: webSearchEnabled,
       },
       onEvent, onComplete, onError
     )
@@ -742,7 +912,8 @@ export default function DocumentOperation() {
         message: tr('确认执行之前的操作', 'Confirm previous operation', '前の操作を実行確認'),
         file_ids: selectedDocIds,
         template_id: selectedTemplateId || undefined,
-        conversation_id: confirmSessionId
+        conversation_id: confirmSessionId,
+        web_search_enabled: webSearchEnabled
       },
       onEvent, onComplete, onError
     )
@@ -842,6 +1013,57 @@ export default function DocumentOperation() {
     if (templateCount > 0) parts.push(`1 ${tr('个模板', 'template', '件のテンプレート')}`)
 
     return `${tr('已选择：', 'Selected: ', '選択済み: ')}${parts.join(' + ')}`
+  }
+
+  const openEmailModal = () => {
+    if (!selectedEmailDocument) {
+      toast.error(tr('请先选择要发送的文档', 'Please select a document to send first', '先に送信する文書を選択してください'))
+      return
+    }
+
+    setEmailForm({
+      to_email: '',
+      subject: `${tr('文档分享', 'Document Share', '文書共有')}: ${selectedEmailDocument.original_filename}`,
+      body: tr(
+        '您好，附件中是我从系统中发送给您的文档，请查收。',
+        'Hello, the requested document is attached. Please check it.',
+        'こんにちは。ご依頼の文書を添付いたします。ご確認ください。'
+      ),
+    })
+    setShowEmailModal(true)
+  }
+
+  const handleSendEmail = async () => {
+    if (!selectedEmailDocument) {
+      toast.error(tr('未找到可发送的文档', 'No document available to send', '送信可能な文書が見つかりません'))
+      return
+    }
+
+    if (!emailForm.to_email.trim()) {
+      toast.error(tr('请输入收件人邮箱', 'Please enter recipient email', '宛先メールアドレスを入力してください'))
+      return
+    }
+
+    if (!emailForm.subject.trim()) {
+      toast.error(tr('请输入邮件主题', 'Please enter email subject', 'メール件名を入力してください'))
+      return
+    }
+
+    try {
+      setIsSendingEmail(true)
+      await api.post(`/documents/${selectedEmailDocument.id}/send-email`, {
+        to_email: emailForm.to_email.trim(),
+        subject: emailForm.subject.trim(),
+        body: emailForm.body,
+      })
+      toast.success(tr('邮件发送成功', 'Email sent successfully', 'メール送信に成功しました'))
+      setShowEmailModal(false)
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail
+      toast.error(detail || tr('邮件发送失败', 'Failed to send email', 'メール送信に失敗しました'))
+    } finally {
+      setIsSendingEmail(false)
+    }
   }
 
   const openPreview = (action: ActionData) => {
@@ -966,6 +1188,14 @@ export default function DocumentOperation() {
                 <button onClick={handleNewChat} className="btn-secondary px-3 py-1.5 text-xs">
                   <Plus className="w-3 h-3" />
                   {tr('新建', 'New', '新規')}
+                </button>
+                <button
+                  onClick={openEmailModal}
+                  className="btn-secondary px-3 py-1.5 text-xs"
+                  title={tr('发送所选文档到邮箱', 'Send selected document by email', '選択文書をメール送信')}
+                >
+                  <Mail className="w-3 h-3" />
+                  {tr('邮件发送', 'Send Email', 'メール送信')}
                 </button>
                 <button
                   onClick={() => { requestPreview(); setShowMobilePreview(true) }}
@@ -1126,6 +1356,14 @@ export default function DocumentOperation() {
                 {tr('新建对话', 'New Chat', '新しい会話')}
               </button>
               <button
+                onClick={openEmailModal}
+                className="btn-secondary px-3 py-1.5 text-xs"
+                title={tr('发送所选文档到邮箱', 'Send selected document by email', '選択文書をメール送信')}
+              >
+                <Mail className="w-3 h-3" />
+                {tr('邮件发送', 'Send Email', 'メール送信')}
+              </button>
+              <button
                 onClick={togglePanel}
                 className={`p-2 rounded-lg transition-colors ${isPanelOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                 title={tr('文档预览', 'Document Preview', '文書プレビュー')}
@@ -1144,8 +1382,8 @@ export default function DocumentOperation() {
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
               <FileText className="w-16 h-16 mx-auto mb-4 text-slate-400" />
-              <p className="text-slate-600">{tr('我是你的智能文档助手', 'I am your smart document assistant', '私はあなたの文書アシスタントです')}</p>
-              <p className="text-sm text-slate-500 mt-2">{tr('你可以提问、提取信息、改写内容，或发起基于模板的自动填写任务。', 'You can ask questions, extract info, rewrite content, or start template-based auto fill tasks.', '質問、情報抽出、リライト、テンプレート自動入力を実行できます。')}</p>
+              <p className="text-slate-600">{tr(`我是${assistantName}，你的智能文档助手`, `I am ${assistantName}, your smart document assistant`, `私は${assistantName}、あなたのスマート文書アシスタントです`)}</p>
+              <p className="text-sm text-slate-500 mt-2">{tr('你可以打字提问，也可以点击麦克风按钮，把语音转成文字后与我交互。', 'You can type your questions or tap the microphone button to convert speech to text and chat with me.', '文字入力でも、マイクボタンで音声をテキスト化して会話することもできます。')}</p>
             </div>
           </div>
         )}
@@ -1265,6 +1503,93 @@ export default function DocumentOperation() {
         <div ref={messagesEndRef} />
       </div>
 
+      {showEmailModal && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-6 backdrop-blur-sm">
+          <div className={`w-full max-w-xl rounded-xl border shadow-2xl ${
+            isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
+          }`}>
+            <div className={`flex items-center justify-between border-b px-6 py-4 ${
+              isDarkMode ? 'border-slate-600' : 'border-slate-200'
+            }`}>
+              <div>
+                <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {tr('发送邮件', 'Send Email', 'メール送信')}
+                </h3>
+                <p className={`mt-1 text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+                  {selectedEmailDocument?.original_filename || tr('未选择文档', 'No document selected', '文書未選択')}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowEmailModal(false)}
+                className={`rounded-lg p-2 transition-colors ${
+                  isDarkMode
+                    ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                    : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-6">
+              <div>
+                <label className={`mb-1 block text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                  {tr('收件人邮箱', 'Recipient Email', '宛先メール')}
+                </label>
+                <input
+                  type="email"
+                  value={emailForm.to_email}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, to_email: e.target.value }))}
+                  className="input w-full"
+                  placeholder="example@qq.com"
+                />
+              </div>
+
+              <div>
+                <label className={`mb-1 block text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                  {tr('邮件主题', 'Email Subject', 'メール件名')}
+                </label>
+                <input
+                  type="text"
+                  value={emailForm.subject}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, subject: e.target.value }))}
+                  className="input w-full"
+                />
+              </div>
+
+              <div>
+                <label className={`mb-1 block text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                  {tr('邮件正文', 'Email Body', 'メール本文')}
+                </label>
+                <textarea
+                  value={emailForm.body}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, body: e.target.value }))}
+                  className="input min-h-32 w-full resize-y"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setShowEmailModal(false)}
+                  className="btn-secondary px-4 py-2"
+                  disabled={isSendingEmail}
+                >
+                  {tr('取消', 'Cancel', 'キャンセル')}
+                </button>
+                <button
+                  onClick={handleSendEmail}
+                  className="btn-primary px-4 py-2 disabled:opacity-50"
+                  disabled={isSendingEmail}
+                >
+                  {isSendingEmail ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                  {tr('发送', 'Send', '送信')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {previewState && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-6 backdrop-blur-sm">
           <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className={`max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl border shadow-2xl ${
@@ -1323,12 +1648,65 @@ export default function DocumentOperation() {
 
       <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
         <div className="flex gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={handleSpeechToggle}
+            disabled={isLoading || (!speechSupported && !isListening)}
+            aria-label={
+              isListening
+                ? tr(`停止与${assistantName}的语音输入`, `Stop voice input for ${assistantName}`, `${assistantName} への音声入力を停止`)
+                : tr(`开始与${assistantName}语音交互`, `Start voice input for ${assistantName}`, `${assistantName} への音声入力を開始`)
+            }
+            title={
+              isListening
+                ? tr('点击结束录音', 'Click to stop recording', 'クリックして録音を停止')
+                : tr('点击开始语音输入', 'Click to start voice input', 'クリックして音声入力を開始')
+            }
+            className={`shrink-0 rounded-xl border px-3 py-2 transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+              isListening
+                ? 'border-red-300 bg-red-50 text-red-600 shadow-sm'
+                : isDarkMode
+                  ? 'border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Mic className={`w-4 h-4 ${isListening ? 'animate-pulse' : ''}`} />
+              <span className="hidden sm:inline">{isListening ? tr('录音中', 'Listening', '録音中') : tr('语音输入', 'Voice', '音声入力')}</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setWebSearchEnabled((prev) => !prev)}
+            disabled={isLoading}
+            aria-pressed={webSearchEnabled}
+            aria-label={webSearchEnabled ? tr('关闭联网搜索', 'Disable web search', 'Web検索をオフ') : tr('开启联网搜索', 'Enable web search', 'Web検索をオン')}
+            title={webSearchEnabled ? tr('联网搜索已开启，点击关闭', 'Web search is on. Click to turn off.', 'Web検索はオンです。クリックでオフ') : tr('联网搜索已关闭，点击开启', 'Web search is off. Click to turn on.', 'Web検索はオフです。クリックでオン')}
+            className={`shrink-0 rounded-xl border px-3 py-2 transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+              webSearchEnabled
+                ? isDarkMode
+                  ? 'border-blue-500/60 bg-blue-500/20 text-blue-300 shadow-sm shadow-blue-500/10'
+                  : 'border-blue-300 bg-blue-50 text-blue-600 shadow-sm'
+                : isDarkMode
+                  ? 'border-slate-700 bg-slate-900 text-slate-500 hover:bg-slate-800'
+                  : 'border-slate-200 bg-slate-100 text-slate-400 hover:bg-slate-200'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Globe className="w-4 h-4" />
+              <span className="hidden sm:inline">{tr('联网搜索', 'Web Search', 'Web検索')}</span>
+            </span>
+          </button>
+
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={pendingAction ? tr('操作待确认，请先点击上方卡片完成确认。', 'Action pending confirmation, please confirm above first.', '操作は確認待ちです。先に上のカードで確認してください。') : tr('输入你的问题或指令...', 'Enter your question or instruction...', '質問または指示を入力してください...')}
+            placeholder={pendingAction
+              ? tr('操作待确认，请先点击上方卡片完成确认。', 'Action pending confirmation, please confirm above first.', '操作は確認待ちです。先に上のカードで確認してください。')
+              : tr(`对${assistantName}说点什么，或输入你的问题和指令...`, `Say something to ${assistantName}, or type your question and instruction...`, `${assistantName} に話しかけるか、質問や指示を入力してください...`)}
             className="input flex-1 min-w-0"
             disabled={isLoading}
           />
@@ -1342,10 +1720,24 @@ export default function DocumentOperation() {
               {tr('停止', 'Stop', '停止')}
             </button>
           ) : (
-            <button onClick={() => handleSend()} disabled={isLoading || (!inputValue.trim() && !pendingAction)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={() => handleSend()} disabled={isLoading || isListening || (!inputValue.trim() && !pendingAction)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
               {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
             </button>
           )}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className={isListening ? 'text-red-500' : 'text-slate-500'}>
+            {isListening
+              ? tr(`${assistantName} 正在听，请开始说话...`, `${assistantName} is listening, please start speaking...`, `${assistantName} が聞いています。話し始めてください...`)
+              : speechSupported
+                ? tr(`点击麦克风按钮即可与${assistantName}进行语音转文字交互。`, `Click the microphone button to talk with ${assistantName} using speech-to-text.`, `マイクボタンをクリックすると、${assistantName} と音声テキスト変換で会話できます。`)
+                : tr('当前浏览器不支持语音输入，推荐使用 Chrome 或 Edge。', 'This browser does not support voice input. Please use Chrome or Edge.', 'このブラウザは音声入力に対応していません。Chrome または Edge を使用してください。')}
+          </span>
+          <span className={webSearchEnabled ? 'text-blue-500' : 'text-slate-400'}>
+            {webSearchEnabled
+              ? tr('联网搜索已开启：会优先检索官网/公开网页并给出来源。', 'Web search is on: official/public pages will be searched with sources.', 'Web検索オン：公式/公開ページを検索し、出典を示します。')
+              : tr('联网搜索已关闭：仅使用本地文档和已有知识回答。', 'Web search is off: answers use only local documents and existing knowledge.', 'Web検索オフ：ローカル文書と既存知識のみで回答します。')}
+          </span>
         </div>
         {/* 快捷提示 */}
         <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-thin">

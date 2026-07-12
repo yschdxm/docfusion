@@ -309,7 +309,8 @@ class AgentRuntime:
         conversation_history: List[Dict[str, str]] = None,
         stream_manager: Optional[StreamManager] = None,
         step_tracker: Optional[StepTracker] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """运行Agent（非流式）"""
         context = ToolContext(
@@ -317,7 +318,8 @@ class AgentRuntime:
             user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
-            conversation_history=conversation_history or []
+            conversation_history=conversation_history or [],
+            metadata=metadata or {}
         )
 
         logger.info("=" * 60)
@@ -353,7 +355,8 @@ class AgentRuntime:
         cancel_event: Optional[asyncio.Event] = None,
         on_stream_created=None,
         stream_manager: Optional['StreamManager'] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[str, None]:
         """运行Agent（流式）
 
@@ -372,7 +375,8 @@ class AgentRuntime:
             user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
-            conversation_history=conversation_history or []
+            conversation_history=conversation_history or [],
+            metadata=metadata or {}
         )
 
         logger.info("=" * 60)

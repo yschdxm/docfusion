@@ -6,6 +6,7 @@ import html
 import json
 import httpx
 import asyncio
+import smtplib
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from typing import Any, List, Optional
@@ -20,9 +21,16 @@ from app.core.deps import get_current_user
 from app.db.postgres import get_db, engine
 from app.models.document import Document, ExtractionTask
 from app.models.user import User
-from app.schemas.document import DocumentResponse, DocumentPreviewResponse, DocumentSaveRequest
+from app.schemas.document import (
+    DocumentResponse,
+    DocumentPreviewResponse,
+    DocumentSaveRequest,
+    DocumentSendEmailRequest,
+    DocumentSendEmailResponse,
+)
 from app.services.preprocessing_service import preprocess_document
 from app.services.knowledge_graph_service import knowledge_graph_service
+from app.services.email_service import email_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -871,6 +879,45 @@ async def save_document_content(
             "updated_at": datetime.utcnow().isoformat(),
         },
     }
+
+
+@router.post("/{document_id}/send-email", response_model=DocumentSendEmailResponse)
+async def send_document_email(
+    document_id: UUID,
+    payload: DocumentSendEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    doc = await _get_user_document(document_id, current_user.id, db)
+
+    resolved_path = _resolve_document_path(doc.file_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    try:
+        await asyncio.to_thread(
+            email_service.send_document_email,
+            to_email=payload.to_email,
+            subject=payload.subject,
+            body=payload.body,
+            attachment_path=resolved_path,
+            attachment_name=doc.original_filename,
+        )
+    except HTTPException:
+        raise
+    except smtplib.SMTPException as exc:
+        logger.error("SMTP send error for document %s: %s", document_id, exc)
+        raise HTTPException(status_code=500, detail=f"邮件发送失败: {exc}") from exc
+    except Exception as exc:
+        logger.error("Unexpected email send error for document %s: %s", document_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="邮件发送失败，请检查邮箱配置或稍后重试") from exc
+
+    return DocumentSendEmailResponse(
+        message="邮件发送成功",
+        document_id=document_id,
+        to_email=payload.to_email,
+        subject=payload.subject,
+    )
 
 
 @router.get("/{document_id}/download")

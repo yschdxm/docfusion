@@ -14,6 +14,7 @@ from app.agent.tools import (
     Neo4jQueryTool,
     ListDocumentsTool,
     ExtractFromDocsTool,
+    WebSearchTool,
 )
 from app.agent.agents.fill_table_agent import FillTableAgent
 from app.agent.agents.document_edit_agent import DocumentEditAgent
@@ -27,6 +28,7 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
 ## 你的能力
 - 简单问答：直接回答关于文档的简单问题
 - 信息查询：使用搜索工具查找文档中的信息
+- 联网搜索：在用户询问公开网络信息、学校官网/教师介绍、实时资料或本地文档没有答案时，使用 web_search 获取网络来源
 - 任务委派：将复杂任务交给专用Agent处理
 
 ## 任务分配规则
@@ -67,17 +69,25 @@ GENERAL_AGENT_SYSTEM_PROMPT = """你是一个智能文档处理助手的调度�
    - 如果确实无法确定，才询问用户
 4. **注意**：自动匹配源文档时，不要调用任何工具预研文档内容，直接将匹配到的file_ids传给填表Agent
 
-### 文档编辑任务 -> delegate_document_edit
-当用户需要修改文档内容、调整格式、重写段落时（关键词：修改、替换、重写、格式、转换、插入、删除）
-- 需要提供要编辑的文档file_ids
+### 文档编辑/文档生成任务 -> delegate_document_edit
+当用户需要修改文档内容、调整格式、重写段落，或需要生成/整理一份可下载的Word文档时（关键词：修改、替换、重写、格式、转换、插入、删除、生成文档、Word文档、保存为Word、整理成文件、输出文件、论文综述）
+- 编辑已有文档时需要提供要编辑的文档file_ids
+- 如果用户没有选择模板，也没有指定已有文档，但要求输出Word/文档文件，仍然委派给 delegate_document_edit，由文档编辑Agent新建Word文档并保存到文档管理
 
 ### 简单查询 -> 直接使用工具
-当用户只是提问、搜索信息时，直接使用 rag_search / query_pg_database / query_knowledge_graph 等工具回答。
+当用户只是提问、搜索信息时，直接使用 rag_search / query_pg_database / query_knowledge_graph / web_search 等工具回答。
 
 **简单查询的判断标准**：
 - 用户只问某个信息，不需要生成文档
 - 用户说"XX是什么"、"查一下XX"、"XX有哪些"
 - 没有template_id，也没有要求输出文件
+
+### 联网搜索 -> web_search
+当用户询问公开网络信息、学校/学院/机构官网信息、某学校老师是谁、教师简介、新闻动态、实时资料，或本地文档检索无法回答时：
+- 如果联网搜索开关开启，优先调用 `web_search`
+- 搜索学校教师类问题时，查询词应包含学校/学院名称、教师/老师、官网等关键词
+- 回答时必须基于搜索结果，并尽量附上来源链接
+- 如果搜索失败或无结果，应说明未能获取到可靠网络结果，不要编造
 
 ## 重要规则
 - 只有你可以调用其他Agent，专用Agent不能调用Agent
@@ -127,6 +137,7 @@ def create_general_agent(stream_manager_provider=None) -> AgentRuntime:
     registry.register(Neo4jQueryTool())
     registry.register(ListDocumentsTool())
     registry.register(ExtractFromDocsTool())
+    registry.register(WebSearchTool())
 
     # 注册Agent委派工具（关键：通用Agent可以调用子Agent）
     registry.register(FillTableAgent(parent_stream_provider=stream_manager_provider))

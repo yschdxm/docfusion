@@ -10,6 +10,8 @@
 - fill_table: 表格填写
 - get_table_structure: 获取表格结构
 - extract_from_documents: 文档信息提取
+- web_search: 联网搜索
+- create_word_document: 新建Word文档
 - replace_text: 文本替换
 - rewrite_paragraph: LLM重写段落
 - insert_after: 段落后插入
@@ -28,7 +30,9 @@ from .list_docs_tool import ListDocumentsTool
 from .fill_table_tool import FillTableTool
 from .get_table_structure_tool import GetTableStructureTool
 from .extract_from_docs_tool import ExtractFromDocsTool
+from .web_search_tool import WebSearchTool
 from .document_edit_tools import (
+    CreateWordDocumentTool,
     ReplaceTextTool,
     RewriteParagraphTool,
     InsertAfterTool,
@@ -48,6 +52,8 @@ __all__ = [
     "FillTableTool",
     "GetTableStructureTool",
     "ExtractFromDocsTool",
+    "WebSearchTool",
+    "CreateWordDocumentTool",
     "ReplaceTextTool",
     "RewriteParagraphTool",
     "InsertAfterTool",

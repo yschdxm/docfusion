@@ -6,7 +6,11 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @tencent-qqmail/agently-cli
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir \

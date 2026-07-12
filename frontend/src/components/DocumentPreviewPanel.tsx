@@ -49,13 +49,25 @@ export default function DocumentPreviewPanel({
 
       {/* 内容区 */}
       <div className="flex-1 relative">
-        {isLoading ? (
+        {currentFile ? (
+          <>
+            <div
+              key={currentFile.id}
+              id="onlyoffice-preview-shell"
+              className="absolute inset-0"
+            />
+            {isLoading && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-slate-500 gap-3 bg-slate-950/30 backdrop-blur-[1px]">
+                <Loader2 className="w-8 h-8 animate-spin text-primary-400" />
+                <span className="text-sm">加载 ONLYOFFICE 组件中...</span>
+              </div>
+            )}
+          </>
+        ) : isLoading ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-3">
             <Loader2 className="w-8 h-8 animate-spin text-primary-400" />
             <span className="text-sm">加载 ONLYOFFICE 组件中...</span>
           </div>
-        ) : currentFile ? (
-          <div id="onlyoffice-preview" className="absolute inset-0" />
         ) : (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-3">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500/10 to-purple-500/10 flex items-center justify-center">

@@ -7,6 +7,7 @@ import {
   FileText,
   Filter,
   FolderOpen,
+  Mail,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +31,12 @@ interface ExtractionStatus {
   current_step: string
   error?: string
   entities_count: number
+}
+
+interface EmailFormState {
+  to_email: string
+  subject: string
+  body: string
 }
 
 const categoryConfig = {
@@ -81,6 +88,14 @@ export default function DocumentManager() {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
+  const [emailTargetDoc, setEmailTargetDoc] = useState<DocumentInfo | null>(null)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [isSendingEmail, setIsSendingEmail] = useState(false)
+  const [emailForm, setEmailForm] = useState<EmailFormState>({
+    to_email: '',
+    subject: '',
+    body: '',
+  })
   const sseSourcesRef = useRef<Record<string, EventSource>>({})
   const pendingDeleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const isMountedRef = useRef(true)
@@ -364,6 +379,57 @@ export default function DocumentManager() {
       }, 300)
     } catch (error) {
       toast.error(tr('重试失败', 'Retry failed', '再試行に失敗しました'))
+    }
+  }
+
+  const openEmailModal = (doc: DocumentInfo) => {
+    setEmailTargetDoc(doc)
+    setEmailForm({
+      to_email: '',
+      subject: `${tr('文档分享', 'Document Share', '文書共有')}: ${doc.original_filename}`,
+      body: tr(
+        '您好，附件中是我从系统中发送给您的文档，请查收。',
+        'Hello, the requested document is attached. Please check it.',
+        'こんにちは。ご依頼の文書を添付いたします。ご確認ください。'
+      ),
+    })
+    setShowEmailModal(true)
+  }
+
+  const handleSendEmail = async () => {
+    if (!emailTargetDoc) {
+      toast.error(tr('未找到可发送的文档', 'No document available to send', '送信可能な文書が見つかりません'))
+      return
+    }
+
+    if (!emailForm.to_email.trim()) {
+      toast.error(tr('请输入收件人邮箱', 'Please enter recipient email', '宛先メールアドレスを入力してください'))
+      return
+    }
+
+    if (!emailForm.subject.trim()) {
+      toast.error(tr('请输入邮件主题', 'Please enter email subject', 'メール件名を入力してください'))
+      return
+    }
+
+    try {
+      setIsSendingEmail(true)
+      await api.post(`/documents/${emailTargetDoc.id}/send-email`, {
+        to_email: emailForm.to_email.trim(),
+        subject: emailForm.subject.trim(),
+        body: emailForm.body,
+      })
+      toast.success(tr('邮件发送成功', 'Email sent successfully', 'メール送信に成功しました'))
+      notifyBell(
+        tr('邮件发送成功', 'Email sent successfully', 'メール送信成功'),
+        `${emailTargetDoc.original_filename} → ${emailForm.to_email.trim()}`
+      )
+      setShowEmailModal(false)
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail
+      toast.error(detail || tr('邮件发送失败', 'Failed to send email', 'メール送信に失敗しました'))
+    } finally {
+      setIsSendingEmail(false)
     }
   }
 
@@ -689,6 +755,14 @@ export default function DocumentManager() {
                     >
                       <Eye className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
+                    <button
+                      onClick={() => openEmailModal(doc)}
+                      aria-label={tr('发送邮件', 'Send email', 'メール送信')}
+                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-emerald-500/20 hover:text-emerald-500"
+                      title={tr('发送邮件', 'Send email', 'メール送信')}
+                    >
+                      <Mail className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                    </button>
                     <button onClick={() => handleDownload(doc)} aria-label={tr('下载文档', 'Download document', '文書をダウンロード')} className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-blue-500/20 hover:text-blue-400">
                       <Download className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                     </button>
@@ -713,6 +787,86 @@ export default function DocumentManager() {
       </div>
 
       <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
+
+      {showEmailModal && emailTargetDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="glass w-full max-w-lg rounded-2xl p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">{tr('发送邮件', 'Send Email', 'メール送信')}</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {tr('将当前文档作为附件发送', 'Send the current document as an attachment', '現在の文書を添付ファイルとして送信')}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">{emailTargetDoc.original_filename}</p>
+              </div>
+              <button
+                onClick={() => setShowEmailModal(false)}
+                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                aria-label={tr('关闭', 'Close', '閉じる')}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  {tr('收件人邮箱', 'Recipient Email', '宛先メール')}
+                </label>
+                <input
+                  type="email"
+                  value={emailForm.to_email}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, to_email: e.target.value }))}
+                  placeholder={tr('请输入收件人邮箱', 'Enter recipient email', '宛先メールアドレスを入力')}
+                  className="input w-full"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  {tr('邮件主题', 'Email Subject', 'メール件名')}
+                </label>
+                <input
+                  type="text"
+                  value={emailForm.subject}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, subject: e.target.value }))}
+                  placeholder={tr('请输入邮件主题', 'Enter email subject', 'メール件名を入力')}
+                  className="input w-full"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  {tr('邮件正文', 'Email Body', 'メール本文')}
+                </label>
+                <textarea
+                  value={emailForm.body}
+                  onChange={(e) => setEmailForm((prev) => ({ ...prev, body: e.target.value }))}
+                  placeholder={tr('请输入邮件内容', 'Enter email content', 'メール本文を入力')}
+                  className="input min-h-[140px] w-full resize-y py-3"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                onClick={() => setShowEmailModal(false)}
+                className="btn-secondary px-4 py-2"
+                disabled={isSendingEmail}
+              >
+                {tr('取消', 'Cancel', 'キャンセル')}
+              </button>
+              <button
+                onClick={handleSendEmail}
+                className="btn-primary px-4 py-2"
+                disabled={isSendingEmail}
+              >
+                {isSendingEmail ? tr('发送中...', 'Sending...', '送信中...') : tr('确认发送', 'Send', '送信')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

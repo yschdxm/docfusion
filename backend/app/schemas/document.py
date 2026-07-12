@@ -41,4 +41,17 @@ class DocumentSaveRequest(BaseModel):
     content: str
 
 
+class DocumentSendEmailRequest(BaseModel):
+    to_email: str
+    subject: str
+    body: str = ""
+
+
+class DocumentSendEmailResponse(BaseModel):
+    message: str
+    document_id: UUID
+    to_email: str
+    subject: str
+
+
 

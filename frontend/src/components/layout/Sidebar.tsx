@@ -1,5 +1,5 @@
 ﻿import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FolderOpen, FileText, Network, NotebookPen } from 'lucide-react'
+import { LayoutDashboard, FolderOpen, FileText, NotebookPen, Mail } from 'lucide-react'
 import { useI18n } from '../../hooks/useI18n'
 import { sidebarI18n } from '../../services/i18n'
 import { useState, useEffect } from 'react'
@@ -63,8 +63,8 @@ export default function Sidebar({ isMobile, onClose }: SidebarProps) {
     { path: '/', icon: LayoutDashboard, label: t.dashboard },
     { path: '/documents', icon: FolderOpen, label: t.documents },
     { path: '/document-operation', icon: FileText, label: language === 'zh-CN' ? '智能助手' : t.operation },
-    { path: '/knowledge', icon: Network, label: t.knowledge },
     { path: '/work-log', icon: NotebookPen, label: t.workLog },
+    { path: '/email-management', icon: Mail, label: language === 'zh-CN' ? '邮件管理' : 'Mail' },
   ]
 
   return (

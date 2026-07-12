@@ -16,6 +16,7 @@ export interface AgentStreamRequest {
   conversation_id?: string | null
   task_type?: 'auto' | 'fill_table' | 'query' | 'operation'
   task_id?: string  // 重连时携带
+  web_search_enabled?: boolean
 }
 
 export interface AgentEvent {

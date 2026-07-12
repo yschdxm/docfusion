@@ -2,6 +2,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from typing import List, Dict, Any, Optional
 import logging
+import httpx
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -102,46 +103,59 @@ class VectorStoreService:
         top_k: int = 10,
         filter_conditions: Dict[str, Any] = None
     ) -> List[Dict[str, Any]]:
-        """搜索相似文档，支持 source_file 列表过滤。"""
+        """搜索相似文档。
+
+        直接走 Qdrant REST API，避免不同 qdrant-client 版本下
+        AsyncQdrantClient 方法差异导致的兼容性问题。
+        """
         await self.connect()
         await self.init_collection()
 
-        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+        request_body: Dict[str, Any] = {
+            "vector": query_vector,
+            "limit": top_k,
+            "with_payload": True,
+            "with_vector": False,
+        }
 
-        query_filter = None
         if filter_conditions:
-            conditions = []
+            must_conditions = []
             for key, value in filter_conditions.items():
                 if isinstance(value, list):
-                    # 列表值使用 MatchAny
-                    conditions.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchAny(any=value)
-                        )
-                    )
+                    must_conditions.append({
+                        "key": key,
+                        "match": {"any": value}
+                    })
                 else:
-                    conditions.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchValue(value=value)
-                        )
-                    )
-            query_filter = Filter(must=conditions)
+                    must_conditions.append({
+                        "key": key,
+                        "match": {"value": value}
+                    })
+            request_body["filter"] = {"must": must_conditions}
 
-        results = await self.client.search(
-            collection_name=self.COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=top_k,
-            query_filter=query_filter
-        )
+        url = f"{settings.QDRANT_URL}/collections/{self.COLLECTION_NAME}/points/search"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=request_body,
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        results = payload.get("result", []) or []
 
         return [
             {
-                "doc_id": hit.id,
-                "score": hit.score,
-                "content": hit.payload.get("content", ""),
-                "metadata": {k: v for k, v in hit.payload.items() if k != "content"}
+                "doc_id": hit.get("id"),
+                "score": hit.get("score", 0),
+                "content": (hit.get("payload") or {}).get("content", ""),
+                "metadata": {
+                    k: v
+                    for k, v in (hit.get("payload") or {}).items()
+                    if k != "content"
+                }
             }
             for hit in results
         ]

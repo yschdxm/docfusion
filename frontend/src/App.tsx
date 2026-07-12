@@ -4,8 +4,8 @@ import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
 import DocumentManager from './pages/DocumentManager'
 import DocumentOperation from './pages/DocumentOperation'
-import KnowledgeGraph from './pages/KnowledgeGraph'
 import WorkLog from './pages/WorkLog'
+import EmailManagement from './pages/EmailManagement'
 import ProfileCenter from './pages/ProfileCenter'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -64,8 +64,9 @@ function App() {
         <Route index element={<Dashboard />} />
         <Route path="documents" element={<DocumentManager />} />
         <Route path="document-operation" element={<DocumentOperation />} />
-        <Route path="knowledge" element={<KnowledgeGraph />} />
+        <Route path="knowledge" element={<Navigate to="/" replace />} />
         <Route path="work-log" element={<WorkLog />} />
+        <Route path="email-management" element={<EmailManagement />} />
         <Route path="profile" element={<ProfileCenter />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

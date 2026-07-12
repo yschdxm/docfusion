@@ -80,6 +80,20 @@ class Settings(BaseSettings):
     ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
     ONLYOFFICE_PUBLIC_SIGNING_SECRET: Optional[str] = None
 
+    # SMTP Mail
+    SMTP_SERVER: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+
+    # Tencent Agent Mail / agently-cli
+    AGENTLY_CLI_BIN: str = "agently-cli"
+    AGENTLY_MAIL_LIST_COMMAND: str = ""
+    AGENTLY_MAIL_DETAIL_COMMAND: str = ""
+    AGENTLY_MAIL_SEND_COMMAND: str = ""
+    AGENTLY_MAIL_ATTACHMENT_COMMAND: str = ""
+    AGENTLY_MAIL_TIMEOUT_SECONDS: int = 120
+
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 52428800

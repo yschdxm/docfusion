@@ -12,6 +12,7 @@ from app.agent.core.registry import ToolRegistry
 from app.agent.core.runtime import AgentRuntime
 from app.agent.tools import RAGTool, DocReaderTool
 from app.agent.tools.document_edit_tools import (
+    CreateWordDocumentTool,
     ReplaceTextTool,
     RewriteParagraphTool,
     InsertAfterTool,
@@ -32,6 +33,9 @@ DOCUMENT_EDIT_SYSTEM_PROMPT = """你是一个专业的文档编辑Agent，专注
 4. 向用户报告编辑结果
 
 ## 可用操作
+
+### create_word_document - 新建Word文档
+当用户要求生成/整理/输出一份Word文档，但没有选择模板或没有指定已有文档时使用。
 
 ### replace_text - 文本替换
 替换文档中的指定文本。需要提供：
@@ -83,8 +87,9 @@ DOCUMENT_EDIT_SYSTEM_PROMPT = """你是一个专业的文档编辑Agent，专注
 - target_format: 目标格式
 
 ## 工作流程
-1. 使用 read_document 读取文档内容，了解文档结构
-2. 根据用户指令选择合适的编辑操作（首次编辑：file_id=原始文档ID）
+1. 如果用户没有选择模板/已有文档，却要求生成Word文档、整理成Word、输出文档或保存文件，直接使用 create_word_document 新建文档
+2. 如果是编辑已有文档，使用 read_document 读取文档内容，了解文档结构
+3. 根据用户指令选择合适的编辑操作（首次编辑：file_id=原始文档ID）
 3. 收到编辑结果后，记住返回的 output_file_id，后续对该文档的编辑使用 file_id=output_file_id
 4. 向用户报告编辑结果
 
@@ -134,7 +139,7 @@ class DocumentEditAgent(DelegateAgentTool):
 
     @property
     def description(self) -> str:
-        return "将文档编辑任务委派给专用的文档编辑Agent。当用户需要修改文档内容、调整格式、重写段落、转换格式时使用此工具。"
+        return "将文档编辑/文档生成任务委派给专用的文档编辑Agent。当用户需要修改文档内容、调整格式、重写段落、转换格式，或未选择模板但需要新建Word文档时使用此工具。"
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -160,6 +165,7 @@ class DocumentEditAgent(DelegateAgentTool):
         registry.register(DocReaderTool())  # 读取文档内容
         registry.register(RAGTool())        # 搜索定位内容
         # 注册文档编辑工具
+        registry.register(CreateWordDocumentTool())
         registry.register(ReplaceTextTool())
         registry.register(RewriteParagraphTool())
         registry.register(InsertAfterTool())

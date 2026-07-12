@@ -422,6 +422,7 @@ class AgentStreamRequest(BaseModel):
     conversation_id: Optional[str] = Field(None, description="对话ID")
     task_type: str = Field("auto", description="任务类型: auto/fill_table/query/operation")
     task_id: Optional[str] = Field(None, description="重连时携带的任务ID")
+    web_search_enabled: bool = Field(True, description="是否启用联网搜索")
 
 
 @router.post("/stream")
@@ -479,6 +480,7 @@ async def agent_stream(
     logger.info(f"[API /agent/stream] 文件数: {len(request.file_ids)} | 文件IDs: {request.file_ids}")
     logger.info(f"[API /agent/stream] 模板ID: {request.template_id}")
     logger.info(f"[API /agent/stream] 任务类型: {request.task_type}")
+    logger.info(f"[API /agent/stream] 联网搜索: {'开启' if request.web_search_enabled else '关闭'}")
     logger.info(f"[API /agent/stream] 对话ID: {request.conversation_id}")
 
     # 加载对话历史
@@ -565,7 +567,8 @@ async def _new_task_stream(request: AgentStreamRequest, conversation_history: li
             template_id=request.template_id,
             conversation_history=conversation_history,
             stream_manager=task.stream,
-            user_id=user_id
+            user_id=user_id,
+            metadata={"web_search_enabled": request.web_search_enabled}
         ):
             event_count += 1
 

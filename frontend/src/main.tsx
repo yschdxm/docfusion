@@ -26,8 +26,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Toaster
           position="top-center"
           toastOptions={{
-            className: 'glass-dark text-white',
+            className: 'glass-dark',
             duration: 3000,
+            style: {
+              background: 'var(--theme-glass-bg)',
+              color: 'var(--theme-body-text)',
+              border: '1px solid var(--theme-border)',
+              boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)',
+            },
+            success: {
+              iconTheme: {
+                primary: 'var(--theme-primary)',
+                secondary: '#ffffff',
+              },
+            },
+            error: {
+              iconTheme: {
+                primary: '#ef4444',
+                secondary: '#ffffff',
+              },
+            },
           }}
           containerStyle={{ top: 60 }}
         />
