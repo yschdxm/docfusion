@@ -1,4 +1,4 @@
-FROM docker.1ms.run/node:20-alpine AS builder
+FROM docker.1ms.run/node:21-alpine AS builder
 
 WORKDIR /app
 
