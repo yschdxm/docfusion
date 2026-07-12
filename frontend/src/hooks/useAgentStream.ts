@@ -91,25 +91,40 @@ export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamO
    */
   const buildCallbacks = useCallback((targetSessionId: string) => ({
     onEvent: (event: AgentEvent, steps: AgentStep[]) => {
-      // 捕获 content_chunk（累积）
-      if (event.event_type === 'content_chunk' && event.data.content) {
-        contentRef.current += event.data.content as string
-        setStreamingContent(contentRef.current)
+      // 区分主 agent 和子 agent 事件：
+      // 子 agent 的 content_chunk/assistant_message 由 processor 处理（写入步骤的 streamingReply），
+      // 不应影响主 agent 的 contentRef。
+      const isChildAgent = !!event.data.agent_name && !event.data.is_delegation_end
+
+      if (!isChildAgent) {
+        // 主 agent 的 content_chunk → 累积到 contentRef（流式显示）
+        if (event.event_type === 'content_chunk' && event.data.content) {
+          contentRef.current += event.data.content as string
+          setStreamingContent(contentRef.current)
+        }
+        // assistant_message 是内容分界点：保存当前内容为消息，清空 contentRef
+        // 后续 content_chunk 从头累积，形成独立的新消息。
+        if (event.event_type === 'assistant_message') {
+          if (contentRef.current && targetSessionId) {
+            onMessageCompleteRef.current?.(
+              targetSessionId,
+              contentRef.current,
+              stepsRef.current,
+              statsRef.current || undefined,
+            )
+          }
+          contentRef.current = ''
+          setStreamingContent('')
+        }
       }
-      // assistant_message 是内容边界：后端在此清空 full_content，
-      // 前端也应清空 contentRef，让后续 content_chunk 从头累积。
-      // 中间回复内容不需要保留（最终回复通过 content_chunk 或 completed.result.message 到达）。
-      if (event.event_type === 'assistant_message') {
-        contentRef.current = ''
-        setStreamingContent('')
-      }
-      // 捕获 stats_update
+
+      // stats_update 始终处理（不分子 agent）
       if (event.event_type === 'stats_update' && event.data.stats) {
         const stats = event.data.stats as TaskStats
         statsRef.current = stats
         setStreamingStats(stats)
       }
-      // 更新 steps
+      // steps 始终更新（processor 已正确路由子 agent 事件到步骤的 children）
       stepsRef.current = steps
       setCurrentSteps([...steps])
     },
@@ -117,7 +132,8 @@ export function useAgentStream({ sessionId, onMessageComplete }: UseAgentStreamO
       const finalContent = contentRef.current
       const finalSteps = stepsRef.current
       const finalStats = statsRef.current
-      const contentToSave = finalContent || result.message
+      // 优先使用 result.message（后端最终回复），contentRef 作为兜底
+      const contentToSave = result.message || finalContent
 
       setIsStreaming(false)
       stopDurationTimer()

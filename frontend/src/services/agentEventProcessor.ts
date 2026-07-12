@@ -199,9 +199,8 @@ export function processEvent(state: StepState, event: AgentEvent): AgentStep[] {
     }
 
     case 'assistant_message':
-      // 新一轮对话，清空步骤
-      state.steps.clear()
-      state.orderedIds = []
+      // 不再清空步骤：委派场景下父 agent 的思考过程需要保留。
+      // 新一轮的步骤会通过 step_start 创建，旧步骤自然被推到列表下方。
       break
 
     case 'data_retrieval_start':

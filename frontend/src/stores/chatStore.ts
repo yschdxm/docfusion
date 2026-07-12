@@ -84,19 +84,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true })
     try {
       const response = await api.get('/conversations/')
-      const sessions: ChatSession[] = response.data.map((conv: any) => ({
-        id: conv.id,
-        documentId: conv.file_ids?.[0] || null,
-        documentName: conv.title || tr('新对话', 'New Chat', '新しい会話'),
-        fileIds: conv.file_ids || [],
-        templateId: conv.template_id,
-        messages: [],
-        messagesLoaded: false,
-        messageCount: conv.message_count || 0,
-        lastMessage: conv.last_message || '',
-        createdAt: new Date(conv.created_at).getTime(),
-        updatedAt: new Date(conv.updated_at).getTime()
-      }))
+      const existingSessions = get().sessions
+
+      const sessions: ChatSession[] = response.data.map((conv: any) => {
+        // 保留已加载会话的本地状态（消息、加载标记）
+        const existing = existingSessions.find(s => s.id === conv.id)
+        return {
+          id: conv.id,
+          documentId: conv.file_ids?.[0] || null,
+          documentName: conv.title || tr('新对话', 'New Chat', '新しい会話'),
+          fileIds: conv.file_ids || [],
+          templateId: conv.template_id,
+          messages: existing?.messages || [],
+          messagesLoaded: existing?.messagesLoaded ?? false,
+          messageCount: conv.message_count || 0,
+          lastMessage: conv.last_message || '',
+          createdAt: new Date(conv.created_at).getTime(),
+          updatedAt: new Date(conv.updated_at).getTime()
+        }
+      })
       set({ sessions })
 
       // 自动设置最新会话为活跃会话（消息由 AISidebar effect 统一加载）
