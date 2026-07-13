@@ -270,6 +270,9 @@ async def poll_auth(
         status: "pending" | "completed" | "expired" | "error"
         email: 授权成功时返回邮箱地址
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         # 直接调用 agently 的 OAuth API 轮询授权状态
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -283,6 +286,8 @@ async def poll_auth(
             response.raise_for_status()
             data = response.json()
 
+            logger.info(f"[AUTH_POLL] Response: {data}")
+
             status = data.get("status", "")
 
             if status == "pending":
@@ -295,16 +300,26 @@ async def poll_auth(
                 expires_in = data.get("expires_in")
                 email = data.get("email", "")
 
+                logger.info(f"[AUTH_POLL] Token received: {access_token[:20]}..., email: {email}")
+
                 if access_token:
                     # 保存 token 到数据库
-                    await agently_mail_service.save_user_token(
-                        db=db,
-                        user_id=current_user.id,
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        expires_in=expires_in,
-                        email=email,
-                    )
+                    try:
+                        await agently_mail_service.save_user_token(
+                            db=db,
+                            user_id=current_user.id,
+                            access_token=access_token,
+                            refresh_token=refresh_token,
+                            expires_in=expires_in,
+                            email=email,
+                        )
+                        logger.info(f"[AUTH_POLL] Token saved for user {current_user.id}")
+                    except Exception as save_err:
+                        logger.error(f"[AUTH_POLL] Failed to save token: {save_err}")
+                        return OAuthPollResponse(
+                            status="error",
+                            error=f"保存 token 失败: {str(save_err)}",
+                        )
 
                     return OAuthPollResponse(
                         status="completed",
@@ -329,11 +344,13 @@ async def poll_auth(
                 )
 
     except httpx.HTTPStatusError as exc:
+        logger.error(f"[AUTH_POLL] HTTP error: {exc.response.status_code}")
         return OAuthPollResponse(
             status="error",
             error=f"Agently OAuth 服务返回错误: {exc.response.status_code}",
         )
     except Exception as exc:
+        logger.error(f"[AUTH_POLL] Exception: {exc}", exc_info=True)
         return OAuthPollResponse(
             status="error",
             error=str(exc),

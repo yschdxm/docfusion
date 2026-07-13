@@ -450,16 +450,19 @@ class AgentlyMailService:
         """获取用户的授权状态"""
         token = await self.get_user_token(db, user_id)
         if not token:
+            logger.info(f"[AUTH_STATUS] No token for user {user_id}")
             return {"authorized": False, "email": None}
 
         try:
             # 尝试获取用户信息来验证 token 有效性
             info = await self.me(user_token=token)
+            logger.info(f"[AUTH_STATUS] User {user_id} info: {info}")
             return {
                 "authorized": True,
                 "email": info.get("email"),
             }
-        except Exception:
+        except Exception as e:
+            logger.error(f"[AUTH_STATUS] Failed to get user info: {e}", exc_info=True)
             return {"authorized": False, "email": None}
 
     async def _refresh_token(self, refresh_token: str) -> dict[str, Any] | None:
