@@ -840,7 +840,7 @@ class AgentRuntime:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": json.dumps(result.data, ensure_ascii=False) if result.success else result.error
+                    "content": json.dumps(result.data, ensure_ascii=False, default=str) if result.success else result.error
                 })
                 logger.debug(f"[AgentRuntime._execute_loop] 已添加工具结果到对话历史 | 当前消息数: {len(messages)}")
 

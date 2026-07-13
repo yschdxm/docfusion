@@ -14,6 +14,7 @@ from app.agent.tools import (
     Neo4jQueryTool,
     ListDocumentsTool,
     GetTemplateTypeTool,
+    WebSearchTool,
 )
 from app.agent.agents.fill_table_agent import FillTableAgent
 from app.agent.agents.document_edit_agent import DocumentEditAgent
@@ -158,6 +159,7 @@ def create_general_agent(stream_manager_provider=None) -> AgentRuntime:
     registry.register(Neo4jQueryTool())
     registry.register(ListDocumentsTool())
     registry.register(GetTemplateTypeTool())  # 用于快速判断模板类型，决定路由
+    registry.register(WebSearchTool())  # 联网搜索工具（非必要不使用）
 
     # 注册Agent委派工具（关键：通用Agent可以调用子Agent）
     registry.register(FillTableAgent(parent_stream_provider=stream_manager_provider))

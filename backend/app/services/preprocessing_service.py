@@ -121,6 +121,7 @@ async def preprocess_document(
                         await conn.execute(sa_text(sql), param_list)
 
                     result = await XlsxParser.load_to_postgres(
+                        file_path=file_path,
                         workbook=workbook,
                         doc_id=doc_id,
                         db_execute=db_execute_in_conn,

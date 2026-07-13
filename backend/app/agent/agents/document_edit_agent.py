@@ -10,7 +10,7 @@ from typing import Any, Dict
 from app.agent.core.delegation import DelegateAgentTool
 from app.agent.core.registry import ToolRegistry
 from app.agent.core.runtime import AgentRuntime
-from app.agent.tools import RAGTool, DocReaderTool
+from app.agent.tools import RAGTool, DocReaderTool, WebSearchTool
 from app.agent.tools.document_edit_tools import (
     ReplaceTextTool,
     RewriteParagraphTool,
@@ -159,6 +159,7 @@ class DocumentEditAgent(DelegateAgentTool):
         registry = ToolRegistry()
         registry.register(DocReaderTool())  # 读取文档内容
         registry.register(RAGTool())        # 搜索定位内容
+        registry.register(WebSearchTool())  # 联网搜索工具（非必要不使用）
         # 注册文档编辑工具
         registry.register(ReplaceTextTool())
         registry.register(RewriteParagraphTool())

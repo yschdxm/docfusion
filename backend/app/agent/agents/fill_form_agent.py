@@ -18,6 +18,7 @@ from app.agent.tools import (
     Neo4jQueryTool,
     GetFormStructureTool,
     FillFormTool,
+    WebSearchTool,
 )
 
 
@@ -234,6 +235,7 @@ class FillFormAgent(DelegateAgentTool):
         registry.register(RAGTool())
         registry.register(DocReaderTool())
         registry.register(FillFormTool())
+        registry.register(WebSearchTool())  # 联网搜索工具（非必要不使用）
         # 注意：不注册任何 DelegateAgentTool，防止嵌套
 
         return AgentRuntime(

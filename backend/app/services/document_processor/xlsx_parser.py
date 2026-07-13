@@ -5,8 +5,107 @@ import re
 import logging
 import shutil
 from datetime import datetime
+import zipfile
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+# XML 命名空间
+NS = {'main': 'http://purl.oclc.org/ooxml/spreadsheetml/main'}
+
+
+def _parse_xlsx_with_zip(file_path: str) -> Dict[str, Any]:
+    """使用 zipfile 直接解析 xlsx 文件（openpyxl 兼容性备用方案）。"""
+    sheets = []
+    all_text = []
+
+    with zipfile.ZipFile(file_path, 'r') as z:
+        # 读取 sharedStrings
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            with z.open('xl/sharedStrings.xml') as f:
+                tree = ET.parse(f)
+                root = tree.getroot()
+                for si in root.findall('.//main:si', NS):
+                    # 处理富文本（多个 t 元素）
+                    texts = si.findall('.//main:t', NS)
+                    shared_strings.append(''.join(t.text or '' for t in texts))
+
+        # 读取 workbook.xml 获取 sheet 列表
+        sheet_list = []
+        if 'xl/workbook.xml' in z.namelist():
+            with z.open('xl/workbook.xml') as f:
+                tree = ET.parse(f)
+                root = tree.getroot()
+                for sheet in root.findall('.//main:sheet', NS):
+                    sheet_list.append({
+                        'name': sheet.get('name', 'Sheet'),
+                        'r:id': sheet.get('{http://purl.oclc.org/ooxml/officeDocument/relationships}id')
+                    })
+
+        # 读取 workbook.xml.rels 获取 sheet 文件映射
+        sheet_files = {}
+        REL_NS = {'rel': 'http://schemas.openxmlformats.org/package/2006/relationships'}
+        if 'xl/_rels/workbook.xml.rels' in z.namelist():
+            with z.open('xl/_rels/workbook.xml.rels') as f:
+                tree = ET.parse(f)
+                root = tree.getroot()
+                for rel in root.findall('.//rel:Relationship', REL_NS):
+                    rid = rel.get('Id')
+                    target = rel.get('Target')
+                    if rid and target and 'worksheet' in rel.get('Type', ''):
+                        sheet_files[rid] = f'xl/{target}'
+
+        # 解析每个 sheet
+        for sheet_info in sheet_list:
+            sheet_name = sheet_info['name']
+            rid = sheet_info['r:id']
+            sheet_file = sheet_files.get(rid)
+
+            if not sheet_file or sheet_file not in z.namelist():
+                continue
+
+            rows = []
+            with z.open(sheet_file) as f:
+                tree = ET.parse(f)
+                root = tree.getroot()
+
+                for row in root.findall('.//main:sheetData/main:row', NS):
+                    row_data = []
+                    for cell in row.findall('main:c', NS):
+                        cell_type = cell.get('t', '')
+                        value_elem = cell.find('main:v', NS)
+
+                        if value_elem is None or value_elem.text is None:
+                            row_data.append('')
+                        elif cell_type == 's':  # shared string
+                            idx = int(value_elem.text)
+                            row_data.append(shared_strings[idx] if idx < len(shared_strings) else '')
+                        elif cell_type == 'str':  # inline string
+                            row_data.append(value_elem.text)
+                        elif cell_type == 'b':  # boolean
+                            row_data.append('TRUE' if value_elem.text == '1' else 'FALSE')
+                        else:
+                            row_data.append(value_elem.text)
+
+                    if row_data:
+                        rows.append(row_data)
+                        all_text.extend([cell for cell in row_data if cell])
+
+            sheets.append({
+                "name": sheet_name,
+                "data": rows,
+                "rows": len(rows),
+                "cols": len(rows[0]) if rows else 0
+            })
+
+    full_text = "\n".join(all_text)
+
+    return {
+        "full_text": full_text,
+        "sheets": sheets,
+        "sheet_count": len(sheets)
+    }
 
 
 class XlsxParser:
@@ -20,14 +119,34 @@ class XlsxParser:
 
     @staticmethod
     def parse(file_path: str = None, workbook: Optional[openpyxl.Workbook] = None) -> Dict[str, Any]:
-        """解析 xlsx 文件，支持传入已加载的 workbook 避免重复加载。"""
-        should_close = False
-        if workbook is None:
-            if file_path is None:
-                raise ValueError("file_path 和 workbook 不能同时为空")
-            workbook = openpyxl.load_workbook(file_path, data_only=True)
-            should_close = True
+        """解析 xlsx 文件，支持传入已加载的 workbook 避免重复加载。
 
+        如果 openpyxl 解析失败，会自动使用 zipfile 备用方案。
+        """
+        # 如果有 workbook，使用 openpyxl
+        if workbook is not None:
+            return XlsxParser._parse_with_openpyxl(workbook, should_close=False)
+
+        if file_path is None:
+            raise ValueError("file_path 和 workbook 不能同时为空")
+
+        # 先尝试 openpyxl
+        try:
+            workbook = openpyxl.load_workbook(file_path, data_only=True)
+            if workbook.sheetnames:  # 如果成功获取到 sheets
+                return XlsxParser._parse_with_openpyxl(workbook, should_close=True)
+            else:
+                workbook.close()
+                logger.warning(f"openpyxl 未找到 sheets，使用备用方案: {file_path}")
+        except Exception as e:
+            logger.warning(f"openpyxl 解析失败，使用备用方案: {file_path}, error={e}")
+
+        # 备用方案：使用 zipfile 直接解析
+        return _parse_xlsx_with_zip(file_path)
+
+    @staticmethod
+    def _parse_with_openpyxl(workbook: openpyxl.Workbook, should_close: bool = False) -> Dict[str, Any]:
+        """使用 openpyxl 解析 workbook。"""
         try:
             sheets = []
             all_text = []
@@ -210,6 +329,8 @@ class XlsxParser:
         - 支持传入 conn 复用数据库连接，单事务提交
         - 索引延迟到最后统一创建
 
+        如果 openpyxl 解析失败，会自动使用 zipfile 备用方案。
+
         Args:
             file_path: xlsx 文件路径
             doc_id: 文档 ID
@@ -225,167 +346,348 @@ class XlsxParser:
             logger.warning("db_execute 和 conn 均未提供，跳过 PostgreSQL 入库")
             return []
 
-        should_close_workbook = False
+        # 如果有 workbook 且有 sheets，使用 openpyxl
+        if workbook is not None and workbook.sheetnames:
+            return await XlsxParser._load_to_postgres_openpyxl(
+                workbook=workbook, doc_id=doc_id,
+                db_execute=db_execute, db_execute_many=db_execute_many, conn=conn
+            )
+
+        # 如果没有 workbook，尝试加载
         if workbook is None:
             if file_path is None:
                 raise ValueError("file_path 和 workbook 不能同时为空")
-            workbook = openpyxl.load_workbook(file_path, data_only=True)
-            should_close_workbook = True
 
-        try:
-            schema_info = []
-            BATCH_SIZE = 500
+            # 先尝试 openpyxl
+            try:
+                workbook = openpyxl.load_workbook(file_path, data_only=True)
+                if workbook.sheetnames:
+                    result = await XlsxParser._load_to_postgres_openpyxl(
+                        workbook=workbook, doc_id=doc_id,
+                        db_execute=db_execute, db_execute_many=db_execute_many, conn=conn
+                    )
+                    workbook.close()
+                    return result
+                else:
+                    workbook.close()
+                    logger.warning(f"openpyxl 未找到 sheets，使用备用方案: {file_path}")
+            except Exception as e:
+                if workbook:
+                    workbook.close()
+                logger.warning(f"openpyxl 解析失败，使用备用方案: {file_path}, error={e}")
 
-            for sheet_name in workbook.sheetnames:
-                sheet = workbook[sheet_name]
+        # 备用方案：使用 zipfile 直接解析
+        return await XlsxParser._load_to_postgres_zipfile(
+            file_path=file_path, doc_id=doc_id,
+            db_execute=db_execute, db_execute_many=db_execute_many, conn=conn
+        )
 
-                # 先读取第一行（表头）和前几行用于推断类型
-                first_rows = []
-                for i, row in enumerate(sheet.iter_rows(values_only=True)):
-                    first_rows.append(row)
-                    if i >= 100:  # 读取前 101 行用于类型推断
-                        break
+    @staticmethod
+    async def _load_to_postgres_zipfile(
+        file_path: str,
+        doc_id: str,
+        db_execute=None,
+        db_execute_many=None,
+        conn=None,
+    ) -> List[Dict[str, Any]]:
+        """使用 zipfile 直接解析 xlsx 并写入 PostgreSQL（备用方案）。"""
+        logger.info(f"使用 zipfile 备用方案解析 xlsx: {file_path}")
 
-                if len(first_rows) < 2:
-                    continue
+        parsed = _parse_xlsx_with_zip(file_path)
+        sheets = parsed.get("sheets", [])
 
-                headers = first_rows[0]
-                sample_rows = first_rows[1:]
+        if not sheets:
+            logger.warning(f"zipfile 解析未找到 sheets: {file_path}")
+            return []
 
-                # 清理表头作为列名
-                col_names = []
-                for i, h in enumerate(headers):
-                    name = str(h).strip() if h and str(h).strip() else f"col_{i}"
-                    name = re.sub(r"[^\w一-鿿]", "_", name)
-                    col_names.append(name)
+        schema_info = []
+        BATCH_SIZE = 500
 
-                # 清理 sheet 名作为表名
-                safe_sheet = re.sub(r"[^\w一-鿿]", "_", sheet_name)
-                table_name = f"{doc_id[:8]}_{safe_sheet}".lower()
+        for sheet_data in sheets:
+            sheet_name = sheet_data["name"]
+            rows = sheet_data.get("data", [])
 
-                # 基于样本数据推断列类型
-                col_types = []
-                for col_idx in range(len(headers)):
-                    values = [
-                        str(r[col_idx]).strip()
-                        for r in sample_rows
-                        if col_idx < len(r) and r[col_idx] is not None and str(r[col_idx]).strip()
-                    ]
-                    col_type, _ = _infer_column_type(values)
-                    col_types.append(col_type)
+            if len(rows) < 2:
+                continue
 
-                # 创建表
-                col_defs = []
-                for j, cn in enumerate(col_names):
-                    pg_type = "TEXT"
-                    if j < len(col_types):
-                        if col_types[j] == "int":
-                            pg_type = "BIGINT"
-                        elif col_types[j] == "float":
-                            pg_type = "DOUBLE PRECISION"
-                        elif col_types[j] == "date":
-                            pg_type = "DATE"
-                    col_defs.append(f'"{cn}" {pg_type}')
+            headers = rows[0]
+            data_rows = rows[1:]
 
-                try:
-                    # 执行建表语句
-                    create_sql = f'CREATE TABLE IF NOT EXISTS "{table_name}" ({", ".join(col_defs)})'
-                    if conn:
-                        from sqlalchemy import text as sa_text
-                        await conn.execute(sa_text(create_sql))
-                    else:
-                        await db_execute(create_sql)
+            # 清理表头作为列名
+            col_names = []
+            for i, h in enumerate(headers):
+                name = str(h).strip() if h and str(h).strip() else f"col_{i}"
+                name = re.sub(r"[^\w一-鿿]", "_", name)
+                col_names.append(name)
 
-                    # 建表成功后立即记录 schema（即使数据插入失败，删除时也能找到表名）
-                    schema_info.append({
-                        "table_name": table_name,
-                        "sheet_name": sheet_name,
-                        "columns": [
-                            {"name": col_names[j], "type": col_types[j] if j < len(col_types) else "string"}
-                            for j in range(len(col_names))
-                        ],
-                        "row_count": 0,
-                    })
+            # 清理 sheet 名作为表名
+            safe_sheet = re.sub(r"[^\w一-鿿]", "_", sheet_name)
+            table_name = f"{doc_id[:8]}_{safe_sheet}".lower()
 
-                    # 准备插入 SQL
-                    col_list = ", ".join([f'"{cn}"' for cn in col_names])
-                    param_list = ", ".join([f":{cn}" for cn in col_names])
-                    insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({param_list})'
+            # 基于样本数据推断列类型
+            sample_rows = data_rows[:100]
+            col_types = []
+            for col_idx in range(len(headers)):
+                values = [
+                    str(r[col_idx]).strip()
+                    for r in sample_rows
+                    if col_idx < len(r) and r[col_idx] and str(r[col_idx]).strip()
+                ]
+                col_type, _ = _infer_column_type(values)
+                col_types.append(col_type)
 
-                    # 流式读取 + 分批插入（使用类型转换）
-                    total_rows = 0
-                    batch = []
+            # 创建表（所有类型都用 TEXT/BIGINT/DOUBLE PRECISION，日期用 TEXT 避免序列化问题）
+            col_defs = []
+            for j, cn in enumerate(col_names):
+                pg_type = "TEXT"
+                if j < len(col_types):
+                    if col_types[j] == "int":
+                        pg_type = "BIGINT"
+                    elif col_types[j] == "float":
+                        pg_type = "DOUBLE PRECISION"
+                    # date 和 string 都用 TEXT
+                col_defs.append(f'"{cn}" {pg_type}')
 
-                    def _build_row_dict(row):
-                        row_dict = {}
-                        for col_idx in range(len(col_names)):
-                            val = row[col_idx] if col_idx < len(row) else None
-                            row_dict[col_names[col_idx]] = _convert_value(val, col_types[col_idx] if col_idx < len(col_types) else "string")
-                        return row_dict
+            try:
+                # 执行建表语句
+                create_sql = f'CREATE TABLE IF NOT EXISTS "{table_name}" ({", ".join(col_defs)})'
+                if conn:
+                    from sqlalchemy import text as sa_text
+                    await conn.execute(sa_text(create_sql))
+                else:
+                    await db_execute(create_sql)
 
-                    # 先处理已读取的 sample_rows（跳过第 0 行表头）
-                    for row in sample_rows:
-                        batch.append(_build_row_dict(row))
-                        total_rows += 1
+                # 建表成功后立即记录 schema
+                schema_info.append({
+                    "table_name": table_name,
+                    "sheet_name": sheet_name,
+                    "columns": [
+                        {"name": col_names[j], "type": col_types[j] if j < len(col_types) else "string"}
+                        for j in range(len(col_names))
+                    ],
+                    "row_count": 0,
+                })
 
-                        if len(batch) >= BATCH_SIZE:
-                            if conn:
-                                from sqlalchemy import text as sa_text
-                                await conn.execute(sa_text(insert_sql), batch)
-                            else:
-                                await db_execute_many(insert_sql, batch)
-                            batch = []
+                # 准备插入 SQL
+                col_list = ", ".join([f'"{cn}"' for cn in col_names])
+                param_list = ", ".join([f":{cn}" for cn in col_names])
+                insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({param_list})'
 
-                    # 继续读取剩余行（从 first_rows 之后开始）
-                    row_iter = sheet.iter_rows(min_row=len(first_rows) + 1, values_only=True)
-                    for row in row_iter:
-                        batch.append(_build_row_dict(row))
-                        total_rows += 1
+                # 分批插入
+                total_rows = 0
+                batch = []
 
-                        if len(batch) >= BATCH_SIZE:
-                            if conn:
-                                from sqlalchemy import text as sa_text
-                                await conn.execute(sa_text(insert_sql), batch)
-                            else:
-                                await db_execute_many(insert_sql, batch)
-                            batch = []
+                def _build_row_dict(row):
+                    row_dict = {}
+                    for col_idx in range(len(col_names)):
+                        val = row[col_idx] if col_idx < len(row) else None
+                        row_dict[col_names[col_idx]] = _convert_value(val, col_types[col_idx] if col_idx < len(col_types) else "string")
+                    return row_dict
 
-                    # 处理最后一批
-                    if batch:
+                for row in data_rows:
+                    batch.append(_build_row_dict(row))
+                    total_rows += 1
+
+                    if len(batch) >= BATCH_SIZE:
                         if conn:
                             from sqlalchemy import text as sa_text
                             await conn.execute(sa_text(insert_sql), batch)
                         else:
                             await db_execute_many(insert_sql, batch)
+                        batch = []
 
-                    # 收集需要创建索引的列（延迟创建）
-                    index_columns = []
-                    for j, cn in enumerate(col_names):
-                        if any(kw in cn.lower() for kw in ["id", "编号", "工号", "code", "no"]):
-                            index_columns.append(cn)
+                # 处理最后一批
+                if batch:
+                    if conn:
+                        from sqlalchemy import text as sa_text
+                        await conn.execute(sa_text(insert_sql), batch)
+                    else:
+                        await db_execute_many(insert_sql, batch)
 
-                    # 创建索引（在同一连接中批量执行）
-                    for cn in index_columns:
-                        try:
-                            idx_sql = f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_{cn}" ON "{table_name}" ("{cn}")'
-                            if conn:
-                                from sqlalchemy import text as sa_text
-                                await conn.execute(sa_text(idx_sql))
-                            else:
-                                await db_execute(idx_sql)
-                        except Exception:
-                            pass
+                # 创建索引
+                index_columns = []
+                for j, cn in enumerate(col_names):
+                    if any(kw in cn.lower() for kw in ["id", "编号", "工号", "code", "no"]):
+                        index_columns.append(cn)
 
-                    # 更新行数
-                    schema_info[-1]["row_count"] = total_rows
-                    logger.info(f"已将 sheet「{sheet_name}」写入 PostgreSQL 表 {table_name}，共 {total_rows} 行")
-                except Exception as e:
-                    logger.error(f"写入 PostgreSQL 失败: sheet={sheet_name}, error={e}")
+                for cn in index_columns:
+                    try:
+                        idx_sql = f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_{cn}" ON "{table_name}" ("{cn}")'
+                        if conn:
+                            from sqlalchemy import text as sa_text
+                            await conn.execute(sa_text(idx_sql))
+                        else:
+                            await db_execute(idx_sql)
+                    except Exception:
+                        pass
 
-            return schema_info
-        finally:
-            if should_close_workbook:
-                workbook.close()
+                # 更新行数
+                schema_info[-1]["row_count"] = total_rows
+                logger.info(f"已将 sheet「{sheet_name}」写入 PostgreSQL 表 {table_name}，共 {total_rows} 行")
+            except Exception as e:
+                logger.error(f"写入 PostgreSQL 失败: sheet={sheet_name}, error={e}")
+
+        return schema_info
+
+    @staticmethod
+    async def _load_to_postgres_openpyxl(
+        workbook: openpyxl.Workbook,
+        doc_id: str,
+        db_execute=None,
+        db_execute_many=None,
+        conn=None,
+    ) -> List[Dict[str, Any]]:
+        """使用 openpyxl 解析 workbook 并写入 PostgreSQL。"""
+        schema_info = []
+        BATCH_SIZE = 500
+
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+
+            # 先读取第一行（表头）和前几行用于推断类型
+            first_rows = []
+            for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                first_rows.append(row)
+                if i >= 100:  # 读取前 101 行用于类型推断
+                    break
+
+            if len(first_rows) < 2:
+                continue
+
+            headers = first_rows[0]
+            sample_rows = first_rows[1:]
+
+            # 清理表头作为列名
+            col_names = []
+            for i, h in enumerate(headers):
+                name = str(h).strip() if h and str(h).strip() else f"col_{i}"
+                name = re.sub(r"[^\w一-鿿]", "_", name)
+                col_names.append(name)
+
+            # 清理 sheet 名作为表名
+            safe_sheet = re.sub(r"[^\w一-鿿]", "_", sheet_name)
+            table_name = f"{doc_id[:8]}_{safe_sheet}".lower()
+
+            # 基于样本数据推断列类型
+            col_types = []
+            for col_idx in range(len(headers)):
+                values = [
+                    str(r[col_idx]).strip()
+                    for r in sample_rows
+                    if col_idx < len(r) and r[col_idx] is not None and str(r[col_idx]).strip()
+                ]
+                col_type, _ = _infer_column_type(values)
+                col_types.append(col_type)
+
+            # 创建表
+            col_defs = []
+            for j, cn in enumerate(col_names):
+                pg_type = "TEXT"
+                if j < len(col_types):
+                    if col_types[j] == "int":
+                        pg_type = "BIGINT"
+                    elif col_types[j] == "float":
+                        pg_type = "DOUBLE PRECISION"
+                    elif col_types[j] == "date":
+                        pg_type = "DATE"
+                col_defs.append(f'"{cn}" {pg_type}')
+
+            try:
+                # 执行建表语句
+                create_sql = f'CREATE TABLE IF NOT EXISTS "{table_name}" ({", ".join(col_defs)})'
+                if conn:
+                    from sqlalchemy import text as sa_text
+                    await conn.execute(sa_text(create_sql))
+                else:
+                    await db_execute(create_sql)
+
+                # 建表成功后立即记录 schema（即使数据插入失败，删除时也能找到表名）
+                schema_info.append({
+                    "table_name": table_name,
+                    "sheet_name": sheet_name,
+                    "columns": [
+                        {"name": col_names[j], "type": col_types[j] if j < len(col_types) else "string"}
+                        for j in range(len(col_names))
+                    ],
+                    "row_count": 0,
+                })
+
+                # 准备插入 SQL
+                col_list = ", ".join([f'"{cn}"' for cn in col_names])
+                param_list = ", ".join([f":{cn}" for cn in col_names])
+                insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({param_list})'
+
+                # 流式读取 + 分批插入（使用类型转换）
+                total_rows = 0
+                batch = []
+
+                def _build_row_dict(row):
+                    row_dict = {}
+                    for col_idx in range(len(col_names)):
+                        val = row[col_idx] if col_idx < len(row) else None
+                        row_dict[col_names[col_idx]] = _convert_value(val, col_types[col_idx] if col_idx < len(col_types) else "string")
+                    return row_dict
+
+                # 先处理已读取的 sample_rows（跳过第 0 行表头）
+                for row in sample_rows:
+                    batch.append(_build_row_dict(row))
+                    total_rows += 1
+
+                    if len(batch) >= BATCH_SIZE:
+                        if conn:
+                            from sqlalchemy import text as sa_text
+                            await conn.execute(sa_text(insert_sql), batch)
+                        else:
+                            await db_execute_many(insert_sql, batch)
+                        batch = []
+
+                # 继续读取剩余行（从 first_rows 之后开始）
+                row_iter = sheet.iter_rows(min_row=len(first_rows) + 1, values_only=True)
+                for row in row_iter:
+                    batch.append(_build_row_dict(row))
+                    total_rows += 1
+
+                    if len(batch) >= BATCH_SIZE:
+                        if conn:
+                            from sqlalchemy import text as sa_text
+                            await conn.execute(sa_text(insert_sql), batch)
+                        else:
+                            await db_execute_many(insert_sql, batch)
+                        batch = []
+
+                # 处理最后一批
+                if batch:
+                    if conn:
+                        from sqlalchemy import text as sa_text
+                        await conn.execute(sa_text(insert_sql), batch)
+                    else:
+                        await db_execute_many(insert_sql, batch)
+
+                # 收集需要创建索引的列（延迟创建）
+                index_columns = []
+                for j, cn in enumerate(col_names):
+                    if any(kw in cn.lower() for kw in ["id", "编号", "工号", "code", "no"]):
+                        index_columns.append(cn)
+
+                # 创建索引（在同一连接中批量执行）
+                for cn in index_columns:
+                    try:
+                        idx_sql = f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_{cn}" ON "{table_name}" ("{cn}")'
+                        if conn:
+                            from sqlalchemy import text as sa_text
+                            await conn.execute(sa_text(idx_sql))
+                        else:
+                            await db_execute(idx_sql)
+                    except Exception:
+                        pass
+
+                # 更新行数
+                schema_info[-1]["row_count"] = total_rows
+                logger.info(f"已将 sheet「{sheet_name}」写入 PostgreSQL 表 {table_name}，共 {total_rows} 行")
+            except Exception as e:
+                logger.error(f"写入 PostgreSQL 失败: sheet={sheet_name}, error={e}")
+
+        return schema_info
 
     @staticmethod
     def parse_with_pandas(file_path: str) -> Dict[str, Any]:
@@ -487,6 +789,17 @@ def _convert_value(val, col_type: str):
             return float(s.replace(",", "").replace(" ", ""))
         except ValueError:
             return None
+    elif col_type == "date":
+        # 尝试解析日期字符串，返回字符串格式（避免 JSON 序列化问题）
+        from datetime import datetime
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%Y年%m月%d日"):
+            try:
+                dt = datetime.strptime(s, fmt).date()
+                return dt.isoformat()  # 返回 YYYY-MM-DD 格式的字符串
+            except ValueError:
+                continue
+        # 如果无法解析，返回原字符串
+        return s
     return s
 
 

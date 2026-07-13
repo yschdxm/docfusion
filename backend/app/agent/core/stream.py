@@ -84,6 +84,14 @@ class AgentEvent(BaseModel):
 
     def to_sse_format(self) -> str:
         """转换为SSE格式"""
+        from datetime import date, datetime
+
+        def json_serializer(obj):
+            """自定义 JSON 序列化器，处理 date 和 datetime 对象"""
+            if isinstance(obj, (date, datetime)):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
         # 将step_id和timestamp包含在data中，以便前端使用
         data = {
             "event_type": self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type,
@@ -91,7 +99,7 @@ class AgentEvent(BaseModel):
             "timestamp": self.timestamp,
             **self.data
         }
-        return f"event: {self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        return f"event: {self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type}\ndata: {json.dumps(data, ensure_ascii=False, default=json_serializer)}\n\n"
 
     def to_dict(self) -> dict:
         """转换为字典"""

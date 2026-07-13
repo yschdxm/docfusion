@@ -17,6 +17,7 @@ from app.agent.tools import (
     Neo4jQueryTool,
     GetTableStructureTool,
     FillTableTool,
+    WebSearchTool,
 )
 
 
@@ -335,6 +336,7 @@ class FillTableAgent(DelegateAgentTool):
         registry.register(RAGTool())
         registry.register(DocReaderTool())
         registry.register(FillTableTool())
+        registry.register(WebSearchTool())  # 联网搜索工具（非必要不使用）
         # 注意：不注册任何 DelegateAgentTool，防止嵌套
 
         return AgentRuntime(
