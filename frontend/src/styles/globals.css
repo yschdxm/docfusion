@@ -77,6 +77,14 @@
     @apply rounded-xl;
   }
 
+  .toast-glass {
+    background: var(--theme-glass-bg);
+    border: 1px solid var(--theme-border);
+    color: var(--theme-body-text);
+    @apply rounded-xl;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  }
+
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border shadow-sm transition-all duration-200;
     color: #fff;

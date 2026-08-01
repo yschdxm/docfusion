@@ -26,7 +26,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Toaster
           position="top-center"
           toastOptions={{
-            className: 'glass-dark text-white',
+            className: 'toast-glass',
             duration: 3000,
           }}
           containerStyle={{ top: 60 }}
