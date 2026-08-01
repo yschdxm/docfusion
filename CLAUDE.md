@@ -122,7 +122,8 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+# 注意：必须加 --host 0.0.0.0，否则 OnlyOffice 容器无法通过 host.docker.internal 访问后端
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 前端
 cd frontend

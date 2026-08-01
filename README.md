@@ -370,7 +370,8 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 启动服务
-uvicorn app.main:app --reload --port 8000
+# 注意：必须加 --host 0.0.0.0，否则 OnlyOffice 容器无法通过 host.docker.internal 访问后端（ECONNREFUSED）
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 后端服务将在 http://localhost:8000 启动。
