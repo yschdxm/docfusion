@@ -10,13 +10,13 @@ Agent运行时 - 核心协调器
 
 import json
 import logging
-from typing import AsyncGenerator, Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 import asyncio
 
 from app.agent.core.registry import ToolRegistry
 from app.agent.core.executor import ToolExecutor
-from app.agent.core.stream import StreamManager, AgentEventType, AgentEvent
+from app.agent.core.event_log import TaskEventLog
 from app.agent.core.tracker import StepTracker, StepType
 from app.agent.base.tool import ToolContext
 
@@ -307,17 +307,26 @@ class AgentRuntime:
         file_ids: List[str],
         template_id: Optional[str] = None,
         conversation_history: List[Dict[str, str]] = None,
-        stream_manager: Optional[StreamManager] = None,
+        event_log: Optional[TaskEventLog] = None,
         step_tracker: Optional[StepTracker] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        user_selected_model: Optional[str] = None,
+        db=None,
     ) -> Dict[str, Any]:
-        """运行Agent（非流式）"""
+        """运行Agent
+
+        只管向 event_log 发布事件，不感知 HTTP 连接死活。
+        取消唯一来源：cancel_event（由 TaskManager.cancel 设置）。
+        终态事件由本方法在相应分支发布；TaskSupervisor 兜底保证恰好一次并 finish。
+        """
         context = ToolContext(
             session_id=f"session_{datetime.utcnow().timestamp()}",
             user_id=user_id,
             file_ids=file_ids,
             template_id=template_id,
-            conversation_history=conversation_history or []
+            conversation_history=conversation_history or [],
+            metadata={"cancel_event": cancel_event},  # 委派子Agent时传播取消信号
         )
 
         logger.info("=" * 60)
@@ -328,132 +337,34 @@ class AgentRuntime:
         logger.info("=" * 60)
 
         tracker = step_tracker or StepTracker()
-        stream = stream_manager or StreamManager()
+        stream = event_log or TaskEventLog()
 
         try:
             result = await self._execute_loop(
                 message=message,
                 context=context,
                 tracker=tracker,
-                stream=stream
+                stream=stream,
+                cancel_event=cancel_event,
+                user_selected_model=user_selected_model,
+                db=db,
             )
             logger.info(f"[AgentRuntime.run] 任务完成 | success={result.get('success')}")
             return result
+        except asyncio.CancelledError:
+            logger.info("[AgentRuntime.run] 任务被取消")
+            raise
         except Exception as e:
             logger.exception(f"[AgentRuntime.run] 任务异常: {e}")
             await stream.emit_failed(str(e))
             return {"success": False, "error": str(e), "steps": tracker.to_dict()}
-
-    async def run_stream(
-        self,
-        message: str,
-        file_ids: List[str],
-        template_id: Optional[str] = None,
-        conversation_history: List[Dict[str, str]] = None,
-        cancel_event: Optional[asyncio.Event] = None,
-        on_stream_created=None,
-        stream_manager: Optional['StreamManager'] = None,
-        user_id: Optional[str] = None,
-        user_selected_model: Optional[str] = None,
-        db=None,
-    ) -> AsyncGenerator[str, None]:
-        """运行Agent（流式）
-
-        Args:
-            cancel_event: 取消事件，当设置时任务会被取消
-            on_stream_created: 回调函数，接收创建的StreamManager
-            stream_manager: 外部传入的StreamManager（用于断线重连场景）
-            user_selected_model: 用户选择的模型名称
-            db: 数据库会话
-        """
-        stream = stream_manager or StreamManager()
-        if on_stream_created:
-            on_stream_created(stream)
-        tracker = StepTracker()
-
-        context = ToolContext(
-            session_id=f"session_{datetime.utcnow().timestamp()}",
-            user_id=user_id,
-            file_ids=file_ids,
-            template_id=template_id,
-            conversation_history=conversation_history or []
-        )
-
-        logger.info("=" * 60)
-        logger.info("[AgentRuntime.run_stream] 流式任务开始")
-        logger.info(f"[AgentRuntime.run_stream] Session: {context.session_id}")
-        logger.info(f"[AgentRuntime.run_stream] 用户输入: {message[:100]}..." if len(message) > 100 else f"[AgentRuntime.run_stream] 用户输入: {message}")
-        logger.info("=" * 60)
-
-        # 启动执行任务
-        logger.debug("[AgentRuntime.run_stream] 创建执行task")
-        task = asyncio.create_task(
-            self._execute_loop(message, context, tracker, stream, cancel_event, user_selected_model=user_selected_model, db=db)
-        )
-
-        # 流式输出事件
-        event_count = 0
-        logger.info("[AgentRuntime.run_stream] 开始流式输出")
-        try:
-            async for event in stream.stream():
-                event_count += 1
-                yield event
-                # 检查是否被取消
-                if cancel_event and cancel_event.is_set():
-                    logger.info("[AgentRuntime.run_stream] 检测到取消信号，停止流式输出")
-                    break
-        except Exception as e:
-            logger.error(f"[AgentRuntime.run_stream] 流输出异常: {e}")
-            if stream_manager:
-                # 外部stream_manager（重连场景）：客户端断连不取消执行任务
-                # 任务继续运行，等待前端重连
-                logger.info("[AgentRuntime.run_stream] 客户端断连，任务继续运行")
-                return
-            raise
-
-        logger.info(f"[AgentRuntime.run_stream] 流式输出结束 | 共{event_count}个事件")
-
-        if stream_manager:
-            # 外部stream_manager（重连场景）：流正常结束，不取消执行任务
-            # 任务可能仍在运行（子Agent委派中），让它自然完成
-            return
-
-        # 内部stream_manager（首次连接场景）：如果任务仍在运行，取消它
-        if not task.done():
-            logger.info("[AgentRuntime.run_stream] 取消执行task")
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.info("[AgentRuntime.run_stream] 任务已取消")
-                if not stream.is_closed():
-                    await stream.emit_cancelled("用户取消了任务")
-                    yield AgentEvent(
-                        event_type=AgentEventType.CANCELLED,
-                        data={"message": "用户取消了任务"}
-                    ).to_sse_format()
-            except Exception as e:
-                logger.exception(f"[AgentRuntime.run_stream] 取消task时异常: {e}")
-        else:
-            # 等待任务完成
-            try:
-                await task
-                logger.info("[AgentRuntime.run_stream] 执行task完成")
-            except Exception as e:
-                logger.exception(f"[AgentRuntime.run_stream] 执行task异常: {e}")
-                if not stream.is_closed():
-                    await stream.emit_failed(str(e))
-                    yield AgentEvent(
-                        event_type=AgentEventType.FAILED,
-                        data={"error": str(e)}
-                    ).to_sse_format()
 
     async def _execute_loop(
         self,
         message: str,
         context: ToolContext,
         tracker: StepTracker,
-        stream: StreamManager,
+        stream: TaskEventLog,
         cancel_event: Optional[asyncio.Event] = None,
         user_selected_model: Optional[str] = None,
         db=None,
@@ -522,13 +433,10 @@ class AgentRuntime:
             }
 
         for iteration in range(self.max_iterations):
-            # 检查是否被取消
+            # 检查是否被取消（唯一取消来源：cancel_event）
             if cancel_event and cancel_event.is_set():
                 logger.info("[AgentRuntime._execute_loop] 检测到取消信号，终止执行")
                 raise asyncio.CancelledError("任务被取消")
-            if stream.is_closed():
-                logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，终止执行")
-                return {"success": False, "error": "任务已取消", "steps": tracker.to_dict()}
 
             logger.info(f"[AgentRuntime._execute_loop] ===== 迭代 {iteration + 1}/{self.max_iterations} =====")
 
@@ -571,10 +479,10 @@ class AgentRuntime:
                 has_emitted_content = False
 
                 async for chunk in llm_stream:
-                    # 检测客户端是否已断开
-                    if stream.is_closed():
-                        logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止LLM消费")
-                        break
+                    # 检测是否被取消（取消时尽快中止 LLM 消费）
+                    if cancel_event and cancel_event.is_set():
+                        logger.info("[AgentRuntime._execute_loop] 检测到取消信号，中止LLM消费")
+                        raise asyncio.CancelledError("任务被取消")
 
                     # 检测usage统计chunk
                     if chunk.get("usage"):
@@ -656,10 +564,10 @@ class AgentRuntime:
                 await stream.emit_failed(user_msg, {"error": str(e)})
                 return {"success": False, "error": user_msg, "steps": tracker.to_dict()}
 
-            # 检测客户端是否已断开（LLM循环后）
-            if stream.is_closed():
-                logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止执行循环")
-                return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+            # 检测是否被取消（LLM循环后）
+            if cancel_event and cancel_event.is_set():
+                logger.info("[AgentRuntime._execute_loop] 检测到取消信号，中止执行循环")
+                raise asyncio.CancelledError("任务被取消")
 
             # 更新思考内容
             tracker.update_thinking(step.id, full_reasoning)
@@ -783,10 +691,10 @@ class AgentRuntime:
                 await stream.emit_step_start(tool_step.id, tool_step.name, tool_step.description)
                 await stream.emit_tool_call(tool_name, tool_args)
 
-                # 执行工具前检查是否已关闭
-                if stream.is_closed():
-                    logger.info("[AgentRuntime._execute_loop] 检测到StreamManager已关闭，中止工具执行")
-                    return {"success": False, "error": "客户端已断开连接", "steps": tracker.to_dict()}
+                # 执行工具前检查是否已取消
+                if cancel_event and cancel_event.is_set():
+                    logger.info("[AgentRuntime._execute_loop] 检测到取消信号，中止工具执行")
+                    raise asyncio.CancelledError("任务被取消")
 
                 # 执行工具
                 logger.info(f"[AgentRuntime._execute_loop] 调用executor.execute: {tool_name}")

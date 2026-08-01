@@ -1,9 +1,14 @@
 /**
  * Agent流式API服务
  *
- * 使用 @microsoft/fetch-event-source 处理SSE流式响应
- * 支持多并发连接（每个会话独立的SSE连接）
- * 支持断线重连：通过 task_id 接入已有任务，不重启
+ * 架构（与后端 TaskEventLog 对应）：
+ * - 每个任务一份有序事件日志，SSE 事件带单调递增 seq（SSE 标准 id: 字段）
+ * - 页面级重连（切会话/刷新）：从 seq=0 全量回放重建步骤树，消息幂等由页面守卫
+ * - 连接级重试（网络抖动）：task_id + lastSeq 增量续传（请求体 last_event_id）
+ * - 显式连接状态机：idle → connecting → streaming → done | error
+ * - 连接断开不影响后端任务；任务状态可通过 GET /agent/tasks/{id}/status 权威查询
+ *
+ * 步骤树重建逻辑与后端 agent_persistence.StepAccumulator 同构（修改时需同步）。
  */
 
 import { fetchEventSource, EventSourceMessage } from '@microsoft/fetch-event-source'
@@ -17,12 +22,14 @@ export interface AgentStreamRequest {
   conversation_id?: string | null
   task_type?: 'auto' | 'fill_table' | 'fill_form' | 'query' | 'operation'
   task_id?: string  // 重连时携带
+  last_event_id?: number  // 断点续传
 }
 
 export interface AgentEvent {
   event_type: string
   step_id?: string
   timestamp: string
+  seq?: number
   data: Record<string, any>
 }
 
@@ -54,60 +61,82 @@ export interface TaskStats {
   iterations: number
 }
 
+export interface StreamCompleteResult {
+  success: boolean
+  message: string
+  output_file_id?: string
+  download_url?: string
+  task_stats?: TaskStats
+  /** 任务在断连期间已完成，结果来自状态查询而非事件流（消息已在 DB 中，页面不应重复添加） */
+  fromStatusQuery?: boolean
+}
+
+export interface TaskStatusResponse {
+  task_id: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'not_found'
+  last_seq: number
+  conversation_id?: string | null
+  result?: Record<string, any> | null
+}
+
+/** 连接状态机 */
+type ConnectionStatus = 'connecting' | 'streaming' | 'done' | 'error'
+
 /** 单个SSE连接的状态 */
 interface ConnectionState {
   connectionId: string
   sessionId: string
   taskId: string | null
+  lastSeq: number           // 已应用的最大事件序号（幂等依据）
   steps: Map<string, AgentStep>
+  status: ConnectionStatus
+  cancelled: boolean        // 显式取消标记（cancelSession/stopTask 设置）
+  abortController: AbortController
+  reconnectAttempts: number
+  // 回调
+  onEvent: (event: AgentEvent, steps: AgentStep[]) => void
+  onComplete: (result: StreamCompleteResult) => void
+  onError: (error: string) => void
+  // 请求参数（重连时重建 body）
+  request: AgentStreamRequest
   currentAgentName: string | null
   agentParentStepId: string | null
   replyCounter: number
-  completedFired: boolean
-  taskEnded: boolean
-  cancelled: boolean  // 显式取消标记，cancelSession 设为 true
-  abortController: AbortController
-  reconnectAttempts: number
-  maxReconnectAttempts: number
-  // 回调
-  onEvent: (event: AgentEvent, steps: AgentStep[]) => void
-  onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string; task_stats?: TaskStats; _replayDone?: boolean }) => void
-  onError: (error: string) => void
-  // 重连用的请求参数
-  request: AgentStreamRequest
-  existingTaskId?: string
 }
+
+const MAX_RECONNECT_ATTEMPTS = 5
+const RECONNECT_BASE_DELAY_MS = 2000
+/** localStorage 中任务数据的过期时间，与后端 TASK_TTL(10分钟) 对齐 */
+const TASK_DATA_TTL_MS = 10 * 60 * 1000
 
 class AgentStreamService {
   private static TASK_ID_PREFIX = 'agent_task_'
   private connections: Map<string, ConnectionState> = new Map()
   private connectionCounter = 0
+  private lastPersistTime = 0
+
+  // ==================== localStorage 持久化 ====================
 
   /**
-   * 持久化 session → task_id + startedAt 映射到 localStorage
+   * 持久化 session → { taskId, startedAt } 映射到 localStorage
    */
-  private persistTaskId(sessionId: string, taskId: string, startedAt?: number): void {
+  private persistTaskData(sessionId: string, patch: { taskId?: string; startedAt?: number }): void {
     try {
       const existing = this._loadTaskData(sessionId)
-      localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify({
-        taskId,
+      const data = {
+        taskId: patch.taskId ?? existing?.taskId ?? '',
+        startedAt: patch.startedAt ?? existing?.startedAt ?? Date.now(),
         timestamp: Date.now(),
-        startedAt: startedAt || existing?.startedAt || Date.now(),
-      }))
+      }
+      localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify(data))
     } catch { /* localStorage 不可用时静默 */ }
   }
 
   /**
-   * 存储任务开始时间到 localStorage
-   * 如果已有记录则更新，否则创建新记录（taskId 暂为空，后续 persistTaskId 会补上）
+   * 存储任务开始时间到 localStorage（跨组件生命周期存活）
    */
   persistTaskStartTime(sessionId: string, time: number): void {
-    try {
-      const existing = this._loadTaskData(sessionId)
-      const data = existing || { taskId: '', timestamp: Date.now() }
-      data.startedAt = time
-      localStorage.setItem(AgentStreamService.TASK_ID_PREFIX + sessionId, JSON.stringify(data))
-    } catch { /* */ }
+    this.persistTaskData(sessionId, { startedAt: time })
   }
 
   /**
@@ -119,7 +148,7 @@ class AgentStreamService {
   }
 
   /**
-   * 获取任务开始时间（从 localStorage 读取，跨组件生命周期存活）
+   * 获取任务开始时间
    */
   getTaskStartTime(sessionId: string): number | null {
     const data = this._loadTaskData(sessionId)
@@ -127,13 +156,13 @@ class AgentStreamService {
   }
 
   /** 从 localStorage 加载任务数据 */
-  private _loadTaskData(sessionId: string): { taskId: string; timestamp: number; startedAt?: number } | null {
+  private _loadTaskData(sessionId: string): { taskId: string; startedAt?: number; timestamp: number } | null {
     try {
       const raw = localStorage.getItem(AgentStreamService.TASK_ID_PREFIX + sessionId)
       if (!raw) return null
       const data = JSON.parse(raw)
-      // 超过10分钟的任务认为已过期
-      if (Date.now() - data.timestamp > 10 * 60 * 1000) {
+      // 超过 TASK_TTL 的任务认为已过期（与后端一致）
+      if (Date.now() - data.timestamp > TASK_DATA_TTL_MS) {
         this.clearPersistedTask(sessionId)
         return null
       }
@@ -143,19 +172,21 @@ class AgentStreamService {
     }
   }
 
-  /** 清除 localStorage 中的 task_id */
+  /** 清除 localStorage 中的任务数据 */
   clearPersistedTask(sessionId: string): void {
     try {
       localStorage.removeItem(AgentStreamService.TASK_ID_PREFIX + sessionId)
     } catch { /* */ }
   }
 
+  // ==================== 任务控制 ====================
+
   /**
    * 彻底取消任务（用户主动停止）
    * 调用后端取消接口 + 清除 localStorage + 断开 SSE
    */
   async stopTask(sessionId: string): Promise<void> {
-    const taskId = this.getRunningTaskId(sessionId)
+    const taskId = this.getRunningTaskId(sessionId) || this._findTaskIdBySession(sessionId)
 
     // 调用后端取消接口
     if (taskId) {
@@ -178,20 +209,37 @@ class AgentStreamService {
   }
 
   /**
+   * 查询任务状态（权威来源，用于页面恢复时判断任务死活）
+   */
+  async getTaskStatus(taskId: string): Promise<TaskStatusResponse | null> {
+    try {
+      const token = getAuthToken()
+      const resp = await fetch(`/api/v1/agent/tasks/${taskId}/status`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) return null
+      return await resp.json()
+    } catch (e) {
+      console.warn('[SSE] 查询任务状态失败:', e)
+      return null
+    }
+  }
+
+  /**
    * 启动一个SSE连接（新任务或重连）
-   * 返回 connectionId，用于暂停/恢复/取消
+   * 返回 connectionId
    */
   startStream(
     sessionId: string,
     request: AgentStreamRequest,
     onEvent: (event: AgentEvent, steps: AgentStep[]) => void,
-    onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void,
+    onComplete: (result: StreamCompleteResult) => void,
     onError: (error: string) => void,
     existingTaskId?: string
   ): string {
     const connectionId = `conn_${++this.connectionCounter}_${sessionId}`
 
-    // 如果是新任务（非重连），先清除旧的 task_id
+    // 如果是新任务（非重连），先清除旧的任务数据
     if (!existingTaskId) {
       this.clearPersistedTask(sessionId)
     }
@@ -199,63 +247,36 @@ class AgentStreamService {
     // 如果该 session 已有连接，先取消旧的
     this.cancelSession(sessionId)
 
+    // lastSeq 从 0 开始（全量回放），不是从持久化的断点续传：
+    // 新连接的步骤树是空 Map，必须回放全部事件才能重建断点前的步骤/内容。
+    // 消息类事件（assistant_message/completed）的重复由页面幂等守卫挡住。
+    // 网络抖动重试走 _connectLoop，同一 ConnectionState 复用 lastSeq 增量续传。
     const state: ConnectionState = {
       connectionId,
       sessionId,
       taskId: existingTaskId || null,
+      lastSeq: 0,
       steps: new Map(),
-      currentAgentName: null,
-      agentParentStepId: null,
-      replyCounter: 0,
-      completedFired: false,
-      taskEnded: false,
+      status: 'connecting',
       cancelled: false,
       abortController: new AbortController(),
       reconnectAttempts: 0,
-      maxReconnectAttempts: 3,
       onEvent,
       onComplete,
       onError,
       request,
-      existingTaskId,
+      currentAgentName: null,
+      agentParentStepId: null,
+      replyCounter: 0,
     }
 
     this.connections.set(connectionId, state)
-    this._doStream(state)
+    this._connectLoop(state)
     return connectionId
   }
 
   /**
-   * 暂停回调（切换会话时调用，SSE连接不断开）
-   * 将回调替换为空操作，任务继续在后台运行
-   */
-  pauseConnection(connectionId: string): void {
-    const state = this.connections.get(connectionId)
-    if (!state) return
-    state.onEvent = () => {}
-    state.onComplete = () => {}
-    state.onError = () => {}
-  }
-
-  /**
-   * 恢复回调（回到会话时调用）
-   * 替换回调为新的回调，用 task_id 重连SSE以获取最新事件
-   */
-  resumeConnection(
-    connectionId: string,
-    onEvent: (event: AgentEvent, steps: AgentStep[]) => void,
-    onComplete: (result: { success: boolean; message: string; output_file_id?: string; download_url?: string }) => void,
-    onError: (error: string) => void
-  ): void {
-    const state = this.connections.get(connectionId)
-    if (!state) return
-    state.onEvent = onEvent
-    state.onComplete = onComplete
-    state.onError = onError
-  }
-
-  /**
-   * 取消某个 session 的所有连接（彻底断开）
+   * 取消某个 session 的所有连接（断开前端 SSE，后端任务继续运行）
    */
   cancelSession(sessionId: string): void {
     for (const [connId, state] of this.connections) {
@@ -265,9 +286,9 @@ class AgentStreamService {
         this.connections.delete(connId)
       }
     }
-    // 注意：不清除 localStorage 中的 task_id
-    // 因为 cancelSession 只是断开前端 SSE 连接，后端任务仍在运行
-    // 用户回到会话时需要靠 task_id 重连
+    // 注意：不清除 localStorage 中的任务数据
+    // cancelSession 只是断开前端 SSE 连接，后端任务仍在运行
+    // 用户回到会话时需要靠 task_id + lastSeq 重连续传
   }
 
   /**
@@ -284,7 +305,7 @@ class AgentStreamService {
   /** 获取某个 session 是否有活跃连接 */
   hasActiveConnection(sessionId: string): boolean {
     for (const [, state] of this.connections) {
-      if (state.sessionId === sessionId && !state.taskEnded) {
+      if (state.sessionId === sessionId && state.status !== 'done' && state.status !== 'error') {
         return true
       }
     }
@@ -294,7 +315,7 @@ class AgentStreamService {
   /** 获取某个 session 的活跃连接 ID */
   getActiveConnectionId(sessionId: string): string | null {
     for (const [connId, state] of this.connections) {
-      if (state.sessionId === sessionId && !state.taskEnded) {
+      if (state.sessionId === sessionId && state.status !== 'done' && state.status !== 'error') {
         return connId
       }
     }
@@ -314,151 +335,223 @@ class AgentStreamService {
     return state?.taskId || null
   }
 
-  /**
-   * 执行SSE流式连接
-   */
-  private async _doStream(state: ConnectionState): Promise<void> {
-    const requestBody: Record<string, any> = { ...state.request }
-    if (state.taskId) {
-      requestBody.task_id = state.taskId
-      console.log(`[SSE][${state.connectionId}] 重连任务: ${state.taskId} (第${state.reconnectAttempts}次)`)
+  private _findTaskIdBySession(sessionId: string): string | null {
+    for (const [, state] of this.connections) {
+      if (state.sessionId === sessionId && state.taskId) return state.taskId
     }
+    return null
+  }
 
+  // ==================== 连接状态机 ====================
+
+  /**
+   * 连接循环：连接 → 流式接收 → (异常时)退避重连
+   * 每次重连用最新 taskId + lastSeq 重建请求体（断点续传）
+   */
+  private async _connectLoop(state: ConnectionState): Promise<void> {
     try {
-      await fetchEventSource('/api/v1/agent/stream', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(getAuthToken() ? { 'Authorization': `Bearer ${getAuthToken()}` } : {}),
-        },
-        body: JSON.stringify(requestBody),
-        signal: state.abortController.signal,
+      while (!state.cancelled && state.status !== 'done' && state.status !== 'error') {
+        try {
+          await this._openStream(state)
+          return // 流正常结束（终态事件已处理）
+        } catch (err) {
+          // state.status 可能被回调并发修改（onmessage 终态/onclose 状态查询），用 string 比较绕过 TS 窄化
+          const statusAfterError: string = state.status
+          if (state.cancelled || statusAfterError === 'done' || statusAfterError === 'error') return
 
-        onopen: async (response) => {
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`)
-          }
-        },
-
-        onmessage: (ev: EventSourceMessage) => {
-          const event = this._parseEvent(ev)
-          if (!event) return
-
-          if (event.data.task_id && !state.taskId) {
-            state.taskId = event.data.task_id
-            this.persistTaskId(state.sessionId, event.data.task_id)
-            console.log(`[SSE][${state.connectionId}] 获取 task_id: ${state.taskId}`)
-          }
-
-          this._processEvent(state, event)
-          const stepsArray = Array.from(state.steps.values())
-          state.onEvent(event, stepsArray)
-          this._logEvent(state.connectionId, event, state.steps)
-
-          if (this._isChildAgentEvent(state, event) && event.event_type === 'assistant_message') return
-          if (this._isChildAgentEvent(state, event)) return
-
-          if (event.event_type === 'completed') {
-            if (state.completedFired) return
-            state.completedFired = true
-            state.taskEnded = true
-            this.clearPersistedTask(state.sessionId)
-            state.onComplete({
-              success: true,
-              message: event.data.message || tr('任务完成', 'Task completed', 'タスク完了'),
-              output_file_id: event.data.result?.output_file_id,
-              download_url: event.data.result?.download_url,
-              task_stats: event.data.result?.task_stats,
-            })
-            state.abortController.abort()
-          } else if (event.event_type === 'failed') {
-            if (state.completedFired) return
-            state.completedFired = true
-            state.taskEnded = true
-            this.clearPersistedTask(state.sessionId)
-            const errorMsg = event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗')
-            state.onError(errorMsg)
-            state.abortController.abort()
-          } else if (event.event_type === 'cancelled') {
-            if (state.completedFired) return
-            state.completedFired = true
-            state.taskEnded = true
-            this.clearPersistedTask(state.sessionId)
-            state.onError(event.data.message || tr('任务已取消', 'Task cancelled', 'タスクがキャンセルされました'))
-            state.abortController.abort()
-          }
-        },
-
-        onclose: () => {
-          // 流正常关闭。如果 completedFired 未触发（回放跳过了终端事件），
-          // 回放结束但未收到终端事件（任务已在断连期间完成）
-          // 通知前端清理流式状态，但标记 _replayDone 以保留统计显示
-          if (!state.completedFired && !state.cancelled) {
-            state.completedFired = true
-            state.taskEnded = true
-            this.clearPersistedTask(state.sessionId)
-            state.onComplete({
-              success: true,
-              message: '',
-              _replayDone: true,
-            })
-          }
-        },
-
-        onerror: (_err) => {
-          // 显式取消或任务已结束 → 停止重试
-          if (state.cancelled || state.taskEnded) {
-            return null
-          }
-          // 重连次数耗尽 → 停止重试并通知
-          if (state.reconnectAttempts >= state.maxReconnectAttempts) {
-            state.onError(tr(`连接中断，重连失败(${state.reconnectAttempts}次)`, `Connection lost, reconnect failed (${state.reconnectAttempts} times)`, `接続切断、再接続失敗（${state.reconnectAttempts}回）`))
-            return null
-          }
-          // 继续重试
           state.reconnectAttempts++
-          console.warn(`[SSE][${state.connectionId}] 连接中断，第${state.reconnectAttempts}次重试`)
-          return 5000  // 5秒后由 fetchEventSource 内部重试
-        },
-      })
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-
-      // 显式取消（cancelSession / stopTask）— 静默
-      if (state.cancelled) {
-        // 静默
-      }
-      // 用户 abort
-      else if (errMsg.includes('abort') || errMsg.includes('AbortError')) {
-        // handled in finally
-      }
-      // 任务已正常结束
-      else if (state.taskEnded) {
-        // handled in finally
-      }
-      // onerror 返回 null 导致的最终退出，不重复通知
-      else if (state.reconnectAttempts >= state.maxReconnectAttempts) {
-        // 已在 onerror 中通知
-      }
-      // 其他意外错误
-      else {
-        state.onError(tr(`连接中断: ${errMsg}`, `Connection lost: ${errMsg}`, `接続切断: ${errMsg}`))
+          const errMsg = err instanceof Error ? err.message : String(err)
+          if (state.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            state.status = 'error'
+            state.onError(tr(
+              `连接中断，重连失败(${MAX_RECONNECT_ATTEMPTS}次)`,
+              `Connection lost, reconnect failed (${MAX_RECONNECT_ATTEMPTS} times)`,
+              `接続切断、再接続失敗（${MAX_RECONNECT_ATTEMPTS}回）`
+            ))
+            return
+          }
+          // 指数退避：2s, 4s, 8s, 16s, 32s
+          const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, state.reconnectAttempts - 1)
+          console.warn(`[SSE][${state.connectionId}] 连接中断(${errMsg})，${delay / 1000}s 后第${state.reconnectAttempts}次重连 | task=${state.taskId?.slice(0, 8)} | seq=${state.lastSeq}`)
+          await new Promise(r => setTimeout(r, delay))
+        }
       }
     } finally {
-      if (state.taskEnded) {
-        this.clearPersistedTask(state.sessionId)
+      if (state.status === 'done' || state.status === 'error') {
         this.connections.delete(state.connectionId)
       }
     }
   }
 
+  /**
+   * 建立单次 SSE 连接（fetch-event-source 的自动重试已禁用，重连由 _connectLoop 统一控制）
+   */
+  private async _openStream(state: ConnectionState): Promise<void> {
+    // 每次连接都用最新的 taskId + lastSeq 重建请求体
+    const requestBody: Record<string, any> = { ...state.request }
+    if (state.taskId) {
+      requestBody.task_id = state.taskId
+      requestBody.last_event_id = state.lastSeq
+    }
+
+    await fetchEventSource('/api/v1/agent/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(getAuthToken() ? { 'Authorization': `Bearer ${getAuthToken()}` } : {}),
+      },
+      body: JSON.stringify(requestBody),
+      signal: state.abortController.signal,
+
+      onopen: async (response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        // task_id 统一走响应头（新任务与重连一致）
+        const headerTaskId = response.headers.get('X-Task-Id')
+        if (headerTaskId && headerTaskId !== state.taskId) {
+          state.taskId = headerTaskId
+          this.persistTaskData(state.sessionId, { taskId: headerTaskId })
+          console.log(`[SSE][${state.connectionId}] 获取 task_id: ${headerTaskId.slice(0, 8)}`)
+        }
+        state.status = 'streaming'
+        state.reconnectAttempts = 0 // 连接成功，重置重连计数
+      },
+
+      onmessage: (ev: EventSourceMessage) => {
+        const event = this._parseEvent(ev)
+        if (!event) return
+
+        // seq 幂等：已应用过的事件直接跳过（回放与实时流的重叠部分）
+        if (event.seq !== undefined) {
+          if (event.seq <= state.lastSeq) return
+          state.lastSeq = event.seq
+          this._persistSeqThrottled(state, event)
+        }
+
+        this._processEvent(state, event)
+        const stepsArray = Array.from(state.steps.values())
+        state.onEvent(event, stepsArray)
+        this._logEvent(state.connectionId, event, state.steps)
+
+        // 子 agent 的终态事件不触发完成回调（嵌入委派步骤展示）
+        if (this._isChildAgentEvent(state, event)) return
+
+        if (event.event_type === 'completed') {
+          state.status = 'done'
+          this.clearPersistedTask(state.sessionId)
+          state.onComplete({
+            success: true,
+            message: event.data.message || tr('任务完成', 'Task completed', 'タスク完了'),
+            output_file_id: event.data.result?.output_file_id,
+            download_url: event.data.result?.download_url,
+            task_stats: event.data.result?.task_stats,
+          })
+          state.abortController.abort()
+        } else if (event.event_type === 'failed') {
+          state.status = 'done'
+          this.clearPersistedTask(state.sessionId)
+          state.onError(event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗'))
+          state.abortController.abort()
+        } else if (event.event_type === 'cancelled') {
+          state.status = 'done'
+          this.clearPersistedTask(state.sessionId)
+          state.onError(event.data.message || tr('任务已取消', 'Task cancelled', 'タスクがキャンセルされました'))
+          state.abortController.abort()
+        }
+      },
+
+      onclose: async () => {
+        // 流被服务端正常关闭。正常路径下终态事件已在缓冲中回放并处理，
+        // 走到这里说明未收到终态事件 → 通过状态端点做权威判定
+        // （state.status 可能被 onmessage 回调并发修改，用 string 比较绕过 TS 窄化）
+        const currentStatus: string = state.status
+        if (currentStatus === 'done' || currentStatus === 'error' || state.cancelled) {
+          throw new Error('stream already terminated')
+        }
+        // await 状态查询：终态 → 设置 status 并回调；仍在运行 → 内部抛错触发重连
+        await this._resolveByStatusQuery(state)
+        // _resolveByStatusQuery 返回说明已判定为终态，抛错让 _connectLoop 退出循环
+        throw new Error('stream closed by server')
+      },
+
+      onerror: (err) => {
+        // 抛出异常，禁用 fetch-event-source 内部重试，交由 _connectLoop 退避重连
+        throw err
+      },
+    })
+  }
+
+  /**
+   * 流关闭但未收到终态事件时，通过状态端点权威判定任务结果
+   */
+  private async _resolveByStatusQuery(state: ConnectionState): Promise<void> {
+    if (!state.taskId) {
+      state.status = 'error'
+      state.onError(tr('连接中断', 'Connection lost', '接続切断'))
+      return
+    }
+    const status = await this.getTaskStatus(state.taskId)
+    if (state.cancelled || state.status === 'done' || state.status === 'error') return
+
+    if (!status) {
+      // 状态查询本身失败（网络问题）→ 视为可重连错误，由 _connectLoop 重连
+      throw new Error('task status query failed')
+    }
+    if (status.status === 'not_found') {
+      state.status = 'error'
+      this.clearPersistedTask(state.sessionId)
+      state.onError(tr('任务不存在或已过期', 'Task not found or expired', 'タスクが見つからないか期限切れです'))
+      return
+    }
+    if (status.status === 'completed') {
+      state.status = 'done'
+      this.clearPersistedTask(state.sessionId)
+      const result = status.result || {}
+      state.onComplete({
+        success: true,
+        message: result.message || '',
+        output_file_id: result.result?.output_file_id,
+        download_url: result.result?.download_url,
+        task_stats: result.result?.task_stats,
+        fromStatusQuery: true, // 消息已在 DB 中，页面不应重复添加
+      })
+      return
+    }
+    if (status.status === 'failed' || status.status === 'cancelled') {
+      state.status = 'done'
+      this.clearPersistedTask(state.sessionId)
+      const result = status.result || {}
+      state.onError(result.error || result.message || tr('任务已结束', 'Task ended', 'タスク終了'))
+      return
+    }
+    // 仍在运行但连接被关闭 → 视为可重连错误，由 _connectLoop 重连
+    throw new Error('stream closed while task still running')
+  }
+
+  /**
+   * 持久化任务数据续期（节流，1s 内最多写一次）：保持 timestamp 滑动，
+   * 使 localStorage 的 10 分钟过期从最近活动时间起算
+   */
+  private _persistSeqThrottled(state: ConnectionState, _event: AgentEvent): void {
+    const now = Date.now()
+    if (now - this.lastPersistTime > 1000) {
+      this.lastPersistTime = now
+      this.persistTaskData(state.sessionId, { taskId: state.taskId || undefined })
+    }
+  }
+
+  // ==================== 事件解析与步骤树重建 ====================
+
   private _parseEvent(ev: EventSourceMessage): AgentEvent | null {
     try {
       const parsedData = JSON.parse(ev.data)
+      const seq = ev.id ? parseInt(ev.id, 10) : undefined
       return {
         event_type: parsedData.event_type || ev.event,
         step_id: parsedData.step_id,
         timestamp: parsedData.timestamp || new Date().toISOString(),
+        seq: seq !== undefined && !isNaN(seq) ? seq : undefined,
         data: parsedData,
       }
     } catch {
@@ -505,9 +598,6 @@ class AgentStreamService {
         console.log(`[SSE][${connectionId}] 中途回复(${src}): ${msg.substring(0, 100)}${msg.length > 100 ? '...' : ''}`)
         break
       }
-      case 'content_end':
-        console.log(`[SSE][${connectionId}] 回复完成`)
-        break
       case 'completed':
         console.log(`[SSE][${connectionId}] 任务完成`)
         break

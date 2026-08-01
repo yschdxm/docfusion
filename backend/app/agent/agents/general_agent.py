@@ -148,7 +148,7 @@ def create_general_agent(stream_manager_provider=None) -> AgentRuntime:
     """创建通用Agent - 路由系统的入口点
 
     Args:
-        stream_manager_provider: 一个返回StreamManager的函数，用于流桥接
+        stream_manager_provider: 一个返回TaskEventLog的函数，用于流桥接
     """
     registry = ToolRegistry()
 

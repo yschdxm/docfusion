@@ -6,14 +6,15 @@ Agent核心组件模块
 
 from .registry import ToolRegistry, tool_registry
 from .executor import ToolExecutor
-from .stream import StreamManager, AgentEventType, AgentEvent
+from .stream import AgentEventType, AgentEvent
+from .event_log import TaskEventLog
 from .tracker import StepTracker, Step, StepStatus, StepType
 
 __all__ = [
     "ToolRegistry",
     "tool_registry",
     "ToolExecutor",
-    "StreamManager",
+    "TaskEventLog",
     "AgentEventType",
     "AgentEvent",
     "StepTracker",

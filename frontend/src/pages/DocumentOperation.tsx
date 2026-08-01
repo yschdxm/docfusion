@@ -166,6 +166,11 @@ export default function DocumentOperation() {
   const [docSearchKeyword, setDocSearchKeyword] = useState('')
   const [templateSearchKeyword, setTemplateSearchKeyword] = useState('')
   const [localMessages, setLocalMessages] = useState<Message[]>([])
+  // localMessages 的 ref 镜像，供 SSE 回调（闭包外）读取最新值做幂等判断
+  const localMessagesRef = useRef<Message[]>([])
+  useEffect(() => {
+    localMessagesRef.current = localMessages
+  }, [localMessages])
   const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
 
@@ -430,6 +435,14 @@ export default function DocumentOperation() {
         const message = event.data.message || ''
         if (message) {
           if (event.data.agent_name) return
+          // 幂等保护：页面级重连会全量回放事件，已持久化到 DB 并加载的消息不重复添加
+          const exists = localMessagesRef.current.some(m => m.role === 'assistant' && m.content === message)
+          if (exists) {
+            latestStepsRef.current = []
+            setCurrentSteps([])
+            setStreamingContent(''); streamingContentRef.current = ''
+            return
+          }
           const messagesToAdd: Message[] = []
           // 不再保存 streamingContent — 它与 assistant_message 内容相同（来自 content_chunk 累积）
           if (latestStepsRef.current.length > 0) {
@@ -487,14 +500,20 @@ export default function DocumentOperation() {
       setIsStreaming(false); setIsLoading(false); setStreamingContent(''); streamingContentRef.current = ''
       currentConnectionRef.current = null; currentConnectionSessionRef.current = null
 
-      if (result._replayDone) {
-        // 回放结束但任务已在断连期间完成：保留统计显示，消息已从 DB 加载
+      if (result.fromStatusQuery) {
+        // 任务在断连期间完成（结果来自状态查询）：消息已在 DB 中并已从 DB 加载，不重复添加
         setCurrentSteps([])
         return
       }
 
       setStreamingStats(null)
       if (result.message || result.download_url || latestStepsRef.current.length > 0) {
+        // 幂等保护：断连期间任务完成，消息已从 DB 加载，completed 事件重放时不重复添加
+        const lastAssistant = [...localMessagesRef.current].reverse().find(m => m.role === 'assistant')
+        if (result.message && lastAssistant?.content === result.message) {
+          setCurrentSteps([])
+          return
+        }
         const aiMsg: Message = {
           role: 'assistant',
           content: result.message || '',

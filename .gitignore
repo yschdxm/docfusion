@@ -50,3 +50,5 @@ logs
 .ruff_cache
 *.bak
 *.mermaid
+# Tests (local only, not committed)
+backend/tests/

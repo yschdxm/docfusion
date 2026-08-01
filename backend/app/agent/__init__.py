@@ -8,7 +8,7 @@ Agent系统模块
 - ToolRegistry: 工具注册表
 - ToolExecutor: 工具执行器
 - AgentRuntime: Agent运行时
-- StreamManager: 流管理器
+- TaskEventLog: 任务事件日志（发布/订阅）
 - StepTracker: 步骤追踪器
 
 使用示例:
@@ -35,7 +35,8 @@ from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.agent.core.registry import ToolRegistry, tool_registry
 from app.agent.core.executor import ToolExecutor
 from app.agent.core.runtime import AgentRuntime
-from app.agent.core.stream import StreamManager, AgentEventType, AgentEvent
+from app.agent.core.stream import AgentEventType, AgentEvent
+from app.agent.core.event_log import TaskEventLog
 from app.agent.core.tracker import StepTracker, Step, StepStatus, StepType
 from app.agent.core.delegation import StreamBridge, DelegateAgentTool
 
@@ -50,7 +51,7 @@ __all__ = [
     "tool_registry",
     "ToolExecutor",
     "AgentRuntime",
-    "StreamManager",
+    "TaskEventLog",
     "AgentEventType",
     "AgentEvent",
     "StepTracker",

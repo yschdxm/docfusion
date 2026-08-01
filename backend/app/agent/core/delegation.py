@@ -5,7 +5,7 @@ Agent委派核心模块
 标准Function Calling机制调用子Agent。
 
 核心组件：
-- StreamBridge: 将子Agent的StreamManager事件转发到父Agent的StreamManager
+- StreamBridge: 订阅子Agent的TaskEventLog，将事件转发到父级TaskEventLog
 - DelegateAgentTool: 子Agent委派工具基类
 """
 
@@ -15,7 +15,8 @@ from typing import Any, Dict, Optional
 from datetime import datetime
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
-from app.agent.core.stream import StreamManager, AgentEvent, AgentEventType
+from app.agent.core.stream import AgentEvent, AgentEventType
+from app.agent.core.event_log import TaskEventLog
 from app.agent.core.tracker import StepTracker
 
 
@@ -31,47 +32,42 @@ AGENT_DISPLAY_NAMES = {
 class StreamBridge:
     """流桥接器
 
-    将子Agent的StreamManager事件桥接到父级StreamManager。
+    订阅子Agent的TaskEventLog，将事件转发到父级TaskEventLog。
     子Agent的思考过程、工具调用等事件会以子步骤的形式
-    传递给父级StreamManager，使前端能看到完整的执行过程。
+    传递给父级TaskEventLog，使前端能看到完整的执行过程。
     """
 
-    def __init__(self, parent_stream: StreamManager, agent_name: str):
-        self.parent_stream = parent_stream
+    def __init__(self, parent_log: TaskEventLog, agent_name: str):
+        self.parent_log = parent_log
         self.agent_name = agent_name
         self._bridge_task: Optional[asyncio.Task] = None
 
-    def create_child_stream(self) -> StreamManager:
-        """创建子Agent的StreamManager，并启动桥接协程"""
-        child_stream = StreamManager()
-        self._bridge_task = asyncio.create_task(self._bridge_events(child_stream))
-        return child_stream
+    def start(self, child_log: TaskEventLog) -> None:
+        """启动桥接协程（消费子日志事件并转发）"""
+        self._bridge_task = asyncio.create_task(
+            self._bridge_events(child_log),
+            name=f"stream-bridge-{self.agent_name}",
+        )
 
-    async def _bridge_events(self, child_stream: StreamManager):
-        """监听子StreamManager的队列，将事件转发到父StreamManager
-
-        直接从队列消费 AgentEvent 对象（不使用 stream() 方法，因为 stream() yield 的是 SSE 字符串）。
-        """
+    async def _bridge_events(self, child_log: TaskEventLog):
+        """订阅子日志，将事件转发到父日志（跳过心跳）"""
         try:
             event_count = 0
-            while True:
-                # 父流已关闭，停止转发
-                if self.parent_stream.is_closed():
-                    logger.info(f"[StreamBridge] 父流已关闭，停止桥接 | 已转发 {event_count} 个事件")
+            async for item in child_log.subscribe(heartbeat=30.0):
+                # 父日志已结束（如任务取消），停止转发
+                if self.parent_log.is_finished:
+                    logger.info(f"[StreamBridge] 父日志已结束，停止桥接 | 已转发 {event_count} 个事件")
                     break
-                event = await asyncio.wait_for(
-                    child_stream._event_queue.get(),
-                    timeout=600.0
-                )
-                if event is None:  # 结束标记
-                    break
+                if item is None:  # 心跳不转发
+                    continue
                 event_count += 1
-                adapted = self._adapt_event(event)
-                logger.info(f"[StreamBridge] 转发事件 #{event_count}: type={event.event_type}, step_id={adapted.step_id}")
-                await self.parent_stream.emit(adapted)
+                adapted = self._adapt_event(item)
+                logger.debug(f"[StreamBridge] 转发事件 #{event_count}: type={item.event_type}, step_id={adapted.step_id}")
+                await self.parent_log.emit(adapted)
             logger.info(f"[StreamBridge] 桥接完成，共转发 {event_count} 个事件")
-        except asyncio.TimeoutError:
-            logger.warning("[StreamBridge] 桥接超时")
+        except asyncio.CancelledError:
+            logger.info(f"[StreamBridge] 桥接被取消 | agent={self.agent_name}")
+            raise
         except Exception as e:
             logger.error(f"[StreamBridge] 桥接事件异常: {e}")
 
@@ -79,6 +75,7 @@ class StreamBridge:
         """适配子Agent事件，标记来源为子Agent
 
         创建新的AgentEvent实例，不修改原始事件。
+        注意：不带 seq，由父日志 publish 时重新分配。
         """
         new_step_id = f"{self.agent_name}_{event.step_id}" if event.step_id else None
         new_data = {**event.data, "agent_name": self.agent_name}
@@ -94,6 +91,8 @@ class StreamBridge:
         if self._bridge_task:
             try:
                 await self._bridge_task
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
                 logger.error(f"[StreamBridge] 等待桥接任务完成异常: {e}")
 
@@ -128,28 +127,30 @@ class DelegateAgentTool(BaseTool):
         # 只取最近的几条，避免子Agent被过多无关历史干扰
         recent_history = parent_history[-6:] if len(parent_history) > 6 else parent_history
 
+        # 取消信号从父级传播（任务取消时子Agent一起退出）
+        cancel_event = context.metadata.get("cancel_event")
+
         child_context = ToolContext(
             session_id=f"{context.session_id}_{self.name}_{timestamp}",
             user_id=context.user_id,
             file_ids=params.get("file_ids", context.file_ids),
             template_id=params.get("template_id", context.template_id),
             conversation_history=recent_history,
-            metadata={"parent_session_id": context.session_id},
+            metadata={"parent_session_id": context.session_id, "cancel_event": cancel_event},
         )
 
-        # 2. 创建子Agent的流桥接
-        parent_stream = self.parent_stream_provider() if self.parent_stream_provider else None
+        # 2. 创建子Agent的事件日志与流桥接
+        parent_log = self.parent_stream_provider() if self.parent_stream_provider else None
+        child_log = TaskEventLog()
         bridge = None
-        if parent_stream:
-            bridge = StreamBridge(parent_stream, self.name)
-            child_stream = bridge.create_child_stream()
-        else:
-            child_stream = StreamManager()
+        if parent_log:
+            bridge = StreamBridge(parent_log, self.name)
+            bridge.start(child_log)
 
-        # 3. 向父Stream发送委派开始事件
+        # 3. 向父日志发送委派开始事件
         delegation_step_id = f"{self.name}_delegation"
-        if parent_stream:
-            await parent_stream.emit(AgentEvent(
+        if parent_log:
+            await parent_log.emit(AgentEvent(
                 event_type=AgentEventType.STEP_START,
                 step_id=delegation_step_id,
                 data={
@@ -168,18 +169,20 @@ class DelegateAgentTool(BaseTool):
                 file_ids=child_context.file_ids,
                 template_id=child_context.template_id,
                 conversation_history=recent_history,
-                stream_manager=child_stream,
+                event_log=child_log,
                 step_tracker=StepTracker(),
                 user_id=child_context.user_id,
+                cancel_event=cancel_event,
             )
 
-            # 5. 等待桥接任务完成
+            # 5. 收尾：关闭子日志并等待桥接完成
+            await child_log.finish()
             if bridge:
                 await bridge.wait_for_completion()
 
-            # 6. 向父Stream发送委派结束事件
-            if parent_stream:
-                await parent_stream.emit(AgentEvent(
+            # 6. 向父日志发送委派结束事件
+            if parent_log:
+                await parent_log.emit(AgentEvent(
                     event_type=AgentEventType.STEP_END,
                     step_id=delegation_step_id,
                     data={
@@ -203,34 +206,19 @@ class DelegateAgentTool(BaseTool):
                 },
                 error=result.get("error"),
             )
-        except asyncio.TimeoutError:
-            logger.error(f"[{self.__class__.__name__}] 子Agent执行超时")
-            if not child_stream.is_closed():
-                await child_stream.close()
+        except asyncio.CancelledError:
+            logger.info(f"[{self.__class__.__name__}] 子Agent随任务一起取消")
+            await child_log.finish()
             if bridge:
                 await bridge.wait_for_completion()
-            if parent_stream:
-                await parent_stream.emit(AgentEvent(
-                    event_type=AgentEventType.STEP_END,
-                    step_id=delegation_step_id,
-                    data={
-                        "message": "子Agent执行超时",
-                        "agent_name": self.name,
-                        "is_delegation_end": True,
-                    }
-                ))
-            return ToolResult(
-                success=False,
-                error="子Agent执行超时（300秒）",
-            )
+            raise
         except Exception as e:
             logger.exception(f"[{self.__class__.__name__}] 子Agent执行异常: {e}")
-            if not child_stream.is_closed():
-                await child_stream.close()
+            await child_log.finish()
             if bridge:
                 await bridge.wait_for_completion()
-            if parent_stream:
-                await parent_stream.emit(AgentEvent(
+            if parent_log:
+                await parent_log.emit(AgentEvent(
                     event_type=AgentEventType.STEP_END,
                     step_id=delegation_step_id,
                     data={

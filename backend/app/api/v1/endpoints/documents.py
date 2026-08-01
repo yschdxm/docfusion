@@ -3,7 +3,6 @@ import time
 import hmac
 import hashlib
 import html
-import json
 import httpx
 import asyncio
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import select, update as sql_update, text, or_
 from app.core.config import get_settings
 from app.core.deps import get_current_user
+from app.core.sse import SSE_HEADERS, format_sse
 from app.db.postgres import get_db, engine
 from app.models.document import Document, ExtractionTask
 from app.models.user import User
@@ -621,7 +621,7 @@ async def progress_stream(
 
                         progress_key = f"{task.status}:{current_progress}"
                         if progress_key != last_progress:
-                            yield f"data: {json.dumps(progress_data)}\n\n"
+                            yield format_sse(progress_data)
                             last_progress = progress_key
 
                         # 任务完成或失败时，发送 done 事件通知客户端可以关闭连接
@@ -637,13 +637,13 @@ async def progress_stream(
                         not_found_count += 1
                         # 如果超过 10 次未找到任务（10秒），可能是任务还未创建或已删除
                         if not_found_count > 10:
-                            yield f"data: {json.dumps({'status': 'not_found', 'progress': '0%', 'current_step': '等待任务创建...'})}\n\n"
+                            yield format_sse({'status': 'not_found', 'progress': '0%', 'current_step': '等待任务创建...'})
                             not_found_count = 0
             except Exception as e:
                 logger.error(f"SSE progress stream error: {e}")
                 # 发送错误事件给客户端
                 try:
-                    yield f"data: {json.dumps({'status': 'error', 'error': str(e)})}\n\n"
+                    yield format_sse({'status': 'error', 'error': str(e)})
                 except Exception:
                     pass
 
@@ -652,11 +652,7 @@ async def progress_stream(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=SSE_HEADERS,
     )
 
 
