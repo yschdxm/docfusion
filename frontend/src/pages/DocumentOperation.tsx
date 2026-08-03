@@ -877,6 +877,8 @@ export default function DocumentOperation() {
           content: m.content,
           action: m.action_data,
           timestamp: m.timestamp,
+          steps: m.steps,
+          task_stats: m.task_stats,
         }))
       )
     }

@@ -269,7 +269,10 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
   })
   const allStepIdsKey = allStepIds.join(',')
 
+  // 自动展开最新步骤：仅实时流(isActive)时生效。
+  // 历史面板默认全折叠，避免 mount 时"先展开再收起"的闪烁和滚动定位漂移。
   useEffect(() => {
+    if (!isActive) return
     if (steps.length > 0) {
       const latestStep = steps[steps.length - 1]
       setInternalExpanded((prev) => {
@@ -287,9 +290,12 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steps.length, allStepIdsKey])
+  }, [steps.length, allStepIdsKey, isActive])
 
+  // 已完成的思考/委派步骤延迟自动折叠：仅实时流时生效。
+  // 历史面板 mount 时不调度任何定时器，保持初始全折叠。
   useEffect(() => {
+    if (!isActive) return
     const checkAndCollapse = (s: AgentStep) => {
       if (s.type === 'thinking' && s.status === 'completed' && (s.name === '思考完成' || s.name === 'Thinking complete' || s.name === '思考完了')) {
         setTimeout(() => {
@@ -314,7 +320,7 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
     }
     steps.forEach(checkAndCollapse)
     steps.forEach(s => s.children?.forEach(checkAndCollapse))
-  }, [steps])
+  }, [steps, isActive])
 
   const toggleStep = (stepId: string) => {
     setInternalExpanded((prev) => {
