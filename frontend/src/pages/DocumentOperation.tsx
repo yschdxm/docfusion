@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Search } from 'lucide-react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Search, FileOutput } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -14,6 +14,7 @@ import agentStreamService, { AgentStep, TaskStats } from '../services/agentStrea
 import { useDocumentPreview, getFileType } from '../hooks/useDocumentPreview'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 import DocumentPreviewPanel from '../components/DocumentPreviewPanel'
+import ConversationOutputsPanel from '../components/ConversationOutputsPanel'
 import { useI18n } from '../hooks/useI18n'
 import { getTheme } from '../services/theme'
 import { getStoredLanguage } from '../services/i18n'
@@ -146,6 +147,8 @@ export default function DocumentOperation() {
   } = useChatStore()
 
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
+  const [outputsOpen, setOutputsOpen] = useState(false)
+  const [outputsRefreshKey, setOutputsRefreshKey] = useState(0)
 
   // 监听主题变化
   useEffect(() => {
@@ -478,6 +481,7 @@ export default function DocumentOperation() {
             source: 'operated',
           }
           addOperatedFile(file)
+          setOutputsRefreshKey(k => k + 1)
         }
       }
 
@@ -523,6 +527,7 @@ export default function DocumentOperation() {
         }
         if (result.download_url) {
           aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id }
+          setOutputsRefreshKey(k => k + 1)
         }
         setLocalMessages(prev => [...prev, aiMsg])
       }
@@ -917,7 +922,7 @@ export default function DocumentOperation() {
   }
 
   return (
-    <div data-doc-op-container className="flex h-full">
+    <div data-doc-op-container className="relative flex h-full">
       {/* 左侧历史会话面板 */}
       {isMobile ? (
         /* 移动端：全屏 overlay */
@@ -1037,6 +1042,13 @@ export default function DocumentOperation() {
                   title={tr('文档预览', 'Preview', 'プレビュー')}
                 >
                   <Eye className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setOutputsOpen(o => !o)}
+                  className={`p-2 rounded-lg transition-colors ${outputsOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                  title={tr('会话产出', 'Session outputs', 'セッション成果物')}
+                >
+                  <FileOutput className="w-4 h-4" />
                 </button>
               </div>
             </div>
@@ -1571,6 +1583,24 @@ export default function DocumentOperation() {
             </div>
           </div>
         </>
+      )}
+
+      {/* 会话产出面板（右侧抽屉） */}
+      {outputsOpen && (
+        <ConversationOutputsPanel
+          sessionId={activeSessionId}
+          refreshKey={outputsRefreshKey}
+          isDarkMode={isDarkMode}
+          onOpenFile={(file) => {
+            addOperatedFile(file)
+            if (isMobile) {
+              setShowMobilePreview(true)
+            } else if (!isPanelOpen) {
+              togglePanel()
+            }
+          }}
+          onClose={() => setOutputsOpen(false)}
+        />
       )}
     </div>
   )

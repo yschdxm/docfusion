@@ -3,19 +3,26 @@ from typing import Dict, List, Any, Optional
 import pandas as pd
 import re
 import logging
-import shutil
 from datetime import datetime
 import zipfile
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-# XML 命名空间
-NS = {'main': 'http://purl.oclc.org/ooxml/spreadsheetml/main'}
+# XML 命名空间（仅用于属性读取；元素查找统一用 {*} 通配，兼容 transitional 与 strict 两种 OOXML 命名空间）
+NS = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+_REL_ID_ATTRS = (
+    '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id',
+    '{http://purl.oclc.org/ooxml/officeDocument/relationships}id',
+)
 
 
 def _parse_xlsx_with_zip(file_path: str) -> Dict[str, Any]:
-    """使用 zipfile 直接解析 xlsx 文件（openpyxl 兼容性备用方案）。"""
+    """使用 zipfile 直接解析 xlsx 文件（openpyxl 兼容性备用方案）。
+
+    元素查找用 {*} 通配命名空间，同时兼容标准（schemas.openxmlformats.org）
+    与 strict（purl.oclc.org）两种 OOXML 变体。
+    """
     sheets = []
     all_text = []
 
@@ -26,9 +33,9 @@ def _parse_xlsx_with_zip(file_path: str) -> Dict[str, Any]:
             with z.open('xl/sharedStrings.xml') as f:
                 tree = ET.parse(f)
                 root = tree.getroot()
-                for si in root.findall('.//main:si', NS):
+                for si in root.findall('.//{*}si'):
                     # 处理富文本（多个 t 元素）
-                    texts = si.findall('.//main:t', NS)
+                    texts = si.findall('.//{*}t')
                     shared_strings.append(''.join(t.text or '' for t in texts))
 
         # 读取 workbook.xml 获取 sheet 列表
@@ -37,24 +44,30 @@ def _parse_xlsx_with_zip(file_path: str) -> Dict[str, Any]:
             with z.open('xl/workbook.xml') as f:
                 tree = ET.parse(f)
                 root = tree.getroot()
-                for sheet in root.findall('.//main:sheet', NS):
+                for sheet in root.findall('.//{*}sheet'):
+                    rid = None
+                    for attr in _REL_ID_ATTRS:
+                        rid = sheet.get(attr)
+                        if rid:
+                            break
                     sheet_list.append({
                         'name': sheet.get('name', 'Sheet'),
-                        'r:id': sheet.get('{http://purl.oclc.org/ooxml/officeDocument/relationships}id')
+                        'r:id': rid
                     })
 
         # 读取 workbook.xml.rels 获取 sheet 文件映射
         sheet_files = {}
-        REL_NS = {'rel': 'http://schemas.openxmlformats.org/package/2006/relationships'}
         if 'xl/_rels/workbook.xml.rels' in z.namelist():
             with z.open('xl/_rels/workbook.xml.rels') as f:
                 tree = ET.parse(f)
                 root = tree.getroot()
-                for rel in root.findall('.//rel:Relationship', REL_NS):
+                for rel in root.findall('.//{*}Relationship'):
                     rid = rel.get('Id')
                     target = rel.get('Target')
                     if rid and target and 'worksheet' in rel.get('Type', ''):
-                        sheet_files[rid] = f'xl/{target}'
+                        # Target 可能是绝对路径（/xl/...）或相对路径（worksheets/...）
+                        target = target.lstrip('/')
+                        sheet_files[rid] = target if target.startswith('xl/') else f'xl/{target}'
 
         # 解析每个 sheet
         for sheet_info in sheet_list:
@@ -70,18 +83,21 @@ def _parse_xlsx_with_zip(file_path: str) -> Dict[str, Any]:
                 tree = ET.parse(f)
                 root = tree.getroot()
 
-                for row in root.findall('.//main:sheetData/main:row', NS):
+                for row in root.findall('.//{*}sheetData/{*}row'):
                     row_data = []
-                    for cell in row.findall('main:c', NS):
+                    for cell in row.findall('{*}c'):
                         cell_type = cell.get('t', '')
-                        value_elem = cell.find('main:v', NS)
+                        value_elem = cell.find('{*}v')
 
-                        if value_elem is None or value_elem.text is None:
+                        if cell_type == 'inlineStr':  # 内联字符串
+                            t_elems = cell.findall('.//{*}t')
+                            row_data.append(''.join(t.text or '' for t in t_elems))
+                        elif value_elem is None or value_elem.text is None:
                             row_data.append('')
                         elif cell_type == 's':  # shared string
                             idx = int(value_elem.text)
                             row_data.append(shared_strings[idx] if idx < len(shared_strings) else '')
-                        elif cell_type == 'str':  # inline string
+                        elif cell_type == 'str':  # formula string
                             row_data.append(value_elem.text)
                         elif cell_type == 'b':  # boolean
                             row_data.append('TRUE' if value_elem.text == '1' else 'FALSE')
@@ -742,30 +758,6 @@ class XlsxParser:
 
         workbook.save(output_path)
 
-    @staticmethod
-    def write_from_dict_on_template(data: Dict[str, Any], template_path: str, output_path: str):
-        """在模板基础上填充数据，保留原有格式（合并单元格、列宽、样式等）。"""
-        shutil.copy2(template_path, output_path)
-        workbook = openpyxl.load_workbook(output_path)
-
-        for sheet_name, sheet_data in data.items():
-            if sheet_name in workbook.sheetnames:
-                sheet = workbook[sheet_name]
-            elif workbook.active.title not in data:
-                sheet = workbook.active
-                sheet.title = sheet_name
-            else:
-                sheet = workbook.create_sheet(sheet_name)
-
-            if "data" in sheet_data and isinstance(sheet_data["data"], list):
-                for row_idx, row_data in enumerate(sheet_data["data"], start=1):
-                    if isinstance(row_data, list):
-                        for col_idx, cell_value in enumerate(row_data, start=1):
-                            sheet.cell(row=row_idx, column=col_idx, value=cell_value)
-
-        workbook.save(output_path)
-
-
 def _convert_value(val, col_type: str):
     """根据列类型转换值，确保类型匹配数据库列定义。"""
     if val is None or (isinstance(val, str) and val.strip() == ""):
@@ -801,7 +793,6 @@ def _convert_value(val, col_type: str):
         # 如果无法解析，返回原字符串
         return s
     return s
-
 
 def _infer_column_type(values: List[str]) -> tuple:
     """推断列数据类型。

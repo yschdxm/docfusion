@@ -12,6 +12,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from uuid import uuid4
 import asyncio
 
 from app.agent.core.registry import ToolRegistry
@@ -313,6 +314,8 @@ class AgentRuntime:
         cancel_event: Optional[asyncio.Event] = None,
         user_selected_model: Optional[str] = None,
         db=None,
+        conversation_id: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """运行Agent
 
@@ -326,7 +329,12 @@ class AgentRuntime:
             file_ids=file_ids,
             template_id=template_id,
             conversation_history=conversation_history or [],
-            metadata={"cancel_event": cancel_event},  # 委派子Agent时传播取消信号
+            metadata={
+                "cancel_event": cancel_event,  # 委派子Agent时传播取消信号
+                # run_id 标识同一轮指令（委派子Agent时透传），用于文档版本化的同run判定
+                "run_id": run_id or uuid4().hex,
+                "conversation_id": conversation_id,
+            },
         )
 
         logger.info("=" * 60)

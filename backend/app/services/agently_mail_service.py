@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.document import Document, ExtractionTask
 from app.models.user_agently_token import UserAgentlyToken
+from app.services import file_storage
 
 logger = logging.getLogger(__name__)
 SUPPORTED_IMPORT_EXTENSIONS = {"docx", "xlsx", "md", "txt"}
@@ -311,20 +312,26 @@ class AgentlyMailService:
                 logger.info("skip unsupported mail attachment: %s", source_path)
                 continue
 
-            unique_filename = f"{uuid4().hex}.{ext}"
-            target_path = Path(self.settings.UPLOAD_DIR) / unique_filename
+            # 预生成文档 ID 作为 root_document_id，文件按版本化布局存储
+            doc_id = uuid4()
+            target_path = file_storage.version_path(user_id, doc_category, doc_id, 1, source_path.name)
             shutil.copyfile(source_path, target_path)
             size = target_path.stat().st_size
 
             doc = Document(
+                id=doc_id,
                 user_id=user_id,
-                filename=unique_filename,
+                filename=target_path.name,
                 original_filename=source_path.name,
                 file_type=ext,
                 doc_category=doc_category,
                 file_size=size,
                 file_path=str(target_path),
                 status="uploaded",
+                root_document_id=doc_id,
+                version=1,
+                origin_type="mail_import",
+                sha256=file_storage.sha256_file(target_path),
                 metadata_info={"source": "agent_mail", "message_id": message_id, "attachment_id": attachment_id},
             )
             db.add(doc)
@@ -466,11 +473,41 @@ class AgentlyMailService:
             return {"authorized": False, "email": None}
 
     async def _refresh_token(self, refresh_token: str) -> dict[str, Any] | None:
-        """刷新 token（需要根据 agently 的 OAuth 实现）"""
-        # TODO: 实现 token 刷新逻辑
-        # 这需要调用 agently 的 token 端点
-        logger.warning("Token refresh not implemented yet")
-        return None
+        """刷新 token：调用 agently OAuth token 端点（grant_type=refresh_token）。
+
+        失败（网络错误、refresh_token 失效等）返回 None，调用方会要求用户重新授权。
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://auth.agent.qq.com/oauth/token",
+                    json={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "agently-cli/1.0.9",
+                    },
+                )
+                if response.status_code != 200:
+                    logger.warning(f"[TOKEN_REFRESH] HTTP {response.status_code}: {response.text[:200]}")
+                    return None
+
+                data = response.json()
+                access_token = data.get("access_token")
+                if not access_token:
+                    logger.warning(f"[TOKEN_REFRESH] no access_token in response: {str(data)[:200]}")
+                    return None
+
+                logger.info("[TOKEN_REFRESH] token refreshed successfully")
+                return {
+                    "access_token": access_token,
+                    "refresh_token": data.get("refresh_token"),
+                    "expires_in": data.get("expires_in"),
+                }
+        except Exception as e:
+            logger.error(f"[TOKEN_REFRESH] refresh failed: {e}")
+            return None
 
 
 agently_mail_service = AgentlyMailService()

@@ -144,6 +144,7 @@ async def agent_stream(
         cancel_event=task.cancel_event,
         user_selected_model=current_user.selected_model,
         db=None,  # chat_completion 会自己创建 db session
+        conversation_id=request.conversation_id,
     )
     task_manager.start(task, agent_coro, persistence)
 

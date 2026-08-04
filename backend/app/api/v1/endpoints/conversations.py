@@ -2,12 +2,12 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_
+from sqlalchemy import select, delete, or_, func, and_
 from datetime import datetime
 from app.core.config import get_settings
 from app.core.deps import get_current_user
 from app.db.postgres import get_db
-from app.models.document import Conversation, Message
+from app.models.document import Conversation, Message, Document
 from app.models.user import User
 
 settings = get_settings()
@@ -141,6 +141,57 @@ async def get_conversation(
             for msg in messages
         ]
     }
+
+
+@router.get("/{conversation_id}/outputs")
+async def list_conversation_outputs(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """列出该会话产出的文档（每个逻辑文档只返回最新版本）"""
+    await _get_user_conversation(conversation_id, current_user.id, db)
+
+    root_expr = func.coalesce(Document.root_document_id, Document.id)
+    latest_subq = (
+        select(
+            root_expr.label("root_id"),
+            func.max(Document.version).label("max_version"),
+            func.count().label("version_count"),
+        )
+        .group_by(root_expr)
+        .subquery()
+    )
+    result = await db.execute(
+        select(Document, latest_subq.c.version_count)
+        .join(
+            latest_subq,
+            and_(
+                root_expr == latest_subq.c.root_id,
+                Document.version == latest_subq.c.max_version,
+            ),
+        )
+        .where(Document.origin_conversation_id == conversation_id)
+        .order_by(Document.created_at.desc())
+    )
+    rows = result.all()
+
+    return [
+        {
+            "id": str(doc.id),
+            "original_filename": doc.original_filename,
+            "file_type": doc.file_type,
+            "doc_category": doc.doc_category,
+            "file_size": doc.file_size,
+            "version": doc.version or 1,
+            "version_count": version_count,
+            "origin_type": doc.origin_type,
+            "origin_label": doc.origin_label,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "download_url": f"/api/v1/documents/{doc.id}/download",
+        }
+        for doc, version_count in rows
+    ]
 
 
 @router.post("/", response_model=Dict[str, Any])

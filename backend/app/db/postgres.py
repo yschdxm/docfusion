@@ -41,6 +41,7 @@ async def init_db():
         await _ensure_selected_model_column(conn)
         await _ensure_super_admin(conn)
         await _ensure_agently_token_table(conn)
+        await _ensure_document_version_columns(conn)
     logger.info("PostgreSQL database initialized")
 
 
@@ -182,3 +183,26 @@ async def _ensure_agently_token_table(conn):
         "CREATE INDEX IF NOT EXISTS idx_user_agently_tokens_user_id ON user_agently_tokens(user_id)"
     ))
     logger.info("user_agently_tokens table ensured")
+
+
+async def _ensure_document_version_columns(conn):
+    """幂等地为 documents 表添加版本链列和索引"""
+    columns = [
+        "root_document_id UUID",
+        "version INTEGER NOT NULL DEFAULT 1",
+        "parent_version_id UUID",
+        "origin_type VARCHAR(20)",
+        "origin_run_id VARCHAR(80)",
+        "origin_conversation_id VARCHAR(50)",
+        "origin_label VARCHAR(255)",
+        "sha256 VARCHAR(64)",
+    ]
+    for col in columns:
+        await conn.execute(text(f"ALTER TABLE documents ADD COLUMN IF NOT EXISTS {col}"))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_documents_root_document_id ON documents(root_document_id)"
+    ))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_root_version ON documents(root_document_id, version)"
+    ))
+    logger.info("document version columns ensured for documents table")

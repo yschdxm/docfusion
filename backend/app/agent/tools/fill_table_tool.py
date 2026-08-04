@@ -9,13 +9,12 @@
 
 from typing import Any, Dict, List
 import os
-import shutil
-import uuid
 from pathlib import Path
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.db.postgres import async_session
 from app.models.document import Document, TemplateUsageEvent
+from app.services import document_versioning, file_storage
 from sqlalchemy import select
 from app.core.config import get_settings
 
@@ -667,7 +666,7 @@ fill_mode 详解（针对指定表格的操作）：
     async def _create_new_file(
         self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
     ) -> ToolResult:
-        """基于模板创建新输出文件"""
+        """基于模板创建新输出文件（新 root 的 v1）"""
         # 查询模板文档
         result = await db.execute(
             select(Document).where(Document.id == template_id)
@@ -680,19 +679,19 @@ fill_mode 详解（针对指定表格的操作）：
                 error=f"模板文档不存在: {template_id}"
             )
 
-        file_path = template_doc.file_path
         file_type = template_doc.file_type
 
-        # 创建输出文件
-        upload_dir = Path(settings.UPLOAD_DIR)
-        output_dir = upload_dir / "outputs"
-        output_dir.mkdir(exist_ok=True)
-
-        output_filename = f"filled_{uuid.uuid4().hex[:8]}_{template_doc.original_filename}"
-        output_path = output_dir / output_filename
-
-        # 复制模板到输出位置
-        shutil.copy2(file_path, output_path)
+        # 创建新 root 输出 v1（文件复制自模板，按版本化布局存储）
+        output_doc = await document_versioning.create_root_output(
+            db,
+            user_id=context.user_id if context else template_doc.user_id,
+            file_type=file_type,
+            origin_type="fill",
+            source_doc=template_doc,
+            run_id=context.metadata.get("run_id") if context else None,
+            conversation_id=context.metadata.get("conversation_id") if context else None,
+        )
+        output_path = Path(output_doc.file_path)
 
         # 根据文件类型填写
         if file_type == "xlsx":
@@ -711,20 +710,10 @@ fill_mode 详解（针对指定表格的操作）：
                 error="表格填写失败"
             )
 
-        # 创建输出文档记录
-        output_doc = Document(
-            filename=output_filename,
-            original_filename=output_filename,
-            file_path=str(output_path),
-            file_type=file_type,
-            doc_category="output",
-            status="completed",
-            file_size=os.path.getsize(output_path),
-            user_id=context.user_id
-        )
-        db.add(output_doc)
+        # 更新输出文档的大小/哈希
+        output_doc.file_size = os.path.getsize(output_path)
+        output_doc.sha256 = file_storage.sha256_file(output_path)
         await db.commit()
-        await db.refresh(output_doc)
 
         # 记录模板使用事件
         usage_event = TemplateUsageEvent(
@@ -737,16 +726,14 @@ fill_mode 详解（针对指定表格的操作）：
         db.add(usage_event)
         await db.commit()
 
-        logger.info(f"[FillTableTool] 创建新文件成功: {output_filename}, 填写{len(data)}行")
+        logger.info(f"[FillTableTool] 创建新文件成功: {output_doc.original_filename} (v1), 填写{len(data)}行")
 
         return ToolResult(
             success=True,
             data={
                 "filled_rows": len(data),
                 "total_rows": len(data),
-                "output_file_id": str(output_doc.id),
-                "output_filename": output_filename,
-                "download_url": f"/api/v1/documents/{output_doc.id}/download"
+                **document_versioning.download_info(output_doc),
             },
             metadata={
                 "template_id": template_id,
@@ -771,14 +758,22 @@ fill_mode 详解（针对指定表格的操作）：
                 error=f"输出文档不存在: {output_doc_id}"
             )
 
-        file_path = Path(output_doc.file_path)
-        file_type = output_doc.file_type
-
-        if not file_path.exists():
+        if not output_doc.file_path or not Path(output_doc.file_path).exists():
             return ToolResult(
                 success=False,
-                error=f"输出文件不存在: {file_path}"
+                error=f"输出文件不存在: {output_doc.file_path}"
             )
+
+        # 版本化：同 run 原地改；新 run 首次修改创建 version+1（文件已复制好）
+        output_doc, is_new_version = await document_versioning.resolve_output_target(
+            db, output_doc,
+            run_id=context.metadata.get("run_id") if context else None,
+            origin_type="fill",
+            conversation_id=context.metadata.get("conversation_id") if context else None,
+        )
+
+        file_path = Path(output_doc.file_path)
+        file_type = output_doc.file_type
 
         # 根据 fill_mode 更新数据
         if file_type == "xlsx":
@@ -797,8 +792,9 @@ fill_mode 详解（针对指定表格的操作）：
                 error="表格更新失败"
             )
 
-        # 更新文件大小
+        # 更新文件大小/哈希
         output_doc.file_size = os.path.getsize(file_path)
+        output_doc.sha256 = file_storage.sha256_file(file_path)
         await db.commit()
 
         # 记录模板使用事件
@@ -813,26 +809,25 @@ fill_mode 详解（针对指定表格的操作）：
                 template_id=template_id,
                 template_name=template_name,
                 source_file_count=len(context.file_ids) if context and context.file_ids else 0,
-                output_file_id=output_doc_id,
+                output_file_id=str(output_doc.id),
             )
             db.add(usage_event)
             await db.commit()
 
-        logger.info(f"[FillTableTool] 更新文件成功: {fill_mode}模式，{len(data)}行到 {output_doc.filename}")
+        logger.info(f"[FillTableTool] 更新文件成功: {fill_mode}模式，{len(data)}行到 {output_doc.filename} (v{output_doc.version}{', 新版本' if is_new_version else ''})")
 
         return ToolResult(
             success=True,
             data={
                 "filled_rows": len(data),
-                "output_file_id": str(output_doc.id),
-                "output_filename": output_doc.original_filename,
-                "download_url": f"/api/v1/documents/{output_doc.id}/download"
+                **document_versioning.download_info(output_doc),
             },
             metadata={
-                "output_doc_id": output_doc_id,
+                "output_doc_id": str(output_doc.id),
                 "template_id": template_id,
                 "fill_mode": fill_mode,
-                "is_update_existing": True
+                "is_update_existing": True,
+                "is_new_version": is_new_version,
             }
         )
 
@@ -921,15 +916,6 @@ fill_mode 详解（针对指定表格的操作）：
 
             logger.info(f"[FillTableTool] 文档中共有 {len(doc.tables)} 个表格")
 
-            # 获取第一个表格的表头作为参考
-            first_table = doc.tables[0]
-            headers = []
-            if first_table.rows:
-                first_row = first_table.rows[0]
-                headers = [cell.text.strip() if cell.text.strip() else f"Column_{i+1}"
-                          for i, cell in enumerate(first_row.cells)]
-                logger.info(f"[FillTableTool] 表头: {headers}")
-
             # 确定目标表格
             target_table = None
             if target_table_index is not None and target_table_index < len(doc.tables):
@@ -949,6 +935,14 @@ fill_mode 详解（针对指定表格的操作）：
                 logger.error("[FillTableTool] 没有找到有效的表格")
                 return False
 
+            # 从目标表格自身的第一行读取表头（多表模板各表表头可能不同）
+            headers = []
+            if target_table.rows:
+                first_row = target_table.rows[0]
+                headers = [cell.text.strip() if cell.text.strip() else f"Column_{i+1}"
+                          for i, cell in enumerate(first_row.cells)]
+                logger.info(f"[FillTableTool] 表头: {headers}")
+
             # 检测空行（从第二行开始，第一行是表头）
             empty_rows = []
             for i, row in enumerate(target_table.rows[1:], start=2):  # 从第2行开始（索引1）
@@ -959,49 +953,22 @@ fill_mode 详解（针对指定表格的操作）：
 
             # 根据fill_mode处理
             if fill_mode == "overwrite":
-                # 优先填写空行
+                # 先删除所有旧数据行（保留表头），再逐行写入
+                old_data_rows = list(target_table.rows[1:])
+                for row in old_data_rows:
+                    target_table._tbl.remove(row._tr)
+                logger.info(f"[FillTableTool] overwrite 模式：已清除 {len(old_data_rows)} 行旧数据")
+
                 filled_count = 0
-                data_index = 0
-
-                # 先填写空行
-                for row_index, row in empty_rows:
-                    if data_index < len(data):
-                        row_data = data[data_index]
-                        for i, header in enumerate(headers):
-                            if i < len(row.cells):
-                                value = self._get_value_for_header(row_data, header)
-                                if value is None:
-                                    value = ""
-                                row.cells[i].text = str(value)
-                        filled_count += 1
-                        data_index += 1
-                        logger.info(f"[FillTableTool] 填写空行 {row_index}")
-
-                # 如果还有数据需要填写，删除剩余空行并添加新行
-                if data_index < len(data):
-                    # 删除未使用的空行
-                    for _, row in empty_rows[data_index:]:
-                        target_table._tbl.remove(row._tr)
-                    logger.info(f"[FillTableTool] 删除未使用的空行: {len(empty_rows) - data_index} 行")
-
-                    # 添加新行
-                    for row_data in data[data_index:]:
-                        row = target_table.add_row()
-                        for i, header in enumerate(headers):
-                            if i < len(row.cells):
-                                value = self._get_value_for_header(row_data, header)
-                                if value is None:
-                                    value = ""
-                                row.cells[i].text = str(value)
-                        filled_count += 1
-                        logger.info("[FillTableTool] 添加新行")
-
-                # 如果空行多于数据行，删除多余的空行
-                if len(empty_rows) > len(data):
-                    rows_to_remove = len(empty_rows) - len(data)
-                    for _, row in empty_rows[len(data):]:
-                        target_table._tbl.remove(row._tr)
-                    logger.info(f"[FillTableTool] 删除多余的空行: {rows_to_remove} 行")
+                for row_data in data:
+                    row = target_table.add_row()
+                    for i, header in enumerate(headers):
+                        if i < len(row.cells):
+                            value = self._get_value_for_header(row_data, header)
+                            if value is None:
+                                value = ""
+                            row.cells[i].text = str(value)
+                    filled_count += 1
 
                 logger.info(f"[FillTableTool] 填写完成, 总共填写 {filled_count} 行")
 

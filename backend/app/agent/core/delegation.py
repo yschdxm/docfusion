@@ -136,7 +136,13 @@ class DelegateAgentTool(BaseTool):
             file_ids=params.get("file_ids", context.file_ids),
             template_id=params.get("template_id", context.template_id),
             conversation_history=recent_history,
-            metadata={"parent_session_id": context.session_id, "cancel_event": cancel_event},
+            metadata={
+                "parent_session_id": context.session_id,
+                "cancel_event": cancel_event,
+                # run_id / conversation_id 透传，保证同一轮指令的版本化判定跨委派一致
+                "run_id": context.metadata.get("run_id"),
+                "conversation_id": context.metadata.get("conversation_id"),
+            },
         )
 
         # 2. 创建子Agent的事件日志与流桥接
@@ -173,6 +179,8 @@ class DelegateAgentTool(BaseTool):
                 step_tracker=StepTracker(),
                 user_id=child_context.user_id,
                 cancel_event=cancel_event,
+                conversation_id=context.metadata.get("conversation_id"),
+                run_id=context.metadata.get("run_id"),
             )
 
             # 5. 收尾：关闭子日志并等待桥接完成

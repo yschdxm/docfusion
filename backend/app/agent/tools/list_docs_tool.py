@@ -8,11 +8,12 @@
 """
 
 from typing import Any, Dict
+from uuid import UUID
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.db.postgres import async_session
 from app.models.document import Document
-from sqlalchemy import select
+from sqlalchemy import select, func, and_, or_
 
 
 class ListDocumentsTool(BaseTool):
@@ -62,8 +63,33 @@ class ListDocumentsTool(BaseTool):
             category = params.get("category", "all")
 
             async with async_session() as db:
-                # 构建查询
-                query = select(Document)
+                # 只列出每个逻辑文档（root）的最新版本，避免 LLM 看到全部历史版本
+                root_expr = func.coalesce(Document.root_document_id, Document.id)
+                latest_subq = (
+                    select(
+                        root_expr.label("root_id"),
+                        func.max(Document.version).label("max_version"),
+                    )
+                    .group_by(root_expr)
+                    .subquery()
+                )
+                query = select(Document).join(
+                    latest_subq,
+                    and_(
+                        root_expr == latest_subq.c.root_id,
+                        Document.version == latest_subq.c.max_version,
+                    ),
+                )
+
+                # 用户过滤：只列出当前用户自己的文档和共享文档
+                if context.user_id:
+                    try:
+                        uid = UUID(str(context.user_id))
+                        query = query.where(
+                            or_(Document.user_id == uid, Document.is_shared.is_(True))
+                        )
+                    except ValueError:
+                        query = query.where(Document.user_id.is_(None))
 
                 if category == "source":
                     query = query.where(Document.doc_category == "source")

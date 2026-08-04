@@ -13,7 +13,7 @@ from datetime import datetime
 import os
 import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select, update as sql_update, text, or_
+from sqlalchemy import select, update as sql_update, text, or_, func, and_
 from app.core.config import get_settings
 from app.core.deps import get_current_user
 from app.core.sse import SSE_HEADERS, format_sse
@@ -23,6 +23,7 @@ from app.models.user import User
 from app.schemas.document import DocumentResponse, DocumentPreviewResponse, DocumentSaveRequest
 from app.services.preprocessing_service import preprocess_document
 from app.services.knowledge_graph_service import knowledge_graph_service
+from app.services import file_storage, document_versioning
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -395,8 +396,11 @@ async def upload_documents(
         if file_ext not in ["docx", "xlsx", "md", "txt"]:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
-        unique_filename = f"{uuid4().hex}.{file_ext}"
-        file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
+        # 预生成文档 ID 作为 root_document_id，文件按版本化布局存储
+        doc_id = uuid4()
+        file_path = str(file_storage.version_path(
+            current_user.id, doc_category, doc_id, 1, file.filename
+        ))
 
         # 流式读取文件，减少内存占用
         file_size = 0
@@ -409,14 +413,19 @@ async def upload_documents(
                 file_size += len(chunk)
 
         doc = Document(
+            id=doc_id,
             user_id=current_user.id,
-            filename=unique_filename,
+            filename=os.path.basename(file_path),
             original_filename=file.filename,
             file_type=file_ext,
             doc_category=doc_category,
             file_size=file_size,
             file_path=file_path,
-            status="uploaded"
+            status="uploaded",
+            root_document_id=doc_id,
+            version=1,
+            origin_type="upload",
+            sha256=file_storage.sha256_file(file_path),
         )
         db.add(doc)
         await db.flush()  # 先 flush 获取 ID，最后统一 commit
@@ -493,16 +502,37 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = select(Document).where(_user_doc_filter(current_user.id))
+    # 每个逻辑文档（root）只返回最新版本，附带版本数
+    root_expr = func.coalesce(Document.root_document_id, Document.id)
+    latest_subq = (
+        select(
+            root_expr.label("root_id"),
+            func.max(Document.version).label("max_version"),
+            func.count().label("version_count"),
+        )
+        .group_by(root_expr)
+        .subquery()
+    )
+    query = (
+        select(Document, latest_subq.c.version_count)
+        .join(
+            latest_subq,
+            and_(
+                root_expr == latest_subq.c.root_id,
+                Document.version == latest_subq.c.max_version,
+            ),
+        )
+        .where(_user_doc_filter(current_user.id))
+    )
     if doc_category:
         query = query.where(Document.doc_category == doc_category)
     result = await db.execute(
         query.offset(skip).limit(limit).order_by(Document.created_at.desc())
     )
-    documents = result.scalars().all()
+    rows = result.all()
 
     doc_list = []
-    for doc in documents:
+    for doc, version_count in rows:
         doc_dict = {
             "id": str(doc.id),
             "filename": doc.filename,
@@ -516,6 +546,12 @@ async def list_documents(
             "extraction_status": None,
             "user_id": str(doc.user_id) if doc.user_id else None,
             "is_shared": bool(doc.is_shared),
+            "root_document_id": str(doc.root_document_id or doc.id),
+            "version": doc.version or 1,
+            "version_count": version_count,
+            "origin_type": doc.origin_type,
+            "origin_label": doc.origin_label,
+            "origin_conversation_id": doc.origin_conversation_id,
         }
 
         if doc.doc_category == "source":
@@ -796,11 +832,11 @@ async def onlyoffice_callback(
             response = await client.get(download_url)
             response.raise_for_status()
 
-        async with aiofiles.open(doc.file_path, "wb") as output_file:
-            await output_file.write(response.content)
-
-        doc.file_size = len(response.content)
-        doc.status = "updated"
+        # 版本化替换：doc 行保持 id 成为最新版本，旧内容存为历史版本
+        # 内容未变化时不产版本（OnlyOffice force-save 会重复触发）
+        await document_versioning.replace_content_as_new_version(
+            db, doc, response.content, origin_type="onlyoffice"
+        )
         await db.commit()
         return {"error": 0}
     except Exception as exc:
@@ -874,22 +910,18 @@ async def save_document_content(
     doc = await _get_user_document(document_id, current_user.id, db)
     _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
 
+    file_type = (doc.file_type or "").lower()
+    if file_type not in ("txt", "md"):
+        raise HTTPException(status_code=400, detail="Only txt and md files support direct editing")
+
     resolved_path = _resolve_document_path(doc.file_path)
     if not resolved_path or not os.path.exists(resolved_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    file_type = (doc.file_type or "").lower()
-    if file_type == "txt":
-        from app.services.document_processor.txt_parser import TxtParser
-        TxtParser.write(payload.content, resolved_path)
-    elif file_type == "md":
-        from app.services.document_processor.md_parser import MdParser
-        MdParser.write(payload.content, resolved_path)
-    else:
-        raise HTTPException(status_code=400, detail="Only txt and md files support direct editing")
-
-    doc.file_size = len(payload.content.encode("utf-8"))
-    doc.status = "updated"
+    # 版本化保存：旧内容存为历史版本，doc 行保持 id 指向最新内容
+    new_version_created = await document_versioning.replace_content_as_new_version(
+        db, doc, payload.content.encode("utf-8"), origin_type="edit"
+    )
     await db.commit()
     await db.refresh(doc)
 
@@ -899,6 +931,8 @@ async def save_document_content(
             "id": str(doc.id),
             "file_size": doc.file_size,
             "status": doc.status,
+            "version": doc.version,
+            "new_version_created": new_version_created,
             "updated_at": datetime.utcnow().isoformat(),
         },
     }
@@ -1004,126 +1038,229 @@ async def _queued_extract_document_with_task(
     )
 
 
+@router.get("/{document_id}/versions")
+async def list_document_versions(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """列出文档所在版本链的全部版本（version 降序，第一个为最新）"""
+    doc = await _get_user_document(document_id, current_user.id, db)
+    root_id = doc.root_document_id or doc.id
+    result = await db.execute(
+        select(Document)
+        .where(Document.root_document_id == root_id)
+        .order_by(Document.version.desc())
+    )
+    versions = result.scalars().all() or [doc]
+    return [
+        {
+            "id": str(v.id),
+            "version": v.version or 1,
+            "is_latest": i == 0,
+            "origin_type": v.origin_type,
+            "origin_label": v.origin_label,
+            "origin_conversation_id": v.origin_conversation_id,
+            "file_size": v.file_size,
+            "status": v.status,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+            "download_url": f"/api/v1/documents/{v.id}/download",
+        }
+        for i, v in enumerate(versions)
+    ]
+
+
+@router.post("/{document_id}/rollback/{version_id}")
+async def rollback_document(
+    document_id: UUID,
+    version_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """回滚到指定版本：创建一个新版本，内容复制自目标版本（不做指针交换）"""
+    doc = await _get_user_document(document_id, current_user.id, db)
+    _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
+    root_id = doc.root_document_id or doc.id
+
+    target = await _get_user_document(version_id, current_user.id, db)
+    if (target.root_document_id or target.id) != root_id:
+        raise HTTPException(status_code=400, detail="目标版本不属于该文档")
+    if not target.file_path or not os.path.exists(target.file_path):
+        raise HTTPException(status_code=404, detail="目标版本文件不存在")
+
+    latest = await document_versioning.latest_of_root(db, root_id) or doc
+    new_doc = await document_versioning.create_next_version(
+        db, latest,
+        origin_type="rollback",
+        label=f"恢复到 v{target.version or 1}",
+        file_source_path=target.file_path,
+    )
+    await db.commit()
+
+    return {
+        "message": f"已回滚到 v{target.version or 1}（生成新版本 v{new_doc.version}）",
+        **document_versioning.download_info(new_doc),
+        "version": new_doc.version,
+        "root_document_id": str(root_id),
+    }
+
+
+@router.delete("/{document_id}/versions/{version_id}")
+async def delete_document_version(
+    document_id: UUID,
+    version_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """删除单个版本；删除最后一个版本等同于删除整链"""
+    doc = await _get_user_document(document_id, current_user.id, db)
+    _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
+    root_id = doc.root_document_id or doc.id
+
+    target = await _get_user_document(version_id, current_user.id, db)
+    if (target.root_document_id or target.id) != root_id:
+        raise HTTPException(status_code=400, detail="目标版本不属于该文档")
+
+    try:
+        await _delete_document_fully(db, target)
+        await db.commit()
+        return {"message": "版本已删除", "version_id": str(version_id)}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除版本失败: {str(e)}")
+
+
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """删除文档：整链删除（所有版本行 + 文件 + 关联数据）"""
     doc = await _get_user_document(document_id, current_user.id, db)
     _ensure_document_owner(doc, current_user.id, current_user.role in ('admin', 'super_admin'))
 
-    doc_id_str = str(document_id)
+    root_id = doc.root_document_id or doc.id
+    result = await db.execute(
+        select(Document).where(Document.root_document_id == root_id)
+    )
+    chain = list(result.scalars().all()) or [doc]
 
     try:
-        # 0. 取消正在运行的预处理任务
-        try:
-            from app.services.task_queue import cancel_task
-            cancelled = cancel_task(doc_id_str)
-            if cancelled:
-                logger.info(f"已取消文档 {doc_id_str} 的预处理任务")
-        except Exception as e:
-            logger.warning(f"取消任务失败: {e}")
-
-        # 0.5. 删除 template_usage_events 表中的相关记录
-        try:
-            from app.models.document import TemplateUsageEvent
-            await db.execute(
-                text("DELETE FROM template_usage_events WHERE template_id = :doc_id OR output_file_id = :doc_id"),
-                {"doc_id": document_id}
-            )
-            logger.info(f"已删除文档 {doc_id_str} 的 template_usage_events 记录")
-        except Exception as e:
-            logger.warning(f"删除 template_usage_events 记录失败: {e}")
-
-        # 1. 删除 PostgreSQL extraction_tasks
-        await db.execute(
-            text("DELETE FROM extraction_tasks WHERE input_files::text LIKE :doc_id"),
-            {"doc_id": f'%"{doc_id_str}"%'}
-        )
-
-        # 2. 删除 Neo4j 实体和关系
-        try:
-            await knowledge_graph_service.delete_document_entities(doc_id_str)
-        except Exception as e:
-            logger.warning("Failed to delete Neo4j entities for document %s: %s", document_id, e)
-
-        # 3. 删除 Qdrant 向量
-        try:
-            from app.services.vector_store_service import vector_store_service
-            await vector_store_service.delete_document(doc_id_str)
-        except Exception as e:
-            logger.warning("Failed to delete vector store data for document %s: %s", document_id, e)
-
-        # 4. 删除 xlsx 对应的 PostgreSQL 表
-        try:
-            # 从 PostgreSQL 获取 xlsx schema 信息
-            from app.models.document import DocumentExtraction
-
-            result = await db.execute(
-                select(DocumentExtraction).where(DocumentExtraction.document_id == document_id)
-            )
-            extraction = result.scalar_one_or_none()
-
-            table_names_to_drop = []
-
-            # 从 PostgreSQL 获取表名
-            if extraction and extraction.xlsx_schema:
-                for schema in extraction.xlsx_schema:
-                    table_name = schema.get("table_name", "")
-                    if table_name:
-                        table_names_to_drop.append(table_name)
-
-            # 如果 PostgreSQL 中没有，再尝试从内存中获取（兼容旧数据）
-            if not table_names_to_drop:
-                from app.services.preprocessing_service import get_xlsx_schema_store
-                schema_store = get_xlsx_schema_store()
-                if doc_id_str in schema_store:
-                    for schema in schema_store[doc_id_str]:
-                        table_name = schema.get("table_name", "")
-                        if table_name:
-                            table_names_to_drop.append(table_name)
-
-            # 删除所有相关的表
-            for table_name in table_names_to_drop:
-                try:
-                    from sqlalchemy import text as sa_text
-                    async with engine.connect() as conn:
-                        await conn.execute(sa_text(f'DROP TABLE IF EXISTS "{table_name}"'))
-                        await conn.commit()
-                        logger.info(f"Deleted PG table: {table_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to drop table {table_name}: {e}")
-
-            # 清理内存中的 schema store
-            try:
-                from app.services.preprocessing_service import get_xlsx_schema_store
-                schema_store = get_xlsx_schema_store()
-                if doc_id_str in schema_store:
-                    del schema_store[doc_id_str]
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning(f"Failed to delete xlsx PG tables for document {doc_id_str}: {e}")
-
-        # 5. 删除 PostgreSQL 中的提取结果
-        try:
-            from app.models.document import DocumentExtraction
-            await db.execute(
-                text("DELETE FROM document_extractions WHERE document_id = :doc_id"),
-                {"doc_id": document_id}
-            )
-        except Exception as e:
-            logger.warning("Failed to delete extraction data for document %s: %s", document_id, e)
-
-        if doc.file_path and os.path.exists(doc.file_path):
-            os.remove(doc.file_path)
-
-        await db.delete(doc)
+        for chain_doc in chain:
+            await _delete_document_fully(db, chain_doc)
         await db.commit()
 
-        return {"message": "文档及相关数据已删除", "document_id": document_id}
+        return {"message": "文档及相关数据已删除", "document_id": document_id, "deleted_versions": len(chain)}
 
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+
+
+async def _delete_document_fully(db: AsyncSession, doc: Document):
+    """删除单个文档版本的所有关联数据、文件和数据库行（不 commit）"""
+    document_id = doc.id
+    doc_id_str = str(document_id)
+
+    # 0. 取消正在运行的预处理任务
+    try:
+        from app.services.task_queue import cancel_task
+        cancelled = cancel_task(doc_id_str)
+        if cancelled:
+            logger.info(f"已取消文档 {doc_id_str} 的预处理任务")
+    except Exception as e:
+        logger.warning(f"取消任务失败: {e}")
+
+    # 0.5. 删除 template_usage_events 表中的相关记录
+    try:
+        await db.execute(
+            text("DELETE FROM template_usage_events WHERE template_id = :doc_id OR output_file_id = :doc_id"),
+            {"doc_id": document_id}
+        )
+    except Exception as e:
+        logger.warning(f"删除 template_usage_events 记录失败: {e}")
+
+    # 1. 删除 PostgreSQL extraction_tasks
+    await db.execute(
+        text("DELETE FROM extraction_tasks WHERE input_files::text LIKE :doc_id"),
+        {"doc_id": f'%"{doc_id_str}"%'}
+    )
+
+    # 2. 删除 Neo4j 实体和关系
+    try:
+        await knowledge_graph_service.delete_document_entities(doc_id_str)
+    except Exception as e:
+        logger.warning("Failed to delete Neo4j entities for document %s: %s", document_id, e)
+
+    # 3. 删除 Qdrant 向量
+    try:
+        from app.services.vector_store_service import vector_store_service
+        await vector_store_service.delete_document(doc_id_str)
+    except Exception as e:
+        logger.warning("Failed to delete vector store data for document %s: %s", document_id, e)
+
+    # 4. 删除 xlsx 对应的 PostgreSQL 表
+    try:
+        # 从 PostgreSQL 获取 xlsx schema 信息
+        from app.models.document import DocumentExtraction
+
+        result = await db.execute(
+            select(DocumentExtraction).where(DocumentExtraction.document_id == document_id)
+        )
+        extraction = result.scalar_one_or_none()
+
+        table_names_to_drop = []
+
+        # 从 PostgreSQL 获取表名
+        if extraction and extraction.xlsx_schema:
+            for schema in extraction.xlsx_schema:
+                table_name = schema.get("table_name", "")
+                if table_name:
+                    table_names_to_drop.append(table_name)
+
+        # 如果 PostgreSQL 中没有，再尝试从内存中获取（兼容旧数据）
+        if not table_names_to_drop:
+            from app.services.preprocessing_service import get_xlsx_schema_store
+            schema_store = get_xlsx_schema_store()
+            if doc_id_str in schema_store:
+                for schema in schema_store[doc_id_str]:
+                    table_name = schema.get("table_name", "")
+                    if table_name:
+                        table_names_to_drop.append(table_name)
+
+        # 删除所有相关的表
+        for table_name in table_names_to_drop:
+            try:
+                from sqlalchemy import text as sa_text
+                async with engine.connect() as conn:
+                    await conn.execute(sa_text(f'DROP TABLE IF EXISTS "{table_name}"'))
+                    await conn.commit()
+                    logger.info(f"Deleted PG table: {table_name}")
+            except Exception as e:
+                logger.warning(f"Failed to drop table {table_name}: {e}")
+
+        # 清理内存中的 schema store
+        try:
+            from app.services.preprocessing_service import get_xlsx_schema_store
+            schema_store = get_xlsx_schema_store()
+            if doc_id_str in schema_store:
+                del schema_store[doc_id_str]
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Failed to delete xlsx PG tables for document {doc_id_str}: {e}")
+
+    # 5. 删除 PostgreSQL 中的提取结果
+    try:
+        await db.execute(
+            text("DELETE FROM document_extractions WHERE document_id = :doc_id"),
+            {"doc_id": document_id}
+        )
+    except Exception as e:
+        logger.warning("Failed to delete extraction data for document %s: %s", document_id, e)
+
+    if doc.file_path and os.path.exists(doc.file_path):
+        os.remove(doc.file_path)
+
+    await db.delete(doc)

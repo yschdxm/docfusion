@@ -2,6 +2,8 @@
 import { useDropzone } from 'react-dropzone'
 import {
   CheckCircle,
+  ChevronDown,
+  ChevronRight,
   Download,
   Eye,
   FileText,
@@ -9,6 +11,7 @@ import {
   FolderOpen,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Table,
   Trash2,
@@ -18,7 +21,7 @@ import toast from 'react-hot-toast'
 import Dropdown from '../components/ui/Dropdown'
 import api from '../services/api'
 import { getAuthUser, isAdmin } from '../services/auth'
-import { useDocumentStore, type DocumentInfo } from '../stores/documentStore'
+import { useDocumentStore, type DocumentInfo, type DocumentVersion } from '../stores/documentStore'
 
 // 判断当前用户是否可以编辑/删除文档
 const canEditDoc = (doc: DocumentInfo): boolean => {
@@ -85,11 +88,15 @@ function triggerFileDownload(blob: Blob, filename: string) {
 export default function DocumentManager() {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-  const { documents, fetchDocuments, addDocuments, deleteDocument, uploadProgress } = useDocumentStore()
+  const { documents, fetchDocuments, addDocuments, deleteDocument, uploadProgress, fetchVersions, rollbackDocument, deleteVersion } = useDocumentStore()
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
+  const [previewViewOnly, setPreviewViewOnly] = useState(false)
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+  const [versions, setVersions] = useState<DocumentVersion[]>([])
+  const [versionsLoading, setVersionsLoading] = useState(false)
   const sseSourcesRef = useRef<Record<string, EventSource>>({})
   const pendingDeleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const isMountedRef = useRef(true)
@@ -216,8 +223,61 @@ export default function DocumentManager() {
     })
   }, [documents, startSSEForDoc])
 
-  const openPreview = (doc: DocumentInfo) => {
+  const openPreview = (doc: DocumentInfo, viewOnly = false) => {
+    setPreviewViewOnly(viewOnly)
     setPreviewDoc(doc)
+  }
+
+  const toggleVersions = async (doc: DocumentInfo) => {
+    if (expandedDocId === doc.id) {
+      setExpandedDocId(null)
+      setVersions([])
+      return
+    }
+    setExpandedDocId(doc.id)
+    setVersions([])
+    setVersionsLoading(true)
+    try {
+      const list = await fetchVersions(doc.id)
+      setVersions(list)
+    } catch {
+      toast.error(tr('版本列表加载失败', 'Failed to load versions', 'バージョン一覧の取得に失敗しました'))
+    } finally {
+      setVersionsLoading(false)
+    }
+  }
+
+  const handleRollback = async (doc: DocumentInfo, v: DocumentVersion) => {
+    try {
+      await rollbackDocument(doc.id, v.id)
+      toast.success(tr(`已回滚到 v${v.version}`, `Rolled back to v${v.version}`, `v${v.version} にロールバックしました`))
+      const list = await fetchVersions(doc.id)
+      setVersions(list)
+      fetchDocuments()
+    } catch {
+      toast.error(tr('回滚失败', 'Rollback failed', 'ロールバックに失敗しました'))
+    }
+  }
+
+  const handleDeleteVersion = async (doc: DocumentInfo, v: DocumentVersion) => {
+    if (!window.confirm(tr(`确定删除版本 v${v.version} 吗？`, `Delete version v${v.version}?`, `バージョン v${v.version} を削除しますか？`))) return
+    try {
+      await deleteVersion(doc.id, v.id)
+      toast.success(tr('版本已删除', 'Version deleted', 'バージョンを削除しました'))
+      const list = await fetchVersions(doc.id)
+      setVersions(list)
+      fetchDocuments()
+    } catch {
+      toast.error(tr('删除版本失败', 'Failed to delete version', 'バージョンの削除に失敗しました'))
+    }
+  }
+
+  const handleDownloadVersion = async (doc: DocumentInfo, v: DocumentVersion) => {
+    await handleDownload({ ...doc, id: v.id, file_size: v.file_size, created_at: v.created_at })
+  }
+
+  const openVersionPreview = (doc: DocumentInfo, v: DocumentVersion) => {
+    openPreview({ ...doc, id: v.id, file_size: v.file_size, created_at: v.created_at }, true)
   }
 
   const onSourceDrop = async (acceptedFiles: File[]) => {
@@ -662,8 +722,8 @@ export default function DocumentManager() {
               const config = categoryConfig[doc.doc_category as keyof typeof categoryConfig] || categoryConfig.source
               const Icon = config.icon
               return (
+                <div key={doc.id}>
                 <div
-                  key={doc.id}
                   className={`flex items-center gap-2 sm:gap-3 border-b border-slate-100 px-3 sm:px-4 py-2 sm:py-3 transition-colors hover:bg-slate-50 ${
                     selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''
                   }`}
@@ -684,7 +744,19 @@ export default function DocumentManager() {
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs sm:text-sm font-medium text-slate-900">{doc.original_filename}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="truncate text-xs sm:text-sm font-medium text-slate-900">{doc.original_filename}</p>
+                      {(doc.version_count ?? 1) > 1 && (
+                        <button
+                          onClick={() => toggleVersions(doc)}
+                          className="flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] sm:text-xs text-slate-600 hover:bg-slate-200 shrink-0"
+                          title={tr('查看版本历史', 'View version history', 'バージョン履歴')}
+                        >
+                          v{doc.version ?? 1} / {doc.version_count}{tr('个版本', ' versions', '版')}
+                          {expandedDocId === doc.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                        </button>
+                      )}
+                    </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 sm:gap-2">
                       <span className={`rounded px-1.5 py-0.5 text-[10px] sm:text-xs ${config.bg} ${config.color} hidden sm:inline`}>
                         {doc.doc_category === 'source'
@@ -728,6 +800,44 @@ export default function DocumentManager() {
                     )}
                   </div>
                 </div>
+
+                {expandedDocId === doc.id && (
+                  <div className="border-b border-slate-100 bg-slate-50/70 px-8 sm:px-14 py-1">
+                    {versionsLoading ? (
+                      <p className="py-2 text-[11px] text-slate-400">{tr('加载版本...', 'Loading versions...', 'バージョンを読み込み中...')}</p>
+                    ) : (
+                      versions.map((v) => (
+                        <div key={v.id} className="flex items-center gap-2 border-b border-slate-100 last:border-0 py-1.5 text-[11px] sm:text-xs">
+                          <span className={`rounded px-1.5 py-0.5 font-mono ${v.is_latest ? 'bg-primary-100 text-primary-700' : 'bg-slate-200 text-slate-600'}`}>
+                            v{v.version}{v.is_latest ? ` ${tr('最新', 'latest', '最新')}` : ''}
+                          </span>
+                          <span className="text-slate-500">{v.origin_label || v.origin_type || '-'}</span>
+                          <span className="text-slate-400 hidden sm:inline">{formatFileSize(v.file_size)}</span>
+                          <span className="text-slate-400 hidden md:inline">{v.created_at ? new Date(v.created_at).toLocaleString(language, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                          <div className="ml-auto flex items-center gap-0.5">
+                            <button onClick={() => openVersionPreview(doc, v)} title={tr('预览', 'Preview', 'プレビュー')} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-900">
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                            <button onClick={() => handleDownloadVersion(doc, v)} title={tr('下载', 'Download', 'ダウンロード')} className="rounded p-1 text-slate-400 hover:bg-blue-500/20 hover:text-blue-400">
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                            {!v.is_latest && canEditDoc(doc) && (
+                              <>
+                                <button onClick={() => handleRollback(doc, v)} title={tr('恢复到此版本', 'Restore this version', 'このバージョンに戻す')} className="rounded p-1 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-500">
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                </button>
+                                <button onClick={() => handleDeleteVersion(doc, v)} title={tr('删除此版本', 'Delete this version', 'このバージョンを削除')} className="rounded p-1 text-slate-400 hover:bg-red-500/20 hover:text-red-400">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+                </div>
               )
             })
           ) : (
@@ -739,7 +849,7 @@ export default function DocumentManager() {
         </div>
       </div>
 
-      <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
+      <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} forceViewOnly={previewViewOnly} />
     </div>
   )
 }

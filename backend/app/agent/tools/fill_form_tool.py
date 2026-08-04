@@ -12,22 +12,18 @@
 import logging
 import os
 import re
-import shutil
 from difflib import SequenceMatcher
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID, uuid4
+from typing import Any, Dict, List
 
 from sqlalchemy import select
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.agent.tools.get_form_structure_tool import GetFormStructureTool
-from app.core.config import get_settings
 from app.db.postgres import async_session
 from app.models.document import Document
+from app.services import document_versioning, file_storage
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 class FillFormTool(BaseTool):
@@ -126,9 +122,12 @@ class FillFormTool(BaseTool):
                     return ToolResult(success=False, error=uuid_error)
 
             async with async_session() as db:
+                run_id = context.metadata.get("run_id")
+                conversation_id = context.metadata.get("conversation_id")
+
                 # 确定操作的文件
                 if output_doc_id:
-                    # 增量填写：操作已有输出文件
+                    # 增量填写：同 run 原地改；新 run 首次修改创建 version+1（文件已复制好）
                     result = await db.execute(
                         select(Document).where(Document.id == output_doc_id)
                     )
@@ -136,11 +135,15 @@ class FillFormTool(BaseTool):
                     if not output_doc:
                         return ToolResult(success=False, error=f"输出文档不存在: {output_doc_id}")
 
+                    output_doc, _is_new_version = await document_versioning.resolve_output_target(
+                        db, output_doc,
+                        run_id=run_id,
+                        origin_type="fill",
+                        conversation_id=conversation_id,
+                    )
                     file_path = output_doc.file_path
-                    is_new = False
-                    original_filename = output_doc.original_filename
                 elif template_id:
-                    # 首次填写：基于模板创建新文件
+                    # 首次填写：基于模板创建新 root 的输出 v1（文件复制自模板）
                     result = await db.execute(
                         select(Document).where(Document.id == template_id)
                     )
@@ -154,16 +157,16 @@ class FillFormTool(BaseTool):
                             error=f"表单填写仅支持docx格式，当前格式: {template_doc.file_type}"
                         )
 
-                    # 创建输出文件
-                    output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                    output_dir.mkdir(exist_ok=True)
-                    output_filename = f"filled_{uuid4().hex[:8]}_{template_doc.original_filename}"
-                    output_path = str(output_dir / output_filename)
-                    shutil.copy2(template_doc.file_path, output_path)
-
-                    file_path = output_path
-                    is_new = True
-                    original_filename = template_doc.original_filename
+                    output_doc = await document_versioning.create_root_output(
+                        db,
+                        user_id=context.user_id,
+                        file_type="docx",
+                        origin_type="fill",
+                        source_doc=template_doc,
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                    )
+                    file_path = output_doc.file_path
                 else:
                     return ToolResult(success=False, error="首次填写必须提供template_id")
 
@@ -197,26 +200,11 @@ class FillFormTool(BaseTool):
                     file_path, matched_fields, fill_mode
                 )
 
-                # 注册或更新输出文件
-                if is_new:
-                    output_doc = Document(
-                        filename=output_filename,
-                        original_filename=output_filename,
-                        file_path=file_path,
-                        file_type="docx",
-                        doc_category="output",
-                        status="completed",
-                        file_size=os.path.getsize(file_path),
-                        user_id=context.user_id
-                    )
-                    db.add(output_doc)
-                    await db.commit()
-                    await db.refresh(output_doc)
-                    output_file_id = str(output_doc.id)
-                else:
-                    output_doc.file_size = os.path.getsize(file_path)
-                    await db.commit()
-                    output_file_id = output_doc_id
+                # 更新输出版本的大小/哈希
+                output_doc.file_size = os.path.getsize(file_path)
+                output_doc.sha256 = file_storage.sha256_file(file_path)
+                await db.commit()
+                output_file_id = str(output_doc.id)
 
                 # 构建未匹配字段列表
                 unmatched_keys = set(data.keys()) - {m['data_key'] for m in matched_fields}
@@ -229,7 +217,7 @@ class FillFormTool(BaseTool):
                         "matched_fields": len(matched_fields),
                         "unmatched_keys": list(unmatched_keys),
                         "output_file_id": output_file_id,
-                        "output_filename": os.path.basename(file_path),
+                        "output_filename": output_doc.original_filename,
                         "download_url": f"/api/v1/documents/{output_file_id}/download",
                         "field_details": [
                             {
@@ -244,7 +232,7 @@ class FillFormTool(BaseTool):
                     metadata={
                         "template_id": template_id,
                         "fill_mode": fill_mode,
-                        "is_new_file": is_new
+                        "is_new_file": not bool(output_doc_id)
                     }
                 )
 
@@ -362,7 +350,6 @@ class FillFormTool(BaseTool):
     ) -> int:
         """执行实际的表单填写"""
         from docx import Document as DocxDocument
-        from docx.oxml.ns import qn
 
         doc = DocxDocument(file_path)
         filled_count = 0
@@ -716,6 +703,7 @@ class FillFormTool(BaseTool):
 
     def _fill_content_control(self, doc, location: Dict, value: str) -> bool:
         """填写Word内容控件"""
+        from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
 
         sdt_idx = location.get('sdt_index')
@@ -739,15 +727,17 @@ class FillFormTool(BaseTool):
             for t_elem in t_elements[1:]:
                 t_elem.text = ""
         else:
-            # 没有文本元素，创建一个
+            # 没有文本元素，创建 p/r/t 结构（OxmlElement 创建元素，qn 只是名称字符串）
             p_elem = sdt_content.find(qn('w:p'))
-            if p_elem is not None:
-                r_elem = p_elem.find(qn('w:r'))
-                if r_elem is None:
-                    r_elem = qn('w:r')
-                    p_elem.append(r_elem)
-                new_t = qn('w:t')
-                new_t.text = value
-                r_elem.append(new_t)
+            if p_elem is None:
+                p_elem = OxmlElement('w:p')
+                sdt_content.append(p_elem)
+            r_elem = p_elem.find(qn('w:r'))
+            if r_elem is None:
+                r_elem = OxmlElement('w:r')
+                p_elem.append(r_elem)
+            new_t = OxmlElement('w:t')
+            new_t.text = value
+            r_elem.append(new_t)
 
         return True

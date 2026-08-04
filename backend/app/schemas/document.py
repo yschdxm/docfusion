@@ -21,6 +21,11 @@ class DocumentResponse(DocumentBase):
     status: str
     metadata_info: Dict[str, Any] = {}
     created_at: datetime
+    root_document_id: Optional[UUID] = None
+    version: int = 1
+    origin_type: Optional[str] = None
+    origin_label: Optional[str] = None
+    origin_conversation_id: Optional[str] = None
 
     class Config:
         from_attributes = True

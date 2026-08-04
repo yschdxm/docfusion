@@ -28,7 +28,6 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     logger.info("Application starting up")
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    os.makedirs(os.path.join(settings.UPLOAD_DIR, "output"), exist_ok=True)
 
     await init_db()
     await init_neo4j()

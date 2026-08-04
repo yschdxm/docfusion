@@ -18,6 +18,15 @@ class Document(Base):
     file_path = Column(String(500))
     status = Column(String(20), default="pending")
     is_shared = Column(Boolean, nullable=False, default=False)  # 是否为共享文档
+    # ── 版本链字段 ──
+    root_document_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # 同一逻辑文档的所有版本共享
+    version = Column(Integer, nullable=False, default=1)  # 版本号，root 内递增
+    parent_version_id = Column(UUID(as_uuid=True), nullable=True)  # 上一版本
+    origin_type = Column(String(20), nullable=True)  # upload/mail_import/fill/edit/convert/generate/onlyoffice/rollback
+    origin_run_id = Column(String(80), nullable=True)  # 产生该版本的 agent run
+    origin_conversation_id = Column(String(50), nullable=True)  # 产生该版本的会话
+    origin_label = Column(String(255), nullable=True)  # 版本说明（如指令摘要）
+    sha256 = Column(String(64), nullable=True)  # 文件内容哈希
     metadata_info = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

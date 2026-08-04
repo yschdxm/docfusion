@@ -14,6 +14,12 @@ export interface DocumentInfo {
   created_at: string
   user_id?: string | null
   is_shared?: boolean
+  root_document_id?: string
+  version?: number
+  version_count?: number
+  origin_type?: string | null
+  origin_label?: string | null
+  origin_conversation_id?: string | null
   extraction_status?: {
     task_id: string
     status: 'queued' | 'processing' | 'completed' | 'failed'
@@ -24,6 +30,19 @@ export interface DocumentInfo {
   } | null
 }
 
+export interface DocumentVersion {
+  id: string
+  version: number
+  is_latest: boolean
+  origin_type?: string | null
+  origin_label?: string | null
+  origin_conversation_id?: string | null
+  file_size?: number
+  status: string
+  created_at: string
+  download_url: string
+}
+
 interface DocumentStore {
   documents: DocumentInfo[]
   isLoading: boolean
@@ -31,6 +50,9 @@ interface DocumentStore {
   fetchDocuments: (category?: string) => Promise<void>
   addDocuments: (files: File[], category?: string) => Promise<DocumentInfo[]>
   deleteDocument: (id: string) => Promise<void>
+  fetchVersions: (id: string) => Promise<DocumentVersion[]>
+  rollbackDocument: (id: string, versionId: string) => Promise<void>
+  deleteVersion: (id: string, versionId: string) => Promise<void>
 }
 
 export const useDocumentStore = create<DocumentStore>((set) => ({
@@ -110,5 +132,18 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       console.error('Failed to delete document:', error)
       throw error
     }
+  },
+
+  fetchVersions: async (id: string) => {
+    const response = await api.get(`/documents/${id}/versions`)
+    return (response.data || []) as DocumentVersion[]
+  },
+
+  rollbackDocument: async (id: string, versionId: string) => {
+    await api.post(`/documents/${id}/rollback/${versionId}`)
+  },
+
+  deleteVersion: async (id: string, versionId: string) => {
+    await api.delete(`/documents/${id}/versions/${versionId}`)
   },
 }))

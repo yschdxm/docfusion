@@ -32,9 +32,10 @@ interface OfficeConfigResponse {
 interface Props {
   doc: DocumentInfo | null
   onClose: () => void
+  forceViewOnly?: boolean  // 历史版本预览时强制只读
 }
 
-export default function DocumentPreviewModal({ doc, onClose }: Props) {
+export default function DocumentPreviewModal({ doc, onClose, forceViewOnly = false }: Props) {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
 
@@ -145,10 +146,10 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
   }
 
   const handleSave = async () => {
-    if (!doc || !previewData?.can_edit) return
+    if (!doc || !canEdit) return
     setSaving(true)
     try {
-      await api.put(`/documents/${doc.id}/content`, { content: editContent })
+      await api.post(`/documents/${doc.id}/save`, { content: editContent })
       toast.success(tr('保存成功', 'Saved', '保存しました'))
       setPreviewData({ ...previewData, content: editContent })
       setEditorOpen(false)
@@ -196,10 +197,12 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
   // Mount OnlyOffice when needed
   useEffect(() => {
     if (doc && previewData?.preview_type === 'onlyoffice') {
-      void mountOnlyOffice(officeMode)
+      void mountOnlyOffice(forceViewOnly ? 'view' : officeMode)
     }
     return () => { destroyOnlyOfficeEditor() }
-  }, [doc, previewData, officeMode])
+  }, [doc, previewData, officeMode, forceViewOnly])
+
+  const canEdit = !forceViewOnly && !!previewData?.can_edit
 
   const renderPreviewContent = () => {
     if (previewLoading) {
@@ -224,7 +227,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
       )
     }
 
-    if (editorOpen && previewData.can_edit) {
+    if (editorOpen && canEdit) {
       return (
         <textarea
           value={editContent}
@@ -337,7 +340,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {previewData?.preview_type === 'onlyoffice' && previewData?.can_edit && (
+            {previewData?.preview_type === 'onlyoffice' && canEdit && (
               <button
                 onClick={() => setOfficeMode((c) => (c === 'edit' ? 'view' : 'edit'))}
                 title={officeMode === 'view' ? tr('进入编辑', 'Edit', '編集') : tr('切到只读', 'Read only', '読み取り専用')}
@@ -347,7 +350,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
                 {officeMode === 'edit' ? tr('切到只读', 'Read-only', '閲覧モード') : tr('进入编辑', 'Edit', '編集')}
               </button>
             )}
-            {previewData?.can_edit && (
+            {canEdit && (
               <button
                 onClick={() => {
                   setEditorOpen((c) => !c)
@@ -360,7 +363,7 @@ export default function DocumentPreviewModal({ doc, onClose }: Props) {
                 {editorOpen ? tr('返回预览', 'Preview', 'プレビュー') : tr('编辑', 'Edit', '編集')}
               </button>
             )}
-            {editorOpen && previewData?.can_edit && (
+            {editorOpen && canEdit && (
               <button onClick={handleSave} title={saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')} className="btn-primary flex items-center gap-2 px-4 py-2" disabled={saving}>
                 <CheckCircle className="h-4 w-4" />
                 {saving ? tr('保存中...', 'Saving...', '保存中...') : tr('保存', 'Save', '保存')}

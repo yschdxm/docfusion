@@ -10,23 +10,20 @@ import csv
 import logging
 import os
 import re
-import shutil
-from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
-from app.core.config import get_settings
 from app.db.postgres import async_session
 from app.models.document import Document
+from app.services import document_versioning, file_storage
 from app.services.document_processor import DocxParser, MdParser, TxtParser, XlsxParser
 from app.services.llm_service import llm_service
 
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 CONVERT_RULES = {
     "docx": {"md", "txt"},
@@ -61,85 +58,54 @@ async def _get_doc_info(file_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _safe_output_filename(filename: str, default_suffix: str = ".docx") -> str:
-    clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (filename or "").strip())
-    clean = clean.strip(" ._") or f"generated_{uuid4().hex[:8]}{default_suffix}"
-    if "." not in clean:
-        clean = f"{clean}{default_suffix}"
-    return clean
+async def _resolve_edit_target(doc_info: Dict[str, Any], output_file_id: Optional[str], context) -> tuple:
+    """解析编辑目标（版本化）。
 
-
-async def _register_output_file(output_path: str, file_type: str, user_id: Optional[str] = None) -> Dict[str, str]:
-    """将输出文件注册到数据库，返回 output_file_id、output_filename 和 download_url"""
-    output_filename = os.path.basename(output_path)
-    async with async_session() as db:
-        output_doc = Document(
-            filename=output_filename,
-            original_filename=output_filename,
-            file_path=output_path,
-            file_type=file_type,
-            doc_category="output",
-            status="completed",
-            file_size=os.path.getsize(output_path),
-            user_id=user_id,
-        )
-        db.add(output_doc)
-        await db.commit()
-        await db.refresh(output_doc)
-        return {
-            "output_file_id": str(output_doc.id),
-            "output_filename": output_filename,
-            "download_url": f"/api/v1/documents/{output_doc.id}/download",
-        }
-
-
-async def _update_output_file_size(file_path: str):
-    """更新已注册输出文件的大小"""
-    async with async_session() as db:
-        result = await db.execute(
-            select(Document).where(Document.file_path == file_path)
-        )
-        doc = result.scalar_one_or_none()
-        if doc:
-            doc.file_size = os.path.getsize(file_path)
-            await db.commit()
-
-
-def _copy_and_open_docx(file_path: str, original_filename: str) -> tuple:
-    """复制 docx 文件到 outputs 目录，用 python-docx 打开副本。"""
-    from docx import Document as DocxDocument
-    from pathlib import Path
-
-    output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-    output_dir.mkdir(exist_ok=True)
-    output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-    output_path = str(output_dir / output_filename)
-    shutil.copy2(file_path, output_path)
-    doc = DocxDocument(output_path)
-    return doc, output_path
-
-
-async def _resolve_edit_target(doc_info: Dict[str, Any], output_file_id: Optional[str]) -> tuple:
-    """解析编辑目标：首次编辑复制副本，后续编辑在已有输出文件上操作。
+    - output 文档：同 run 原地改；新 run 首次编辑创建 version+1（文件已复制好）
+    - source/template 首次编辑：创建新 root 的输出 v1（文件已复制好）
 
     Returns:
-        (source_file_path, original_filename, is_new_copy)
-        - source_file_path: 应该读取/打开的文件路径
-        - original_filename: 用于生成新输出文件名
-        - is_new_copy: True=需要注册DB, False=原地修改已有文件
+        (target_path, original_filename, target_doc_id, is_new_version)
+        编辑直接在 target_path 上进行，目标 Document 行已存在。
     """
-    # 有 output_file_id → 在已有输出文件上操作
-    if output_file_id:
-        output_info = await _get_doc_info(output_file_id)
-        if output_info:
-            return output_info["file_path"], doc_info["original_filename"], False
+    run_id = context.metadata.get("run_id") if context else None
+    conversation_id = context.metadata.get("conversation_id") if context else None
 
-    # 文件本身是输出文件
-    if doc_info.get("is_output"):
-        return doc_info["file_path"], doc_info["original_filename"], False
+    async with async_session() as db:
+        doc = None
+        # 优先使用 LLM 传入的 output_file_id（链式编辑）
+        if output_file_id:
+            try:
+                result = await db.execute(select(Document).where(Document.id == UUID(str(output_file_id))))
+                doc = result.scalar_one_or_none()
+            except ValueError:
+                doc = None
+        if doc is None:
+            result = await db.execute(select(Document).where(Document.id == UUID(doc_info["doc_id"])))
+            doc = result.scalar_one_or_none()
+        if doc is None:
+            return doc_info["file_path"], doc_info["original_filename"], doc_info["doc_id"], False
 
-    # 首次编辑 → 需要复制
-    return doc_info["file_path"], doc_info["original_filename"], True
+        if doc.doc_category == "output":
+            target, is_new = await document_versioning.resolve_output_target(
+                db, doc,
+                run_id=run_id,
+                origin_type="edit",
+                conversation_id=conversation_id,
+            )
+        else:
+            target = await document_versioning.create_root_output(
+                db,
+                user_id=doc.user_id,
+                file_type=doc.file_type,
+                origin_type="edit",
+                source_doc=doc,
+                run_id=run_id,
+                conversation_id=conversation_id,
+            )
+            is_new = True
+        await db.commit()
+        return target.file_path, target.original_filename, str(target.id), is_new
 
 
 # ──────────────────────────── 文本处理辅助 ────────────────────────────
@@ -252,6 +218,8 @@ class CreateWordDocumentTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
+        from io import BytesIO
+
         from docx import Document as DocxDocument
         from docx.oxml.ns import qn
         from docx.shared import Pt
@@ -264,13 +232,10 @@ class CreateWordDocumentTool(BaseTool):
         if not content:
             return ToolResult(success=False, error="文档正文不能为空")
 
-        output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-        output_dir.mkdir(parents=True, exist_ok=True)
         requested_filename = params.get("filename") or f"{title}.docx"
-        output_filename = f"generated_{uuid4().hex[:8]}_{_safe_output_filename(str(requested_filename), '.docx')}"
+        output_filename = file_storage.sanitize_filename(str(requested_filename), ".docx")
         if not output_filename.lower().endswith(".docx"):
             output_filename = f"{output_filename}.docx"
-        output_path = str(output_dir / output_filename)
 
         doc = DocxDocument()
         styles = doc.styles
@@ -280,9 +245,29 @@ class CreateWordDocumentTool(BaseTool):
         title_para = doc.add_heading(title, level=0)
         title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         _add_docx_content(doc, content)
-        doc.save(output_path)
+        buffer = BytesIO()
+        doc.save(buffer)
 
-        reg = await _register_output_file(output_path, "docx", user_id=getattr(context, "user_id", None))
+        user_id = None
+        if getattr(context, "user_id", None):
+            try:
+                user_id = UUID(str(context.user_id))
+            except ValueError:
+                user_id = None
+        async with async_session() as db:
+            output_doc = await document_versioning.create_root_output(
+                db,
+                user_id=user_id,
+                file_type="docx",
+                origin_type="generate",
+                original_filename=output_filename,
+                content_bytes=buffer.getvalue(),
+                run_id=context.metadata.get("run_id"),
+                conversation_id=context.metadata.get("conversation_id"),
+            )
+            await db.commit()
+            reg = document_versioning.download_info(output_doc)
+            output_path = output_doc.file_path
         return ToolResult(success=True, data={"message": "已新建Word文档并保存到文档管理", "output_file": output_path, **reg, "output_format": "docx"})
 
 
@@ -322,15 +307,12 @@ class ReplaceTextTool(BaseTool):
         new_text = params["new_text"]
         output_file_id = params.get("output_file_id")
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             paragraph = _find_paragraph_by_index(doc, paragraph_index)
             if not paragraph:
@@ -339,7 +321,7 @@ class ReplaceTextTool(BaseTool):
             _set_paragraph_text(paragraph, before.replace(old_text, new_text) if old_text else new_text)
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             if not (0 <= paragraph_index < len(lines)):
@@ -347,19 +329,12 @@ class ReplaceTextTool(BaseTool):
             before = lines[paragraph_index]
             lines[paragraph_index] = before.replace(old_text, new_text) if old_text else new_text
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
         after_text = lines[paragraph_index] if file_type != "docx" else paragraph.text
 
         return ToolResult(
@@ -407,15 +382,12 @@ class RewriteParagraphTool(BaseTool):
         rewrite_instruction = params.get("rewrite_instruction", "请重写此段落。")
         output_file_id = params.get("output_file_id")
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             paragraph = _find_paragraph_by_index(doc, paragraph_index)
             if not paragraph:
@@ -425,7 +397,7 @@ class RewriteParagraphTool(BaseTool):
             _set_paragraph_text(paragraph, new_text)
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             if not (0 <= paragraph_index < len(lines)):
@@ -434,19 +406,12 @@ class RewriteParagraphTool(BaseTool):
             new_text = await llm_service.rewrite_paragraph_text(before, rewrite_instruction)
             lines[paragraph_index] = new_text
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -498,15 +463,12 @@ class InsertAfterTool(BaseTool):
         style = params.get("style", "Normal")
         output_file_id = params.get("output_file_id")
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             editable = _get_editable_paragraphs(doc)
             if not (0 <= paragraph_index < len(editable)):
@@ -520,26 +482,19 @@ class InsertAfterTool(BaseTool):
                     pass
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             if not (0 <= paragraph_index < len(lines)):
                 return ToolResult(success=False, error=f"段落索引 {paragraph_index} 超出范围")
             lines.insert(paragraph_index + 1, insert_text)
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -586,15 +541,12 @@ class HeadingPromoteTool(BaseTool):
         level = max(1, min(6, int(params.get("level", 1))))
         output_file_id = params.get("output_file_id")
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             paragraph = _find_paragraph_by_index(doc, paragraph_index)
             if not paragraph:
@@ -604,7 +556,7 @@ class HeadingPromoteTool(BaseTool):
             after = f"[{paragraph.style.name}] {paragraph.text}"
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             if not (0 <= paragraph_index < len(lines)):
@@ -614,19 +566,12 @@ class HeadingPromoteTool(BaseTool):
             lines[paragraph_index] = f"{'#' * level} {clean}"
             after = lines[paragraph_index]
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -674,15 +619,12 @@ class ListFormatTool(BaseTool):
         output_file_id = params.get("output_file_id")
         changes = []
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             editable = _get_editable_paragraphs(doc)
             for position, index in enumerate(indexes, start=1):
@@ -706,7 +648,7 @@ class ListFormatTool(BaseTool):
                 changes.append(_make_change_record("list_format", index, before, paragraph.text, params.get("reason", "")))
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             for position, index in enumerate(indexes, start=1):
@@ -720,19 +662,12 @@ class ListFormatTool(BaseTool):
                     lines[index] = f"- {clean_text}"
                 changes.append(_make_change_record("list_format", index, before, lines[index], params.get("reason", "")))
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -779,15 +714,12 @@ class ParagraphSplitTool(BaseTool):
         separator = params.get("separator")
         output_file_id = params.get("output_file_id")
 
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
         if file_type == "docx":
-            if is_new:
-                doc, output_path = _copy_and_open_docx(source_path, original_filename)
-            else:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(source_path)
-                output_path = source_path
+            from docx import Document as DocxDocument
+            doc = DocxDocument(target_path)
+            output_path = target_path
 
             editable = _get_editable_paragraphs(doc)
             if not (0 <= paragraph_index < len(editable)):
@@ -818,7 +750,7 @@ class ParagraphSplitTool(BaseTool):
                 current_para = new_para
             doc.save(output_path)
         else:
-            with open(source_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 lines = [line.rstrip("\n") for line in f.readlines()]
 
             if not (0 <= paragraph_index < len(lines)):
@@ -831,19 +763,12 @@ class ParagraphSplitTool(BaseTool):
             for offset, part in enumerate(parts[1:], start=1):
                 lines.insert(paragraph_index + offset, part)
 
-            if is_new:
-                from pathlib import Path
-                output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-                output_dir.mkdir(exist_ok=True)
-                output_filename = f"edited_{uuid4().hex[:8]}_{original_filename}"
-                output_path = str(output_dir / output_filename)
-            else:
-                output_path = source_path
+            output_path = target_path
 
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-        reg = await _finish_edit(output_path, file_type, is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -891,14 +816,11 @@ class SetTextStyleTool(BaseTool):
             return ToolResult(success=False, error="字体样式设置仅支持docx文件")
 
         output_file_id = params.get("output_file_id")
-        source_path, original_filename, is_new = await _resolve_edit_target(doc_info, output_file_id)
+        target_path, original_filename, target_doc_id, _is_new_version = await _resolve_edit_target(doc_info, output_file_id, context)
 
-        if is_new:
-            doc, output_path = _copy_and_open_docx(source_path, original_filename)
-        else:
-            from docx import Document as DocxDocument
-            doc = DocxDocument(source_path)
-            output_path = source_path
+        from docx import Document as DocxDocument
+        doc = DocxDocument(target_path)
+        output_path = target_path
 
         editable = _get_editable_paragraphs(doc)
         source_indexes = params.get("paragraph_indexes", [])
@@ -920,7 +842,7 @@ class SetTextStyleTool(BaseTool):
             changes.append(_make_change_record("set_text_style", index, before, after, params.get("reason", "")))
 
         doc.save(output_path)
-        reg = await _finish_edit(output_path, "docx", is_new, context)
+        reg = await _finish_edit(target_doc_id, context)
 
         return ToolResult(
             success=True,
@@ -973,34 +895,57 @@ class ConvertTool(BaseTool):
 
         parsed_data = parser.parse(doc_info["file_path"])
 
-        from pathlib import Path
-        output_dir = Path(settings.UPLOAD_DIR) / "outputs"
-        output_dir.mkdir(exist_ok=True)
-        base_name = f"edited_{uuid4().hex[:8]}_{doc_info['original_filename']}".rsplit(".", 1)[0]
+        # 先创建新 root 的输出行，再把转换内容写入其版本文件
+        base_name = doc_info["original_filename"].rsplit(".", 1)[0]
         output_filename = f"{base_name}.{target_format}"
-        output_path = str(output_dir / output_filename)
+        user_id = None
+        if getattr(context, "user_id", None):
+            try:
+                user_id = UUID(str(context.user_id))
+            except ValueError:
+                user_id = None
+        async with async_session() as db:
+            result = await db.execute(
+                select(Document).where(Document.id == UUID(doc_info["doc_id"]))
+            )
+            source_doc = result.scalar_one_or_none()
+            output_doc = await document_versioning.create_root_output(
+                db,
+                user_id=user_id or (source_doc.user_id if source_doc else None),
+                file_type=target_format,
+                origin_type="convert",
+                source_doc=None,  # 内容由转换生成，不复制源文件
+                original_filename=output_filename,
+                run_id=context.metadata.get("run_id"),
+                conversation_id=context.metadata.get("conversation_id"),
+                extra_metadata={"derived_from": doc_info["doc_id"]},
+            )
+            output_path = output_doc.file_path
 
-        if target_format == "docx":
-            content = parsed_data.get("full_text", "")
-            DocxParser.write(content, output_path, {
-                "paragraphs": parsed_data.get("paragraphs", []),
-                "tables": parsed_data.get("tables", []),
-            })
-        elif target_format == "md":
-            MdParser.write(parsed_data.get("full_text", ""), output_path)
-        elif target_format == "txt":
-            TxtParser.write(parsed_data.get("full_text", ""), output_path)
-        elif target_format == "csv":
-            rows = []
-            sheets = parsed_data.get("sheets", [])
-            if sheets:
-                rows = sheets[0].get("data", [])
-            with open(output_path, "w", encoding="utf-8-sig", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                for row in rows:
-                    writer.writerow(row)
+            if target_format == "docx":
+                content = parsed_data.get("full_text", "")
+                DocxParser.write(content, output_path, {
+                    "paragraphs": parsed_data.get("paragraphs", []),
+                    "tables": parsed_data.get("tables", []),
+                })
+            elif target_format == "md":
+                MdParser.write(parsed_data.get("full_text", ""), output_path)
+            elif target_format == "txt":
+                TxtParser.write(parsed_data.get("full_text", ""), output_path)
+            elif target_format == "csv":
+                rows = []
+                sheets = parsed_data.get("sheets", [])
+                if sheets:
+                    rows = sheets[0].get("data", [])
+                with open(output_path, "w", encoding="utf-8-sig", newline="") as csv_file:
+                    writer = csv.writer(csv_file)
+                    for row in rows:
+                        writer.writerow(row)
 
-        reg = await _register_output_file(output_path, target_format, user_id=getattr(context, "user_id", None))
+            output_doc.file_size = os.path.getsize(output_path)
+            output_doc.sha256 = file_storage.sha256_file(output_path)
+            await db.commit()
+            reg = document_versioning.download_info(output_doc)
 
         return ToolResult(
             success=True,
@@ -1015,26 +960,22 @@ class ConvertTool(BaseTool):
 
 # ──────────────────────────── 工具共用的完成处理 ────────────────────────────
 
-async def _finish_edit(output_path: str, file_type: str, is_new_copy: bool, context) -> Dict[str, str]:
-    """编辑完成后处理：注册DB或更新大小。"""
-    if is_new_copy:
-        return await _register_output_file(output_path, file_type, user_id=getattr(context, "user_id", None))
-    else:
-        await _update_output_file_size(output_path)
-        # 通过文件路径查找已有的 output_file_id
-        output_file_id = await _get_file_id_by_path(output_path)
-        return {
-            "output_file_id": output_file_id,
-            "output_filename": os.path.basename(output_path),
-            "download_url": f"/api/v1/documents/{output_file_id}/download",
-        }
-
-
-async def _get_file_id_by_path(file_path: str) -> str:
-    """通过文件路径查询数据库中的文档ID"""
+async def _finish_edit(target_doc_id: str, context) -> Dict[str, str]:
+    """编辑完成后更新目标版本行的大小/哈希，返回下载信息（键保持不变）。"""
     async with async_session() as db:
         result = await db.execute(
-            select(Document.id).where(Document.file_path == file_path)
+            select(Document).where(Document.id == UUID(str(target_doc_id)))
         )
-        doc_id = result.scalar_one_or_none()
-        return str(doc_id) if doc_id else ""
+        doc = result.scalar_one_or_none()
+        if not doc:
+            return {
+                "output_file_id": str(target_doc_id),
+                "output_filename": "",
+                "download_url": f"/api/v1/documents/{target_doc_id}/download",
+            }
+        if doc.file_path and os.path.exists(doc.file_path):
+            doc.file_size = os.path.getsize(doc.file_path)
+            doc.sha256 = file_storage.sha256_file(doc.file_path)
+        doc.status = "completed"
+        await db.commit()
+        return document_versioning.download_info(doc)
