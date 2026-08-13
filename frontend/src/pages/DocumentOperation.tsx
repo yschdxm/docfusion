@@ -467,9 +467,9 @@ export default function DocumentOperation() {
         const toolName = event.data.tool_name
         const result = event.data.result
         const editTools = [
-          'replace_text', 'rewrite_paragraph', 'insert_after',
-          'heading_promote', 'list_format', 'paragraph_split',
-          'set_text_style', 'convert'
+          'edit_paragraph', 'format_paragraph', 'edit_xlsx_cells',
+          'edit_docx_cell', 'find_replace_all', 'convert',
+          'create_word_document'
         ]
         const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table' || toolName === 'fill_form'
         if (isEditOrFill && result && result.download_url) {

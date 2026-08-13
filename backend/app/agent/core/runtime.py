@@ -29,257 +29,11 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
+# 单条工具结果消息的最大字符数（超出截断，防止撑爆上下文）
+MAX_TOOL_RESULT_CHARS = 20000
 
-SYSTEM_PROMPT_TEMPLATE = """你是一个智能文档处理助手，专注于帮助用户完成文档理解和表格填写任务。
 
-## 工作原则
-1. 分析用户需求，理解任务目标
-2. 根据文档类型选择正确的数据源（重要！）
-3. 确保数据填写完整，不遗漏任何信息
-4. 完成任务后，向用户报告结果
-
-## 文档类型与数据源对应关系（重要！必须遵循）
-
-不同文档类型的数据存储位置不同，必须根据文档类型选择正确的工具：
-
-### xlsx 文件
-- **数据位置**: PostgreSQL 数据库
-- **首选工具**: query_pg_database
-- **备选工具**: query_knowledge_graph (PG无结果时)
-
-### docx / md / txt 文件
-- **数据位置**: Neo4j 知识图谱（实体关系数据）和向量数据库（RAG检索）
-- **首选工具**: query_knowledge_graph
-- **备选工具**: rag_search (Neo4j无结果时)
-- **注意**: 这些文档的数据**不在PG中**，不要浪费多次重试在PG查询上
-
-### 填表时的文档类型判断
-- 源文档是 xlsx → 优先使用 query_pg_database
-- 源文档是 docx/md/txt → 直接使用 query_knowledge_graph，跳过PG查询
-
-## 数据查找优先级（根据文档类型选择）
-
-### 对于 xlsx 源文档：
-1. **PostgreSQL (query_pg_database)** - xlsx结构化数据，最准确
-2. **Neo4j (query_knowledge_graph)** - PG无结果时使用
-3. **RAG检索 (rag_search)** - 非结构化文本补充
-
-### 对于 docx/md/txt 源文档：
-1. **read_document** - 最优先，直接阅读文档获取完整内容
-2. **rag_search** - 搜索向量数据库，补充检索
-3. **query_knowledge_graph** - 补充查询知识图谱
-
-**禁止使用 extract_from_documents（已废弃）！**
-
-## 查询失败处理策略（根据文档类型）
-
-### xlsx 文档的查询失败处理：
-1. 优化查询条件（LIKE模糊匹配、检查列名）
-2. 再次调用 query_pg_database 重试
-3. 多次优化后仍无结果，切换到 query_knowledge_graph
-
-### docx/md/txt 文档的查询失败处理：
-1. 直接使用 query_knowledge_graph 查询
-2. 如果Neo4j返回结果不足，立即使用 rag_search 补充
-3. 不要尝试PG查询（这些文档的数据不在PG中）
-
-## 填表任务完整流程（重要）
-
-当用户需要填写表格时（消息包含"填表"、"填写"、"fill"或提供了template_id）：
-
-### 第一步：判断源文档类型并选择数据源
-1. 检查源文档 file_ids 对应的文档类型
-2. **如果是 xlsx 文档**：使用 query_pg_database 查询
-3. **如果是 docx/md/txt 文档**：直接使用 query_knowledge_graph，跳过PG查询
-
-### 第二步：获取表格结构
-使用 get_table_structure 工具了解：
-- 表格有多少列，列名是什么
-- 表格的数据范围（如"空气质量监测数据"、"城市GDP排名"）
-- **多表格文档：仔细阅读每个表格的 context 字段，理解每个表格对应哪个城市/地区**
-
-### 第三步：填写表格
-
-**重要：不要搬运数据！不要把 query_pg_database 返回的 records 数组原样传给 fill_table 的 data 参数。**
-
-#### 源文档和模板都是 xlsx（必须使用 source_query 自动模式）：
-
-**强制要求**：当源文档和模板都是 xlsx 时，**必须使用** source_query 自动模式，禁止手动查询后传入 data 参数。
-
-**单次调用流程：**
-```
-fill_table(
-    source_query={
-        "doc_ids": [...],
-        "query": "描述需要什么数据",
-        "fetch_all": true  # 关键：自动获取全部数据，不遗漏
-    },
-    template_id=模板ID,
-    fill_mode="overwrite"
-)
-```
-
-**工具会自动完成：**
-1. 查询数据并生成摘要（前10行、中间5行、末尾5行、列信息、空值统计等）
-2. 你审核数据摘要是否正确
-3. 确认无误后，工具自动填入全部数据（无需再次调用）
-
-**关键参数说明：**
-- `fetch_all: true` - **强烈推荐**：自动获取全部数据，不限制行数，确保数据完整
-- `fetch_all: false`（默认）- 最多获取500行，适合快速预览或小数据量
-
-**避免重复查询：**
-- 预览阶段（data_confirmed=false）和确认阶段（data_confirmed=true）之间，工具会自动复用数据
-- 你不需要在确认前再次调用 query_pg_database 获取完整数据
-
-**多表格文档填写：**
-```
-# 表格0
-fill_table(
-    source_query={"doc_ids": [...], "query": "查询表格0所需数据", "fetch_all": true},
-    template_id=模板ID,
-    target_table_index=0,
-    fill_mode="overwrite"
-)
-
-# 表格1（复用同一个文件）
-fill_table(
-    source_query={"doc_ids": [...], "query": "查询表格1所需数据", "fetch_all": true},
-    template_id=模板ID,
-    output_doc_id=上一步返回的output_file_id,  # 关键：继续填写同一个文件
-    target_table_index=1,
-    fill_mode="overwrite"  # 根据表格1当前状态判断
-)
-```
-
-#### 其他情况（源文档或模板不是 xlsx）：
-1. 使用 query_pg_database / query_knowledge_graph 查询数据
-2. 将查询结果作为 data 参数传给 fill_table
-3. 必要时使用 rag_search 补充
-
-### 第四步：数据完整性检查
-1. **强制性检查（必须执行）**：
-   - 已填行数是否与表格应有的规模匹配？
-   - 文档标题是否暗示更多数据？（如"百强"应有约100行，"TOP50"应有50行）
-   - **填写比例 < 80% 时必须继续查询**
-
-2. 如果数据不充分，调整 source_query 的 query 参数重试：
-   - 更换查询关键词
-   - 扩大查询范围
-
-3. 使用 fill_table(source_query=..., output_doc_id=xxx, fill_mode="append") 追加数据
-
-**重要原则**：
-- ✅ 先用可用数据生成文件，再询问是否需要补充
-- ❌ 禁止因数据可能不完整而延迟生成文件
-- ❌ 禁止生成文件前征求用户确认
-
-### 第五步：报告结果
-
-向用户报告填写结果，**必须包含以下内容**：
-
-1. **填写行数**：共填写了多少行数据
-2. **预期行数**：根据文档标题判断应该有多少行
-3. **完整度百分比**：填写比例
-4. **数据来源说明**：数据来自哪些文档
-5. **下载链接（必须输出可点击链接）**：
-   - 使用 fill_table 返回的 `download_url` 字段
-   - 格式：`[点击下载填写完成的文档](download_url)`
-   - **必须使用 Markdown 链接格式，确保用户可以点击下载**
-
-## 多表格文档填写策略
-
-当模板文档包含多个表格时：
-
-### 识别表格用途
-1. 使用 get_table_structure 后，分析每个表格的 context.preceding_text 字段
-2. 通过表格前的段落文本理解该表格应该填什么数据
-3. 查看表格的 row_count 和 sample_data，判断表格是否已有数据或空行
-
-### 数据过滤与路由原则
-- 严禁：将所有数据无脑依次填入每个表格
-- 必须：先理解每个表格的用途，再按需过滤数据
-
-### fill_mode 详解（关键）
-fill_mode 是针对单个表格的操作，不是文档级别的：
-
-**fill_mode="overwrite"**：清空【target_table_index 指定的表格】，填入新数据
-- 清空该表格的所有现有数据行（保留表头）
-- 用于：表格为空、只有表头、有占位空行、或需要替换旧数据
-- 注意：这只会影响指定的表格，不会清空整个文档
-
-**fill_mode="append"**：在【target_table_index 指定的表格】末尾添加新行
-- 保留该表格的现有数据，在后面添加新行
-- 用于：该表格已有有效数据，需要继续添加更多数据时
-- 注意：这是针对同一个表格的追加，不是"跳到"下一个表格
-
-常见误区纠正：
-- ❌ 错误理解："表格1填完了，用 append 追加到表格2"
-- ✅ 正确理解："表格2当前只有表头/空行，需要用 overwrite 清空后填入"
-
-多表格填写流程：
-```
-1. 获取表格结构 → 发现多个表格
-   - 分析每个表格的 context 了解其用途
-   - 检查每个表格的状态：只有表头/空行 vs 已有有效数据
-
-2. 查询所需数据
-
-3. 填写表格0：
-   - fill_mode="overwrite"（清空后填入）
-   - target_table_index=0
-   - 创建新文件
-
-4. 填写表格1：
-   - 检查表格1状态：如果只有表头/空行 → 用 overwrite；如果已有数据 → 用 append
-   - output_doc_id=上一步返回的ID（继续填写同一个文件）
-   - target_table_index=1（指定第二个表格）
-
-5. 后续表格同理，每个独立判断 fill_mode
-```
-
-### target_table_index 使用
-- 表格索引从0开始，按文档中出现顺序
-- 多表格文档必须指定 target_table_index，否则可能填错位
-- 每个表格独立判断 fill_mode，不要假设都用 append
-
-## 增量填表示例流程
-```
-用户: "填写空气质量监测数据"
-
-↓ 1. get_table_structure(template_id)
-   → 获取表头: [城市, 区, 站点, AQI, PM10, PM2.5]
-
-↓ 2. query_pg_database("查询环境空气质量监测数据")
-   → 返回100条记录
-
-↓ 3. fill_table(fill_mode="overwrite", data=100条)
-   → 创建新文件，返回 output_file_id=doc-001
-   → 已填100行
-
-↓ 4. 评估：数据可能还有更多，继续查询
-
-↓ 5. query_pg_database("查询更多空气质量监测数据")
-   → 返回100条记录
-
-↓ 6. fill_table(fill_mode="append", output_doc_id=doc-001, data=100条)
-   → 追加到已有文件
-   → 总计200行
-
-↓ 7. 重复直到数据完整...
-
-↓ 8. 报告用户："已完成表格填写，共填写500行数据，下载链接: xxx"
-```
-
-## 重要提醒
-- 填表任务必须使用 fill_table 工具生成可下载的文档
-- 增量填表时记住 output_file_id，后续追加需要传入 output_doc_id
-- 只调用确实需要的工具
-- 参数必须准确且完整
-- 根据工具返回结果调整后续策略
-- 如果工具调用失败，尝试其他方法或向用户说明问题
-- 当PG查询失败时，优先优化查询条件而不是切换工具
-"""
+DEFAULT_SYSTEM_PROMPT = """你是一个智能文档处理助手。分析用户需求，使用可用工具完成任务，并向用户清晰报告结果。"""
 
 
 class AgentRuntime:
@@ -299,7 +53,7 @@ class AgentRuntime:
         self.executor = ToolExecutor(registry)
         self.max_iterations = max_iterations
         self.max_tool_retries = max_tool_retries
-        self.system_prompt = system_prompt or SYSTEM_PROMPT_TEMPLATE
+        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         logger.info(f"[AgentRuntime] 初始化 | max_iterations={max_iterations}, max_tool_retries={max_tool_retries}")
 
     async def run(
@@ -422,7 +176,6 @@ class AgentRuntime:
 
         final_result = None
         total_tool_calls = 0
-        delegation_called = False  # 限制每次用户消息只能委派一次子Agent
 
         def build_task_stats():
             """构建任务统计信息"""
@@ -659,31 +412,20 @@ class AgentRuntime:
                 logger.info(f"[AgentRuntime._execute_loop] 发送中间回复（长度: {len(full_content)}）")
 
             # 执行工具调用
+            tool_messages = []
             for tool_call in tool_calls_buffer:
                 tool_name = tool_call["function"]["name"]
                 try:
                     tool_args = json.loads(tool_call["function"]["arguments"])
-                except json.JSONDecodeError:
-                    tool_args = {}
-                total_tool_calls += 1
-
-                # 检查委派工具调用限制：每次用户消息只能委派一次子Agent
-                is_delegation_tool = tool_name in ("delegate_fill_table", "delegate_document_edit")
-                if is_delegation_tool and delegation_called:
-                    logger.warning(f"[AgentRuntime._execute_loop] 跳过重复委派调用: {tool_name}（本次消息已委派过）")
-                    # 注入提示，告诉LLM不要重复委派，直接汇报结果
-                    messages.append({
-                        "role": "assistant",
-                        "content": full_content if full_content else None,
-                        "reasoning_content": full_reasoning,
-                        "tool_calls": [tool_call]
-                    })
-                    messages.append({
+                except json.JSONDecodeError as e:
+                    logger.error(f"[AgentRuntime._execute_loop] 工具 {tool_name} 参数JSON解析失败: {e}")
+                    tool_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
-                        "content": "该子Agent已经执行过了，不要重复调用。请直接根据之前的执行结果向用户汇报。"
+                        "content": f"参数JSON解析失败: {str(e)}。请检查参数格式后重试。"
                     })
                     continue
+                total_tool_calls += 1
 
                 logger.info(f"[AgentRuntime._execute_loop] 执行工具: {tool_name}")
 
@@ -715,10 +457,6 @@ class AgentRuntime:
                 )
                 tool_time = (datetime.utcnow() - tool_start).total_seconds()
 
-                # 标记委派工具已调用
-                if is_delegation_tool:
-                    delegation_called = True
-
                 # 记录结果
                 if result.success:
                     logger.info(f"[AgentRuntime._execute_loop] 工具 {tool_name} 成功 | 耗时: {tool_time:.2f}s")
@@ -732,35 +470,38 @@ class AgentRuntime:
                         execution_time_ms=result.execution_time_ms
                     )
                     await stream.emit_step_end(tool_step.id, "工具执行成功")
-
-                    # 汇总子agent的token统计到父agent
-                    if isinstance(result.data, dict) and result.data.get("sub_agent_usage"):
-                        sub = result.data["sub_agent_usage"]
-                        for key in accumulated_usage:
-                            accumulated_usage[key] += sub.get(key, 0)
-                        logger.info(f"[AgentRuntime._execute_loop] 已汇总子agent({tool_name})统计 | "
-                                    f"tokens={sub.get('total_tokens', 0)} calls={sub.get('llm_calls', 0)}")
                 else:
                     logger.error(f"[AgentRuntime._execute_loop] 工具 {tool_name} 失败 | 耗时: {tool_time:.2f}s | 错误: {result.error}")
                     tracker.fail_step(tool_step.id, result.error)
                     await stream.emit_tool_error(tool_name, result.error)
                     await stream.emit_step_end(tool_step.id, f"工具执行失败: {result.error}")
 
-                # 添加工具调用和结果到对话历史
-                messages.append({
-                    "role": "assistant",
-                    "content": full_content if full_content else None,
-                    "reasoning_content": full_reasoning,
-                    "tool_calls": [tool_call]
-                })
-                messages.append({
+                # 收集工具结果消息（超大结果截断，避免撑爆上下文）
+                result_content = json.dumps(result.data, ensure_ascii=False, default=str) if result.success else str(result.error)
+                if len(result_content) > MAX_TOOL_RESULT_CHARS:
+                    result_content = (
+                        result_content[:MAX_TOOL_RESULT_CHARS]
+                        + f"...[结果过长已截断，原始长度 {len(result_content)} 字符。"
+                        "如需完整内容请用更精确的参数分次获取]"
+                    )
+                tool_messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": json.dumps(result.data, ensure_ascii=False, default=str) if result.success else result.error
+                    "content": result_content
                 })
-                logger.debug(f"[AgentRuntime._execute_loop] 已添加工具结果到对话历史 | 当前消息数: {len(messages)}")
 
                 final_result = result
+
+            # 按 OpenAI 规范组装：一条 assistant 消息携带全部 tool_calls，
+            # 随后按顺序跟 N 条 tool 结果消息
+            messages.append({
+                "role": "assistant",
+                "content": full_content if full_content else None,
+                "reasoning_content": full_reasoning,
+                "tool_calls": tool_calls_buffer
+            })
+            messages.extend(tool_messages)
+            logger.debug(f"[AgentRuntime._execute_loop] 已添加工具结果到对话历史 | 当前消息数: {len(messages)}")
 
             logger.info(f"[AgentRuntime._execute_loop] 迭代 {iteration + 1} 完成 | 调用 {len(tool_calls_buffer)} 个工具")
 

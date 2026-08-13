@@ -1,12 +1,11 @@
 """
-表单填写工具 - 填写Word文档中的非结构化表单
+表单填写工具 - 填写Word/Excel文档中的表单字段
 
 功能：
-- 检测并填写下划线占位符
-- 检测并填写方括号占位符
-- 填写冒号模式字段
-- 填写表格表单单元格
-- 填写Word内容控件
+- 按 field_id 精确填写（主路径，field_id 来自 get_template_structure）
+- 兼容 label 键值对自动匹配
+- 检测并填写下划线/方括号/冒号占位符、表格表单单元格、Word内容控件
+- 填写 xlsx 纵向表单（A列标签 B列值，按坐标写入）
 """
 
 import logging
@@ -18,7 +17,7 @@ from typing import Any, Dict, List
 from sqlalchemy import select
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
-from app.agent.tools.get_form_structure_tool import GetFormStructureTool
+from app.agent.tools.get_template_structure_tool import analyze_template
 from app.db.postgres import async_session
 from app.models.document import Document
 from app.services import document_versioning, file_storage
@@ -39,32 +38,30 @@ class FillFormTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """使用提供的数据填写Word文档中的非结构化表单。
+        return """使用提供的数据填写文档中的表单字段（Word表单和Excel纵向表单）。
 
-使用场景：
-- 填写报名表、合同、申请表等非结构化表单
-- 根据源文档数据自动填写表单字段
-- 支持增量填写（先填部分字段，再补充其他字段）
+前置步骤（必须）：
+- 先调用 get_template_structure 获取字段列表（含稳定 field_id），
+  然后用 fields 参数按 field_id 精确填写
 
-支持的表单字段类型：
-- 下划线占位符：______
-- 方括号占位符：【】、[]
-- 冒号模式：姓名：（行尾无内容）
-- 表格表单：左列标签+右列空值或示例文本
-- Word内容控件
+参数说明（两种模式，优先用 fields）：
+- fields（推荐）: 字段数组，每项 {"field_id": "F1", "value": "填写内容"}
+  - field_id 来自 get_template_structure 返回的 fields[].field_id
+  - 也接受 {"label": "姓名", "value": "张三"} 按标签匹配
+- data（兼容模式）: 键值对 {"姓名": "张三"}，按标签自动匹配字段
+
+支持的表单类型：
+- Word: 下划线______、方括号【】、冒号模式（姓名：）、表格表单、内容控件
+- Excel纵向表单: A列标签B列填值，按 get_template_structure 返回的坐标写入
 
 填写模式：
 - overwrite: 覆盖现有内容（首次填写使用）
 - append: 追加到已有内容后面（增量填写使用）
 
-智能匹配：
-- 支持精确匹配、模糊匹配、同义词匹配
-- 自动将数据key与表单字段label进行匹配
-
-重要提示：
-- data参数是必需的，必须提供键值对数据
-- key是字段标签（如"姓名"、"题目"、"简介"），value是要填写的内容
-- 示例：data={"姓名": "张三", "题目": "项目名称"}"""
+增量填写：
+- 首次填写传 template_id，返回 output_file_id
+- 后续补充传 output_doc_id=上次返回的ID + template_id（用于字段定位）
+- 未匹配的字段会在 unmatched_keys 中返回，请检查标签拼写"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -73,15 +70,27 @@ class FillFormTool(BaseTool):
             "properties": {
                 "template_id": {
                     "type": "string",
-                    "description": "模板文档ID（首次填写时必需）"
+                    "description": "模板文档ID（首次填写时必需；增量填写时也需提供，用于字段定位）"
                 },
                 "output_doc_id": {
                     "type": "string",
                     "description": "已生成的输出文档ID（增量填写时提供）"
                 },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field_id": {"type": "string", "description": "get_template_structure 返回的字段ID，如 F1"},
+                            "label": {"type": "string", "description": "字段标签（未提供field_id时按标签匹配）"},
+                            "value": {"description": "填写内容"}
+                        }
+                    },
+                    "description": "要填写的字段数组（推荐）。每项提供 field_id 或 label + value"
+                },
                 "data": {
                     "type": "object",
-                    "description": "填表数据，键值对格式。key为字段标签（如\"姓名\"、\"题目\"），value为填写内容。示例：{\"姓名\": \"张三\", \"题目\": \"项目名称\"}",
+                    "description": "兼容模式：填表数据键值对。key为字段标签（如\"姓名\"），value为填写内容",
                     "additionalProperties": True
                 },
                 "fill_mode": {
@@ -92,11 +101,11 @@ class FillFormTool(BaseTool):
                 },
                 "field_mapping": {
                     "type": "object",
-                    "description": "手动字段映射（可选），当自动匹配失败时使用",
+                    "description": "手动字段映射（可选，仅 data 模式），当自动匹配失败时使用",
                     "additionalProperties": True
                 }
             },
-            "required": ["data"]
+            "required": []
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
@@ -104,12 +113,13 @@ class FillFormTool(BaseTool):
         try:
             template_id = params.get("template_id", "")
             output_doc_id = params.get("output_doc_id", "")
-            data = params.get("data", {})
+            field_items = params.get("fields") or []
+            data = params.get("data") or {}
             fill_mode = params.get("fill_mode", "overwrite")
             field_mapping = params.get("field_mapping", {})
 
-            if not data:
-                return ToolResult(success=False, error="填表数据不能为空")
+            if not field_items and not data:
+                return ToolResult(success=False, error="填写内容不能为空（提供 fields 数组或 data 键值对）")
 
             # UUID校验
             if template_id:
@@ -151,16 +161,16 @@ class FillFormTool(BaseTool):
                     if not template_doc:
                         return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
 
-                    if template_doc.file_type != "docx":
+                    if template_doc.file_type not in ("docx", "xlsx"):
                         return ToolResult(
                             success=False,
-                            error=f"表单填写仅支持docx格式，当前格式: {template_doc.file_type}"
+                            error=f"表单填写支持docx/xlsx格式，当前格式: {template_doc.file_type}"
                         )
 
                     output_doc = await document_versioning.create_root_output(
                         db,
                         user_id=context.user_id,
-                        file_type="docx",
+                        file_type=template_doc.file_type,
                         origin_type="fill",
                         source_doc=template_doc,
                         run_id=run_id,
@@ -170,35 +180,44 @@ class FillFormTool(BaseTool):
                 else:
                     return ToolResult(success=False, error="首次填写必须提供template_id")
 
-                # 获取表单结构
-                form_tool = GetFormStructureTool()
-                form_result = await form_tool.execute(
-                    {"template_id": template_id or output_doc_id},
-                    context
+                # 获取表单结构：优先分析模板（结构与输出一致、缓存稳定命中）；
+                # 未提供 template_id 时分析输出文档自身
+                structure_doc_id = template_id or output_doc_id
+                result = await db.execute(
+                    select(Document).where(Document.id == structure_doc_id)
                 )
+                structure_doc = result.scalar_one_or_none()
+                if not structure_doc:
+                    return ToolResult(success=False, error=f"结构分析目标文档不存在: {structure_doc_id}")
 
-                if not form_result.success:
-                    return ToolResult(
-                        success=False,
-                        error=f"获取表单结构失败: {form_result.error}"
-                    )
-
-                form_fields = form_result.data.get("fields", [])
+                analysis = await analyze_template(structure_doc)
+                form_fields = analysis.get("fields", [])
                 if not form_fields:
                     return ToolResult(
                         success=False,
-                        error="未检测到可填写的表单字段"
+                        error="未检测到可填写的表单字段（structure_type="
+                              f"{analysis.get('structure_type')}）。"
+                              "若是数据表格请改用 fill_table"
                     )
 
                 # 匹配数据到表单字段
-                matched_fields = self._match_data_to_fields(
-                    data, form_fields, field_mapping
-                )
+                if field_items:
+                    matched_fields, unmatched_keys = self._resolve_field_items(
+                        field_items, form_fields
+                    )
+                else:
+                    matched_fields = self._match_data_to_fields(
+                        data, form_fields, field_mapping
+                    )
+                    unmatched_keys = list(set(data.keys()) - {m['data_key'] for m in matched_fields})
 
                 # 执行填写
-                filled_count = await self._fill_form_fields(
-                    file_path, matched_fields, fill_mode
-                )
+                if output_doc.file_type == "xlsx":
+                    filled_count = self._fill_xlsx_fields(file_path, matched_fields)
+                else:
+                    filled_count = await self._fill_form_fields(
+                        file_path, matched_fields, fill_mode
+                    )
 
                 # 更新输出版本的大小/哈希
                 output_doc.file_size = os.path.getsize(file_path)
@@ -206,16 +225,13 @@ class FillFormTool(BaseTool):
                 await db.commit()
                 output_file_id = str(output_doc.id)
 
-                # 构建未匹配字段列表
-                unmatched_keys = set(data.keys()) - {m['data_key'] for m in matched_fields}
-
                 return ToolResult(
                     success=True,
                     data={
                         "filled_fields": filled_count,
                         "total_fields": len(form_fields),
                         "matched_fields": len(matched_fields),
-                        "unmatched_keys": list(unmatched_keys),
+                        "unmatched_keys": unmatched_keys,
                         "output_file_id": output_file_id,
                         "output_filename": output_doc.original_filename,
                         "download_url": f"/api/v1/documents/{output_file_id}/download",
@@ -242,6 +258,106 @@ class FillFormTool(BaseTool):
                 success=False,
                 error=f"表单填写失败: {str(e)}"
             )
+
+    def _resolve_field_items(
+        self,
+        field_items: List[Dict[str, Any]],
+        form_fields: List[Dict[str, Any]],
+    ) -> tuple:
+        """解析 fields 数组：按 field_id 精确匹配，无 field_id 时按 label 匹配
+
+        Returns:
+            (matched_fields, unmatched_keys)
+        """
+        by_id = {f.get("field_id"): f for f in form_fields if f.get("field_id")}
+        matched = []
+        unmatched = []
+        used_field_ids = set()
+
+        for i, item in enumerate(field_items):
+            value = item.get("value")
+            field = None
+            data_key = None
+
+            field_id = item.get("field_id")
+            if field_id:
+                data_key = field_id
+                field = by_id.get(field_id)
+                if field is None:
+                    unmatched.append(f"{field_id}(field_id不存在)")
+                    continue
+            else:
+                label = item.get("label", "")
+                data_key = label or f"第{i + 1}项"
+                if not label:
+                    unmatched.append(f"第{i + 1}项(缺少field_id和label)")
+                    continue
+                # 精确匹配优先，其次模糊匹配
+                best_score = 0.0
+                for f in form_fields:
+                    if f.get("field_id") in used_field_ids:
+                        continue
+                    if f["label"] == label:
+                        field = f
+                        best_score = 1.0
+                        break
+                    score = self._calculate_match_score(label, f["label"])
+                    if score > best_score:
+                        best_score = score
+                        field = f
+                if field is None or best_score < 0.4:
+                    unmatched.append(label)
+                    continue
+
+            used_field_ids.add(field.get("field_id"))
+            matched.append({
+                'field': field,
+                'data_key': data_key,
+                'field_label': field['label'],
+                'value': value,
+                'match_score': 1.0 if field_id else 0.9,
+            })
+
+        return matched, unmatched
+
+    def _fill_xlsx_fields(self, file_path: str, matched_fields: List[Dict[str, Any]]) -> int:
+        """填写 xlsx 纵向表单：按字段 location 的 sheet+cell 坐标写入"""
+        from openpyxl import load_workbook
+
+        wb = load_workbook(file_path)
+        filled_count = 0
+
+        for match in matched_fields:
+            field = match['field']
+            location = field.get('location', {})
+            sheet_name = location.get('sheet')
+            cell_coord = location.get('cell')
+            if not sheet_name or not cell_coord:
+                logger.warning(f"[FillFormTool] 字段 {field.get('label')} 缺少 sheet/cell 坐标，跳过")
+                continue
+            if sheet_name not in wb.sheetnames:
+                logger.warning(f"[FillFormTool] 工作表不存在: {sheet_name}，跳过字段 {field.get('label')}")
+                continue
+
+            value = match['value']
+            if isinstance(value, (list, dict)):
+                value = "、".join(str(v) for v in value) if isinstance(value, list) else str(value)
+
+            ws = wb[sheet_name]
+            cell = ws[cell_coord]
+            # 数值类型字段尝试按数值写入，避免Excel中数字变文本
+            if field.get('detected_type') == 'number' and value is not None:
+                try:
+                    f = float(str(value).replace(',', ''))
+                    value = int(f) if f.is_integer() else f
+                except (TypeError, ValueError):
+                    pass
+            cell.value = value
+            filled_count += 1
+
+        wb.save(file_path)
+        wb.close()
+        return filled_count
 
     def _match_data_to_fields(
         self,

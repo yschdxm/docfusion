@@ -250,6 +250,7 @@ function StepCard({
 export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPanelProps) {
   const [internalExpanded, setInternalExpanded] = useState<Set<string>>(new Set())
   const autoCollapsedRef = useRef<Set<string>>(new Set())
+  const collapseScheduledRef = useRef<Set<string>>(new Set())
   const [isDarkMode, setIsDarkMode] = useState(getTheme() === 'night-mode')
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
@@ -292,31 +293,30 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps.length, allStepIdsKey, isActive])
 
-  // 已完成的思考/委派步骤延迟自动折叠：仅实时流时生效。
+  // 已完成的步骤延迟自动折叠：仅实时流时生效。
+  // 思考/工具/查询/填写等执行类步骤一视同仁（单Agent架构下它们都是顶层步骤）。
   // 历史面板 mount 时不调度任何定时器，保持初始全折叠。
+  // 每个步骤只调度一次，避免用户手动展开后被后续 steps 更新反复折叠；
+  // 失败(error)步骤不折叠，保持错误可见。
   useEffect(() => {
     if (!isActive) return
     const checkAndCollapse = (s: AgentStep) => {
-      if (s.type === 'thinking' && s.status === 'completed' && (s.name === '思考完成' || s.name === 'Thinking complete' || s.name === '思考完了')) {
-        setTimeout(() => {
-          autoCollapsedRef.current.add(s.id)
-          setInternalExpanded((prev) => {
-            const newSet = new Set(prev)
-            newSet.delete(s.id)
-            return newSet
-          })
-        }, 500)
-      }
-      if (s.type === 'agent_delegation' && s.status === 'completed') {
-        setTimeout(() => {
-          autoCollapsedRef.current.add(s.id)
-          setInternalExpanded((prev) => {
-            const newSet = new Set(prev)
-            newSet.delete(s.id)
-            return newSet
-          })
-        }, 500)
-      }
+      if (s.status !== 'completed') return
+      if (collapseScheduledRef.current.has(s.id)) return
+      const isThinkingDone = s.type === 'thinking' && (s.name === '思考完成' || s.name === 'Thinking complete' || s.name === '思考完了')
+      const isExecutionDone = s.type === 'tool_call' || s.type === 'data_retrieval' || s.type === 'fill_table' || s.type === 'fill_form'
+      const isDelegationDone = s.type === 'agent_delegation'
+      if (!isThinkingDone && !isExecutionDone && !isDelegationDone) return
+
+      collapseScheduledRef.current.add(s.id)
+      setTimeout(() => {
+        autoCollapsedRef.current.add(s.id)
+        setInternalExpanded((prev) => {
+          const newSet = new Set(prev)
+          newSet.delete(s.id)
+          return newSet
+        })
+      }, 500)
     }
     steps.forEach(checkAndCollapse)
     steps.forEach(s => s.children?.forEach(checkAndCollapse))
@@ -370,10 +370,7 @@ export default function AgentThinkingPanel({ steps, isActive }: AgentThinkingPan
                 isDarkMode ? 'border-cyan-500/60' : 'border-cyan-300'
               }`}>
                 <p className={`text-xs font-medium ${isDarkMode ? 'text-cyan-300' : 'text-cyan-600'}`}>
-                  {step.agentName === 'delegate_fill_table' ? tr('填表Agent', 'Table Fill Agent', '表入力Agent') :
-                   step.agentName === 'delegate_fill_form' ? tr('表单Agent', 'Form Fill Agent', 'フォーム入力Agent') :
-                   step.agentName === 'delegate_document_edit' ? tr('文档编辑Agent', 'Doc Edit Agent', '文書編集Agent') :
-                   step.agentName || tr('子Agent', 'Sub-Agent', 'サブAgent')} {tr('执行过程:', 'Execution:', '実行過程:')}
+                  {tr('执行过程:', 'Execution:', '実行過程:')}
                 </p>
                 {step.children.map((child, ci) => (
                   <div key={child.id}>

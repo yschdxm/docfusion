@@ -170,6 +170,11 @@ class BaseTool(ABC):
                         error=f"缺少必需参数: {param}"
                     )
 
+            # 顶层参数类型校验（宽松：数字字符串可转为数值，标量可转为字符串）
+            type_error = self._coerce_and_validate_types(params)
+            if type_error:
+                return ToolResult(success=False, error=type_error)
+
             # 执行工具
             result = await self.execute(params, context)
 
@@ -188,3 +193,55 @@ class BaseTool(ABC):
                 error=f"工具执行错误: {str(e)}",
                 execution_time_ms=execution_time
             )
+
+    def _coerce_and_validate_types(self, params: Dict[str, Any]) -> Optional[str]:
+        """按 parameters schema 校验顶层参数类型，可转换的就地转换。
+
+        Returns:
+            错误信息或 None（校验通过）
+        """
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        properties = self.parameters.get("properties", {})
+
+        for name, prop in properties.items():
+            if name not in params or params[name] is None:
+                continue
+            expected = prop.get("type")
+            py_type = type_map.get(expected) if expected else None
+            if not py_type:
+                continue
+            value = params[name]
+
+            # bool 是 int 的子类，integer/number 不接受 bool
+            if expected in ("integer", "number") and isinstance(value, bool):
+                return f"参数 {name} 类型不正确（期望 {expected}，收到 bool）"
+            if isinstance(value, py_type):
+                continue
+
+            # 宽松转换
+            if expected == "integer":
+                try:
+                    params[name] = int(float(str(value)))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            elif expected == "number":
+                try:
+                    params[name] = float(str(value))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            elif expected == "string" and isinstance(value, (int, float)):
+                params[name] = str(value)
+                continue
+
+            return f"参数 {name} 类型不正确（期望 {expected}，收到 {type(value).__name__}）"
+
+        return None

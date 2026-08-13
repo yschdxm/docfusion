@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 import logging
 
 from app.agent.core.stream import AgentEvent, AgentEventType
-from app.agent.agents.general_agent import create_general_agent
+from app.agent.agents.document_agent import create_document_agent
 from app.agent.core.task_manager import task_manager, Task
 from app.core.deps import get_current_user
 from app.core.sse import SSE_HEADERS, SSE_KEEPALIVE
@@ -132,7 +132,7 @@ async def agent_stream(
         await save_message(request.conversation_id, "user", request.message)
 
     # 创建 agent 并启动任务（supervisor 保证终态事件恰好一次 + finish）
-    agent = create_general_agent(stream_manager_provider=lambda: task.event_log)
+    agent = create_document_agent()
     persistence = AgentPersistence(request.conversation_id)
     agent_coro = agent.run(
         message=request.message,

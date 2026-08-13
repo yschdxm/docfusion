@@ -103,8 +103,14 @@ class FillTableTool(BaseTool):
 - Word文档中有多个表格时，**必须**使用 target_table_index 指定填写哪个表格
 - 表格索引从0开始，按文档中出现的顺序
 - **关键**：多表格文档中，每个表格通常有特定用途，需按用途过滤数据
-  - 先通过 get_table_structure 了解每个表格的用途和当前状态（是否为空/有占位行）
+  - 先通过 get_template_structure 了解每个表格的用途和当前状态（是否为空/有占位行）
   - 根据用途筛选数据，不要将所有数据填入每个表格
+
+Excel 特殊情况：
+- 模板有多个工作表时，必须用 sheet_name 指定目标工作表
+- 表头不在第1行时（get_template_structure 返回 header_row_index > 1），
+  必须将 header_row_index 作为 header_row 参数传入，否则数据会写错位、标题行会被误删
+- overwrite 模式只删除表头行以下的数据行，表头上方的标题/说明行会保留
 
 fill_mode 详解（针对指定表格的操作）：
 - **overwrite**: 清空【target_table_index 指定的表格】，然后填入新数据
@@ -199,7 +205,15 @@ fill_mode 详解（针对指定表格的操作）：
                 },
                 "target_table_index": {
                     "type": "integer",
-                    "description": "目标表格索引（从0开始），用于多表格文档。如果不指定，自动选择第一个合适的表格"
+                    "description": "目标表格索引（从0开始），用于多表格Word文档。如果不指定，自动选择第一个合适的表格"
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "（仅Excel）目标工作表名称。不指定时使用第一个工作表。多工作表模板填写时必须指定"
+                },
+                "header_row": {
+                    "type": "integer",
+                    "description": "（仅Excel）表头所在行号（1-based）。不指定时自动探测。当Excel上方有标题/说明行时，get_template_structure 会返回 header_row_index，将其原样传入即可"
                 }
             },
             "required": []
@@ -217,6 +231,8 @@ fill_mode 详解（针对指定表格的操作）：
             source_query = params.get("source_query")
             fill_mode = params.get("fill_mode", "overwrite")
             target_table_index = params.get("target_table_index")
+            sheet_name = params.get("sheet_name")
+            header_row = params.get("header_row")
 
             # UUID校验（仅在需要时校验）
             if template_id:
@@ -234,12 +250,14 @@ fill_mode 详解（针对指定表格的操作）：
                 if source_query.get("data_confirmed"):
                     return await self._execute_confirmed_source_query(
                         source_query, template_id, output_doc_id,
-                        fill_mode, target_table_index, context, logger
+                        fill_mode, target_table_index, context, logger,
+                        sheet_name=sheet_name, header_row=header_row
                     )
                 else:
                     return await self._execute_with_source_query(
                         source_query, template_id, output_doc_id,
-                        fill_mode, target_table_index, context, logger
+                        fill_mode, target_table_index, context, logger,
+                        sheet_name=sheet_name, header_row=header_row
                     )
 
             if not data:
@@ -262,12 +280,14 @@ fill_mode 详解（针对指定表格的操作）：
                 if is_update_existing:
                     # 操作已有输出文件（可能是覆盖某个表格，也可能是追加）
                     return await self._update_existing_file(
-                        db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
+                        db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context,
+                        sheet_name=sheet_name, header_row=header_row
                     )
                 else:
                     # 首次填写，基于模板创建新文件
                     return await self._create_new_file(
-                        db, template_id, data, fill_mode, target_table_index, logger, context
+                        db, template_id, data, fill_mode, target_table_index, logger, context,
+                        sheet_name=sheet_name, header_row=header_row
                     )
 
         except Exception as e:
@@ -279,7 +299,8 @@ fill_mode 详解（针对指定表格的操作）：
 
     async def _execute_with_source_query(
         self, source_query: Dict, template_id: str, output_doc_id: str,
-        fill_mode: str, target_table_index: int, context: ToolContext, logger
+        fill_mode: str, target_table_index: int, context: ToolContext, logger,
+        sheet_name: str = None, header_row: int = None
     ) -> ToolResult:
         """source_query 模式：自动查询源数据并填入模板。
 
@@ -326,7 +347,10 @@ fill_mode 详解（针对指定表格的操作）：
             return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
 
         # 获取模板表头
-        template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
+        template_headers = self._get_template_headers(
+            template_doc.file_path, template_doc.file_type, target_table_index,
+            sheet_name=sheet_name, header_row=header_row
+        )
         if not template_headers:
             return ToolResult(success=False, error="无法获取模板表头")
 
@@ -411,7 +435,8 @@ fill_mode 详解（针对指定表格的操作）：
 
     async def _execute_confirmed_source_query(
         self, source_query: Dict, template_id: str, output_doc_id: str,
-        fill_mode: str, target_table_index: int, context: ToolContext, logger
+        fill_mode: str, target_table_index: int, context: ToolContext, logger,
+        sheet_name: str = None, header_row: int = None
     ) -> ToolResult:
         """source_query 确认模式：LLM 已审核过数据摘要，执行实际填入。"""
         sq_doc_ids = source_query.get("doc_ids", context.file_ids)
@@ -430,7 +455,10 @@ fill_mode 详解（针对指定表格的操作）：
         if not template_doc:
             return ToolResult(success=False, error=f"模板文档不存在: {template_id}")
 
-        template_headers = self._get_template_headers(template_doc.file_path, template_doc.file_type, target_table_index)
+        template_headers = self._get_template_headers(
+            template_doc.file_path, template_doc.file_type, target_table_index,
+            sheet_name=sheet_name, header_row=header_row
+        )
         if not template_headers:
             return ToolResult(success=False, error="无法获取模板表头")
 
@@ -509,12 +537,14 @@ fill_mode 详解（针对指定表格的操作）：
         if output_doc_id:
             async with async_session() as db:
                 return await self._update_existing_file(
-                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context
+                    db, output_doc_id, template_id, data, fill_mode, target_table_index, logger, context,
+                    sheet_name=sheet_name, header_row=header_row
                 )
         else:
             async with async_session() as db:
                 return await self._create_new_file(
-                    db, template_id, data, fill_mode, target_table_index, logger, context
+                    db, template_id, data, fill_mode, target_table_index, logger, context,
+                    sheet_name=sheet_name, header_row=header_row
                 )
 
     def _build_data_summary(self, records: List[Dict], template_headers: List[str]) -> str:
@@ -641,15 +671,56 @@ fill_mode 详解（针对指定表格的操作）：
         logger.info(f"[FillTableTool] 最终获取: {len(unique_records)} 条唯一记录（原始 {len(records)} 条）")
         return unique_records
 
-    def _get_template_headers(self, file_path: str, file_type: str, target_table_index: int = None) -> List[str]:
+    def _resolve_xlsx_headers(
+        self, file_path: str, sheet_name: str = None, header_row: int = None
+    ) -> tuple:
+        """解析Excel的表头，返回 (headers, resolved_header_row)。
+
+        header_row 未指定时自动探测真实表头行（处理标题行/说明行）。
+        """
+        from openpyxl import load_workbook
+        from app.agent.tools.get_template_structure_tool import detect_xlsx_header_row
+
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        if sheet_name:
+            if sheet_name not in wb.sheetnames:
+                available = list(wb.sheetnames)
+                wb.close()
+                raise ValueError(f"工作表不存在: {sheet_name}，可用工作表: {available}")
+            ws = wb[sheet_name]
+        else:
+            ws = wb[wb.sheetnames[0]]
+
+        if header_row:
+            resolved_row = header_row
+            header_cells = next(
+                ws.iter_rows(min_row=resolved_row, max_row=resolved_row, values_only=True),
+                None
+            )
+        else:
+            all_rows = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                all_rows.append(row)
+                if i >= 9:  # 探测只需前10行
+                    break
+            resolved_row = detect_xlsx_header_row(all_rows) if all_rows else 1
+            header_cells = all_rows[resolved_row - 1] if all_rows else None
+
+        headers = []
+        if header_cells:
+            headers = [str(cell) if cell is not None and str(cell).strip()
+                       else f"Column_{i + 1}"
+                       for i, cell in enumerate(header_cells)]
+        wb.close()
+        return headers, resolved_row
+
+    def _get_template_headers(
+        self, file_path: str, file_type: str, target_table_index: int = None,
+        sheet_name: str = None, header_row: int = None
+    ) -> List[str]:
         """获取模板文件的表头"""
         if file_type == "xlsx":
-            from openpyxl import load_workbook
-            wb = load_workbook(file_path, read_only=True)
-            ws = wb.active
-            headers = [str(cell.value) if cell.value else f"Column_{i+1}"
-                       for i, cell in enumerate(next(ws.iter_rows(min_row=1, max_row=1)))]
-            wb.close()
+            headers, _ = self._resolve_xlsx_headers(file_path, sheet_name, header_row)
             return headers
         elif file_type == "docx":
             from docx import Document as DocxDocument
@@ -664,7 +735,8 @@ fill_mode 详解（针对指定表格的操作）：
         return []
 
     async def _create_new_file(
-        self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
+        self, db, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None,
+        sheet_name: str = None, header_row: int = None
     ) -> ToolResult:
         """基于模板创建新输出文件（新 root 的 v1）"""
         # 查询模板文档
@@ -695,7 +767,7 @@ fill_mode 详解（针对指定表格的操作）：
 
         # 根据文件类型填写
         if file_type == "xlsx":
-            success = await self._fill_excel(output_path, data, fill_mode)
+            success = await self._fill_excel(output_path, data, fill_mode, sheet_name=sheet_name, header_row=header_row)
         elif file_type == "docx":
             success = await self._fill_word(output_path, data, fill_mode, target_table_index)
         else:
@@ -743,7 +815,8 @@ fill_mode 详解（针对指定表格的操作）：
         )
 
     async def _update_existing_file(
-        self, db, output_doc_id: str, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None
+        self, db, output_doc_id: str, template_id: str, data: List[Dict], fill_mode: str, target_table_index: int, logger, context: ToolContext = None,
+        sheet_name: str = None, header_row: int = None
     ) -> ToolResult:
         """更新已有输出文件（覆盖或追加指定表格）"""
         # 查询输出文档
@@ -777,7 +850,7 @@ fill_mode 详解（针对指定表格的操作）：
 
         # 根据 fill_mode 更新数据
         if file_type == "xlsx":
-            success = await self._fill_excel(file_path, data, fill_mode)
+            success = await self._fill_excel(file_path, data, fill_mode, sheet_name=sheet_name, header_row=header_row)
         elif file_type == "docx":
             success = await self._fill_word(file_path, data, fill_mode, target_table_index)
         else:
@@ -831,25 +904,43 @@ fill_mode 详解（针对指定表格的操作）：
             }
         )
 
-    async def _fill_excel(self, file_path: str, data: List[Dict], fill_mode: str) -> bool:
-        """填写Excel文件"""
+    async def _fill_excel(
+        self, file_path: str, data: List[Dict], fill_mode: str,
+        sheet_name: str = None, header_row: int = None
+    ) -> bool:
+        """填写Excel文件
+
+        支持指定工作表和表头行。overwrite 只删除表头行以下的数据行，
+        保留表头及其上方的标题/说明行。
+        """
         try:
             from openpyxl import load_workbook
 
             wb = load_workbook(file_path)
-            ws = wb.active
 
-            # 获取表头
-            headers = []
-            first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-            if first_row:
-                headers = [str(cell) if cell else f"Column_{i+1}" for i, cell in enumerate(first_row)]
+            # 选择工作表
+            if sheet_name:
+                if sheet_name not in wb.sheetnames:
+                    print(f"工作表不存在: {sheet_name}，可用: {wb.sheetnames}")
+                    wb.close()
+                    return False
+                ws = wb[sheet_name]
+            else:
+                ws = wb.active
+
+            # 解析表头行（未指定时自动探测）
+            headers, resolved_header_row = self._resolve_xlsx_headers(
+                file_path, sheet_name, header_row
+            )
+            if not headers:
+                # 模板没有任何表头（可能是空白模板），退化为第1行
+                resolved_header_row = header_row or 1
+                headers = []
 
             # 处理填写模式
             if fill_mode == "overwrite":
-                # 清空数据行，保留表头
-                # 删除现有数据行
-                for row in range(ws.max_row, 1, -1):
+                # 只删除表头行以下的数据行，保留表头及上方标题/说明行
+                for row in range(ws.max_row, resolved_header_row, -1):
                     ws.delete_rows(row)
 
             # 填写数据

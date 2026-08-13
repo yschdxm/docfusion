@@ -38,7 +38,6 @@ from app.agent.core.runtime import AgentRuntime
 from app.agent.core.stream import AgentEventType, AgentEvent
 from app.agent.core.event_log import TaskEventLog
 from app.agent.core.tracker import StepTracker, Step, StepStatus, StepType
-from app.agent.core.delegation import StreamBridge, DelegateAgentTool
 
 __all__ = [
     # 基础组件
@@ -58,8 +57,4 @@ __all__ = [
     "Step",
     "StepStatus",
     "StepType",
-
-    # 委派组件
-    "StreamBridge",
-    "DelegateAgentTool",
 ]

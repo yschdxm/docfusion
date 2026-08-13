@@ -1,15 +1,12 @@
 """
-Agent路由系统
+文档处理 Agent
 
-提供多Agent协作架构，包括通用Agent和专用Agent。
+单一 Agent 架构：一个 Agent 持有全部工具，直接处理
+填表、填表单、文档编辑、文档问答，无路由/委派层。
 """
 
-from app.agent.agents.general_agent import create_general_agent
-from app.agent.agents.fill_table_agent import FillTableAgent
-from app.agent.agents.document_edit_agent import DocumentEditAgent
+from app.agent.agents.document_agent import create_document_agent
 
 __all__ = [
-    "create_general_agent",
-    "FillTableAgent",
-    "DocumentEditAgent",
+    "create_document_agent",
 ]
