@@ -11,11 +11,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '6.0'
-          memory: 12G
+          cpus: '${BACKEND_CPU_LIMIT:-2.0}'
+          memory: ${BACKEND_MEMORY_LIMIT:-12G}
         reservations:
-          cpus: '2.0'
-          memory: 4G
+          cpus: '${BACKEND_CPU_RESERVATION:-0.5}'
+          memory: ${BACKEND_MEMORY_RESERVATION:-4G}
     volumes:
       - uploads:/app/uploads
     environment:
