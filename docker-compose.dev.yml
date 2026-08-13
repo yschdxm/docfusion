@@ -1,8 +1,7 @@
-version: '3.8'
 
 services:
   postgres:
-    image: docker.1ms.run/postgres:17-alpine
+    image: postgres:17-alpine
     environment:
       - POSTGRES_USER=docfusion
       - POSTGRES_PASSWORD=docfusion123
@@ -13,7 +12,7 @@ services:
       - "5432:5432"
 
   neo4j:
-    image: docker.1ms.run/neo4j:5
+    image: neo4j:5
     environment:
       - NEO4J_AUTH=neo4j/neo4j123
       - NEO4J_PLUGINS=["apoc"]
@@ -24,7 +23,7 @@ services:
       - "7687:7687"
 
   qdrant:
-    image: docker.1ms.run/qdrant/qdrant:latest
+    image: qdrant/qdrant:latest
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
@@ -33,7 +32,7 @@ services:
       - "6336:6336"
 
   onlyoffice:
-    image: docker.1ms.run/onlyoffice/documentserver:latest
+    image: onlyoffice/documentserver:latest
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
