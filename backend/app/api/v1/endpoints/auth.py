@@ -1,7 +1,7 @@
 ﻿from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, decode_access_token, get_password_hash, verify_password
@@ -73,11 +73,18 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='该邮箱已注册')
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='该手机号已注册')
 
+    # 如果系统中还没有主管理员，将当前注册用户设为主管理员
+    # （与 _ensure_super_admin 中"首个注册用户成为管理员"的约定一致）
+    super_admin_count = (await db.execute(
+        select(func.count()).select_from(User).where(User.role == 'super_admin')
+    )).scalar_one()
+
     user = User(
         username=payload.username.strip(),
         email=normalized_email,
         phone=normalized_phone,
         password_hash=get_password_hash(payload.password),
+        role='super_admin' if super_admin_count == 0 else 'user',
     )
     db.add(user)
     await db.commit()
