@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Inbox, RefreshCw, Send, Download, Mail, AlertCircle, Paperclip, ExternalLink, Copy, CheckCircle, Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { agentMailService, type MailMessage, type MailAttachment, type SendMailPayload } from '../services/agentMailService'
@@ -111,6 +111,7 @@ function AgentlyAuth({ onAuthComplete }: { onAuthComplete: () => void }) {
   const [loading, setLoading] = useState(false)
   const [authData, setAuthData] = useState<{ auth_url: string; input_code: string; device_code: string; expires_in: number } | null>(null)
   const [polling, setPolling] = useState(false)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [copied, setCopied] = useState<'link' | 'code' | null>(null)
 
   const startAuth = async () => {
@@ -128,15 +129,21 @@ function AgentlyAuth({ onAuthComplete }: { onAuthComplete: () => void }) {
 
   const startPolling = useCallback((deviceCode: string) => {
     setPolling(true)
+    let stopped = false
     const pollInterval = setInterval(async () => {
+      if (stopped) return
       try {
         const result = await agentMailService.pollAuth(deviceCode)
+        // 并发的迟到响应（成功/失败已定局后才返回）直接忽略，避免误弹错误提示
+        if (stopped) return
         if (result.status === 'completed') {
+          stopped = true
           clearInterval(pollInterval)
           setPolling(false)
           toast.success(`${t.authSuccess}${result.email}`)
           onAuthComplete()
         } else if (result.status === 'expired' || result.status === 'error') {
+          stopped = true
           clearInterval(pollInterval)
           setPolling(false)
           toast.error(result.error || t.authFailed)
@@ -145,12 +152,24 @@ function AgentlyAuth({ onAuthComplete }: { onAuthComplete: () => void }) {
         // 继续轮询
       }
     }, 3000)
+    pollIntervalRef.current = pollInterval
 
     setTimeout(() => {
+      stopped = true
       clearInterval(pollInterval)
       setPolling(false)
     }, 600000)
   }, [onAuthComplete, t])
+
+  // 组件卸载时清理轮询定时器，避免授权完成后孤儿定时器继续请求已消费的 device_code
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+    }
+  }, [])
 
   const handleCopy = async (text: string, type: 'link' | 'code') => {
     const success = await copyToClipboardFallback(text)

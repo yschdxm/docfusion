@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -14,6 +15,7 @@ from app.core.deps import get_current_user
 from app.db.postgres import get_db
 from app.models.document import Document
 from app.models.user import User
+from app.models.user_agently_token import UserAgentlyToken
 from app.services.agently_mail_service import agently_mail_service
 
 router = APIRouter()
@@ -344,9 +346,28 @@ async def poll_auth(
                 )
 
             else:
+                # device_code 被并发/迟到的轮询重复消费时，授权服务器会返回错误
+                # （如 error_description="internal server error"）。若本用户在授权有效期内
+                # 刚刚保存过 token，说明此前已有轮询成功，应按完成处理而不是误报失败。
+                saved = await db.execute(
+                    select(UserAgentlyToken).where(UserAgentlyToken.user_id == current_user.id)
+                )
+                saved_record = saved.scalar_one_or_none()
+                if (
+                    saved_record
+                    and saved_record.updated_at
+                    and datetime.utcnow() - saved_record.updated_at < timedelta(minutes=10)
+                ):
+                    logger.warning(
+                        f"[AUTH_POLL] duplicate poll after completion, treating as completed "
+                        f"(server said: {data.get('error') or data.get('err_code')})"
+                    )
+                    return OAuthPollResponse(status="completed", email=saved_record.email)
+
+                logger.warning(f"[AUTH_POLL] authorization server error: {data.get('error') or data.get('err_code')}")
                 return OAuthPollResponse(
                     status="error",
-                    error=data.get("error_description", data.get("errmsg", "授权失败")),
+                    error="授权失败，请重新发起授权",
                 )
 
     except httpx.HTTPStatusError as exc:

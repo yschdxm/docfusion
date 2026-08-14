@@ -65,6 +65,15 @@ class AgentlyMailService:
             return command
         return shlex.split(command, posix=os.name != "nt")
 
+    def _cmd_desc(self, command: str | list[str]) -> str:
+        """命令的安全描述（只含子命令路径，不含正文/收件人等参数值），用于日志。"""
+        parts: list[str] = []
+        for arg in self._command_args(command):
+            if arg.startswith("-"):
+                break
+            parts.append(arg)
+        return " ".join(parts) or "agently-cli"
+
     async def _run_command(self, command: str | list[str], timeout: int | None = None, cwd: str | Path | None = None, user_token: str | None = None) -> str:
         """执行 agently-cli 命令。
 
@@ -99,13 +108,18 @@ class AgentlyMailService:
         try:
             proc = await asyncio.to_thread(run)
         except FileNotFoundError as exc:
+            logger.error("[AGENTLY_CLI] 未找到可执行文件: %s", self._command_args(command)[:1])
             raise HTTPException(status_code=503, detail="未找到 agently-cli，请先安装并完成 OAuth 授权；如已安装，请在 .env 中将 AGENTLY_CLI_BIN 配置为 agently-cli.cmd 的完整路径") from exc
         except subprocess.TimeoutExpired as exc:
+            # 超时会表现为网关 502/504，必须留下日志否则无法区分是 CLI 慢还是网关问题
+            logger.error("[AGENTLY_CLI] %s 执行超时（>%ds）", self._cmd_desc(command), timeout)
             raise HTTPException(status_code=504, detail="agently-cli 执行超时") from exc
 
         out = proc.stdout.decode("utf-8", "replace").strip()
         err = proc.stderr.decode("utf-8", "replace").strip()
         if proc.returncode != 0:
+            # CLI 失败会转化为 502，这里不打日志的话生产环境将无法排查
+            logger.error("[AGENTLY_CLI] %s 失败（exit %d）: %s", self._cmd_desc(command), proc.returncode, (err or out)[:500])
             raise HTTPException(status_code=502, detail=err or out or "agently-cli 执行失败")
         return out or err
 

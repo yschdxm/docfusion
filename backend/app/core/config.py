@@ -66,7 +66,9 @@ class Settings(BaseSettings):
     AGENTLY_MAIL_DETAIL_COMMAND: str = ""
     AGENTLY_MAIL_SEND_COMMAND: str = ""
     AGENTLY_MAIL_ATTACHMENT_COMMAND: str = ""
-    AGENTLY_MAIL_TIMEOUT_SECONDS: int = 120
+    # 注意必须小于前置网关（Cloudflare ~100s）的超时，否则网关会先截断响应，
+    # 客户端只能看到网关的 502 页面而拿不到后端的错误信息
+    AGENTLY_MAIL_TIMEOUT_SECONDS: int = 90
 
     # Agently OAuth 配置（通过 agently-cli 处理，通常不需要修改）
     AGENTLY_OAUTH_LOGOUT_URL: str = "https://auth.agent.qq.com/oauth/logout_session"
