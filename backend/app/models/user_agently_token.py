@@ -18,6 +18,9 @@ class UserAgentlyToken(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     access_token = Column(Text, nullable=False)
     refresh_token = Column(Text, nullable=True)
+    # 设备授权下发的一对客户端凭证，刷新 token 时必须作为 client_id/client_secret 上送
+    app_id = Column(String(255), nullable=True)
+    app_secret = Column(Text, nullable=True)
     token_type = Column(String(50), default="Bearer", nullable=False)
     expires_at = Column(DateTime, nullable=True)
     email = Column(String(255), nullable=True)  # 授权的邮箱地址

@@ -380,7 +380,15 @@ class AgentlyMailService:
         if token_record.expires_at and token_record.expires_at < datetime.utcnow():
             # 尝试刷新 token
             if token_record.refresh_token:
-                new_token = await self._refresh_token(token_record.refresh_token)
+                if not token_record.app_id:
+                    # 旧记录缺少设备授权时下发的 app_id/app_secret，无法按官方客户端方式刷新
+                    logger.error(f"[TOKEN_REFRESH] user {user_id} 的授权记录缺少 app_id，无法刷新，需要重新授权")
+                    return None
+                new_token = await self._refresh_token(
+                    token_record.refresh_token,
+                    app_id=token_record.app_id,
+                    app_secret=token_record.app_secret,
+                )
                 if new_token:
                     await self.save_user_token(
                         db=db,
@@ -389,6 +397,8 @@ class AgentlyMailService:
                         refresh_token=new_token.get("refresh_token", token_record.refresh_token),
                         expires_in=new_token.get("expires_in"),
                         email=token_record.email,
+                        app_id=token_record.app_id,
+                        app_secret=token_record.app_secret,
                     )
                     return new_token["access_token"]
             return None
@@ -403,6 +413,8 @@ class AgentlyMailService:
         refresh_token: str | None = None,
         expires_in: int | None = None,
         email: str | None = None,
+        app_id: str | None = None,
+        app_secret: str | None = None,
     ) -> UserAgentlyToken:
         """保存用户的 Agently token"""
         result = await db.execute(
@@ -423,6 +435,10 @@ class AgentlyMailService:
                 token_record.expires_at = expires_at
             if email:
                 token_record.email = email
+            if app_id:
+                token_record.app_id = app_id
+            if app_secret:
+                token_record.app_secret = app_secret
             token_record.updated_at = datetime.utcnow()
         else:
             # 创建新记录
@@ -432,6 +448,8 @@ class AgentlyMailService:
                 refresh_token=refresh_token,
                 expires_at=expires_at,
                 email=email,
+                app_id=app_id,
+                app_secret=app_secret,
             )
             db.add(token_record)
 
@@ -472,31 +490,45 @@ class AgentlyMailService:
             logger.error(f"[AUTH_STATUS] Failed to get user info: {e}", exc_info=True)
             return {"authorized": False, "email": None}
 
-    async def _refresh_token(self, refresh_token: str) -> dict[str, Any] | None:
+    async def _refresh_token(self, refresh_token: str, app_id: str | None = None, app_secret: str | None = None) -> dict[str, Any] | None:
         """刷新 token：调用 agently OAuth token 端点（grant_type=refresh_token）。
+
+        与官方 agently-cli 1.0.9 行为保持一致：
+        - POST application/x-www-form-urlencoded（不是 JSON，否则服务端报 -20011）
+        - 表单字段：grant_type / refresh_token / client_id（=授权下发的 app_id），
+          若有 app_secret 则作为 client_secret 一并上送
 
         失败（网络错误、refresh_token 失效等）返回 None，调用方会要求用户重新授权。
         """
         import httpx
 
+        form = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+        if app_id:
+            form["client_id"] = app_id
+        if app_secret:
+            form["client_secret"] = app_secret
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     "https://auth.agent.qq.com/oauth/token",
-                    json={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                    data=form,
                     headers={
-                        "Content-Type": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
                         "User-Agent": "agently-cli/1.0.9",
                     },
                 )
                 if response.status_code != 200:
-                    logger.warning(f"[TOKEN_REFRESH] HTTP {response.status_code}: {response.text[:200]}")
+                    logger.error(f"[TOKEN_REFRESH] HTTP {response.status_code}: {response.text[:200]}")
                     return None
 
                 data = response.json()
                 access_token = data.get("access_token")
                 if not access_token:
-                    logger.warning(f"[TOKEN_REFRESH] no access_token in response: {str(data)[:200]}")
+                    logger.error(f"[TOKEN_REFRESH] no access_token in response: {str(data)[:200]}")
                     return None
 
                 logger.info("[TOKEN_REFRESH] token refreshed successfully")

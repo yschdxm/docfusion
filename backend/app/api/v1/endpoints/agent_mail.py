@@ -286,7 +286,8 @@ async def poll_auth(
             response.raise_for_status()
             data = response.json()
 
-            logger.info(f"[AUTH_POLL] Response: {data}")
+            # 注意：completed 响应含 access_token/refresh_token/app_secret，不得整体打印
+            logger.info(f"[AUTH_POLL] status: {data.get('status', '')}")
 
             status = data.get("status", "")
 
@@ -299,8 +300,11 @@ async def poll_auth(
                 refresh_token = data.get("refresh_token", "")
                 expires_in = data.get("expires_in")
                 email = data.get("email", "")
+                # 官方 CLI 刷新 token 时需要把这两个字段作为 client_id/client_secret 上送，必须一并保存
+                app_id = data.get("app_id", "")
+                app_secret = data.get("app_secret", "")
 
-                logger.info(f"[AUTH_POLL] Token received: {access_token[:20]}..., email: {email}")
+                logger.info(f"[AUTH_POLL] Authorization completed, email: {email}")
 
                 if access_token:
                     # 保存 token 到数据库
@@ -312,6 +316,8 @@ async def poll_auth(
                             refresh_token=refresh_token,
                             expires_in=expires_in,
                             email=email,
+                            app_id=app_id,
+                            app_secret=app_secret,
                         )
                         logger.info(f"[AUTH_POLL] Token saved for user {current_user.id}")
                     except Exception as save_err:

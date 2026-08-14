@@ -110,7 +110,8 @@ async def _ensure_super_admin(conn):
         return
 
     # 检查环境变量中是否配置了管理员账号
-    admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+    # 与注册/登录接口保持一致：邮箱统一转小写，避免大小写差异导致重复建号或匹配失败
+    admin_email = os.getenv("ADMIN_EMAIL", "").strip().lower()
     admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
 
     if admin_email and admin_password:
@@ -158,7 +159,7 @@ async def _ensure_super_admin(conn):
             await conn.execute(text(
                 "UPDATE users SET role = 'super_admin' WHERE id = :id"
             ), {"id": first_user[0]})
-            logger.info(f"Promoted first user to super admin")
+            logger.info("Promoted first user to super admin")
         else:
             logger.warning("No users found in database. Super admin will be created on first user registration.")
 
@@ -171,6 +172,8 @@ async def _ensure_agently_token_table(conn):
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             access_token TEXT NOT NULL,
             refresh_token TEXT,
+            app_id VARCHAR(255),
+            app_secret TEXT,
             token_type VARCHAR(50) DEFAULT 'Bearer',
             expires_at TIMESTAMP,
             email VARCHAR(255),
@@ -181,6 +184,13 @@ async def _ensure_agently_token_table(conn):
     """))
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS idx_user_agently_tokens_user_id ON user_agently_tokens(user_id)"
+    ))
+    # 刷新 token 需要的客户端凭证（设备授权响应下发，旧记录可能为空，需重新授权）
+    await conn.execute(text(
+        "ALTER TABLE user_agently_tokens ADD COLUMN IF NOT EXISTS app_id VARCHAR(255)"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE user_agently_tokens ADD COLUMN IF NOT EXISTS app_secret TEXT"
     ))
     logger.info("user_agently_tokens table ensured")
 
