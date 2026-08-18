@@ -24,6 +24,18 @@ api.interceptors.response.use(
       localStorage.removeItem('docfusion_auth_token')
       window.dispatchEvent(new Event('docfusion-auth-user-changed'))
     }
+    // FastAPI 422 的 detail 是对象数组 [{type, loc, msg, ...}]，
+    // 直接交给 toast/UI 渲染会触发 React error #31（对象不是合法的 React 子节点）白屏，
+    // 在这里统一拍平为字符串，所有 error.response?.data?.detail 调用点自动受益
+    const detail = error?.response?.data?.detail
+    if (Array.isArray(detail)) {
+      error.response.data.detail = detail
+        .map((d: { loc?: unknown[]; msg?: string }) => {
+          const loc = Array.isArray(d?.loc) ? d.loc.filter((p) => p !== 'body').join('.') : ''
+          return loc ? `${loc}: ${d?.msg ?? ''}` : (d?.msg ?? JSON.stringify(d))
+        })
+        .join('；')
+    }
     console.error('API Error:', error)
     return Promise.reject(error)
   }

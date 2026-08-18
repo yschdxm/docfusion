@@ -123,9 +123,22 @@ async def batch_create_users(
         phone = item.phone.strip()
         password = item.password or payload.default_password
 
-        if not password:
-            results.append(BatchCreateUserResult(username=username, email=email, ok=False, error="缺少密码（行内与默认密码均为空）"))
+        # 逐行基础校验（与注册约束一致）：违规行记入结果，不影响其他行
+        row_error = None
+        if not username or len(username) > 50:
+            row_error = "用户名需为 1-50 字符"
+        elif len(email) < 3 or len(email) > 255 or "@" not in email:
+            row_error = "邮箱格式不正确"
+        elif not (11 <= len(phone) <= 20):
+            row_error = "手机号需为 11-20 位"
+        elif not password:
+            row_error = "缺少密码（行内与默认密码均为空）"
+        elif len(password) < 6 or len(password) > 128:
+            row_error = "密码需为 6-128 位"
+        if row_error:
+            results.append(BatchCreateUserResult(username=username, email=email, ok=False, error=row_error))
             continue
+
         if email in seen_emails or phone in seen_phones:
             results.append(BatchCreateUserResult(username=username, email=email, ok=False, error="与本批次中前面的行重复"))
             continue

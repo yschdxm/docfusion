@@ -38,15 +38,16 @@ class AdminUpdateUserRequest(BaseModel):
 
 
 class BatchCreateUserItem(BaseModel):
-    username: str = Field(min_length=1, max_length=50)
-    email: str = Field(min_length=3, max_length=255)
-    phone: str = Field(min_length=11, max_length=20)
-    password: Optional[str] = Field(None, min_length=6, max_length=128)  # 缺省用请求的 default_password
+    # 字段长度约束放在端点里逐行校验（违规行记入 results 而不是让整个请求 422）
+    username: str
+    email: str
+    phone: str
+    password: Optional[str] = None  # 缺省用请求的 default_password
 
 
 class BatchCreateUsersRequest(BaseModel):
     users: list[BatchCreateUserItem] = Field(min_length=1, max_length=200)
-    default_password: Optional[str] = Field(None, min_length=6, max_length=128)
+    default_password: Optional[str] = None
     role: str = Field(default="user", pattern="^(user|admin)$")
 
 
