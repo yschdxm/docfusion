@@ -37,7 +37,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8088:80"
+      # 宿主机端口可通过 .env 的 ONLYOFFICE_PORT 修改（Windows 常占用 8088）
+      - "${ONLYOFFICE_PORT:-8088}:80"
     environment:
       - JWT_ENABLED=false
     volumes:

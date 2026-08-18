@@ -1,10 +1,11 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, Plus, Check, Eye, X, Square, Search, FileOutput } from 'lucide-react'
+import { Send, FileText, Loader2, Table, History, Trash2, Clock, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Eye, X, Square, Search, FileOutput, Download } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api from '../services/api'
-import { getAuthUser } from '../services/auth'
+import { getAuthUser, getAuthToken } from '../services/auth'
+import { parseDownloadFilename, triggerFileDownload } from '../utils/download'
 import { useDocumentStore } from '../stores/documentStore'
 import { useChatStore } from '../stores/chatStore'
 import ActionCard, { ActionData } from '../components/ActionCard'
@@ -92,6 +93,14 @@ function DownloadLink({ href, children }: { href?: string; children?: React.Reac
 
 const markdownComponents = { a: DownloadLink }
 
+// 消息已带"完成"卡片（自带下载按钮）时，剥掉正文中重复的下载链接，只保留卡片一个下载入口
+const COMPLETED_DOWNLOAD_RE = /\s*\[[^\]]*\]\([^)]*\/documents\/[^)]*\/download[^)]*\)/g
+function displayContent(message: Message): string {
+  const hasCompletedCard = message.action?.action_type === 'completed'
+    && !!(message.action.filled_file_url || message.action.result?.filled_file_url)
+  return hasCompletedCard ? message.content.replace(COMPLETED_DOWNLOAD_RE, '') : message.content
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -174,8 +183,21 @@ export default function DocumentOperation() {
   useEffect(() => {
     localMessagesRef.current = localMessages
   }, [localMessages])
-  const [pendingAction, setPendingAction] = useState<ActionData | null>(null)
+  const [pendingActions, setPendingActions] = useState<ActionData[]>([])
+  // 悬浮确认卡的横向翻页索引（多表分别确认时通过左右按钮切换）
+  const [pendingIndex, setPendingIndex] = useState(0)
   const [previewState, setPreviewState] = useState<PreviewState | null>(null)
+  // AI 自动复核开关：关闭后填表 dry_run 结果需用户确认才写入（持久化到 localStorage）
+  const [autoReview, setAutoReview] = useState<boolean>(() => {
+    try { return localStorage.getItem('agent_auto_review') !== 'false' } catch { return true }
+  })
+  const toggleAutoReview = () => {
+    setAutoReview(prev => {
+      const next = !prev
+      try { localStorage.setItem('agent_auto_review', String(next)) } catch { /* */ }
+      return next
+    })
+  }
 
   // SSE 流式状态
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([])
@@ -190,6 +212,9 @@ export default function DocumentOperation() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const currentConnectionRef = useRef<string | null>(null)
   const currentConnectionSessionRef = useRef<string | null>(null)
+  // 发送锁：挡住"点击 → isLoading 状态生效前"的竞态窗口（双击/回车连发）
+  // handleSend 与 handleConfirmAction 复用同一把锁，startStream 调用后立即释放（此后由 isLoading 接管）
+  const sendingRef = useRef(false)
   const docDropdownRef = useRef<HTMLDivElement>(null)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -213,11 +238,21 @@ export default function DocumentOperation() {
     currentFile: previewCurrentFile,
     setCurrentFile: setPreviewCurrentFile,
     addOperatedFile,
+    removePreviewFile,
     clearPreview,
     requestPreview,
     ensureEditor,
     isLoading: previewIsLoading,
   } = useDocumentPreview()
+
+  // 输出文件预览（下载卡片的"预览"按钮）：加入预览列表并打开边栏
+  const handlePreviewOutput = useCallback((fileId: string, filename: string) => {
+    addOperatedFile({ id: fileId, name: filename, fileType: getFileType(filename), source: 'operated' })
+    if (isMobile) {
+      requestPreview()
+      setShowMobilePreview(true)
+    }
+  }, [addOperatedFile, isMobile, requestPreview])
 
   const togglePanel = useCallback(() => {
     togglePanelRaw()
@@ -327,7 +362,7 @@ export default function DocumentOperation() {
       return () => { cancelled = true }
     } else {
       setLocalMessages([])
-      setPendingAction(null)
+      setPendingActions([])
     }
   }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -471,7 +506,9 @@ export default function DocumentOperation() {
           'edit_docx_cell', 'find_replace_all', 'convert',
           'create_word_document'
         ]
-        const isEditOrFill = editTools.includes(toolName) || toolName === 'fill_table' || toolName === 'fill_form'
+        const isEditOrFill = editTools.includes(toolName)
+          || toolName === 'fill_table' || toolName === 'fill_form'
+          || (toolName === 'fill_table_execute' && result && result.download_url)
         if (isEditOrFill && result && result.download_url) {
           const filename = result.output_filename || result.output_file || 'output'
           const file: PreviewFile = {
@@ -487,6 +524,31 @@ export default function DocumentOperation() {
 
       if (event.event_type === 'stats_update' && event.data.stats) {
         setStreamingStats(event.data.stats)
+      }
+
+      // 人工确认模式：dry_run 完成，渲染确认卡片等待用户确认/取消
+      if (event.event_type === 'action_required') {
+        const summary = event.data.message || ''
+        const actionData = event.data.action_data || {}
+        const actionId = actionData.action_id
+        // 幂等守卫：页面级重连全量回放时同一 action_id 不重复建卡
+        if (actionId && localMessagesRef.current.some(m => m.action?.action_id === actionId)) {
+          return
+        }
+        const action: ActionData = {
+          action_type: 'confirm_fill',
+          action_id: actionId,
+          status: 'pending',
+          title: tr('写入前请确认', 'Confirm before writing', '書き込み前に確認してください'),
+          description: summary || tr('AI 已完成填写校验，确认无误后执行写入。', 'Validation finished. Confirm to apply the writes.', '検証が完了しました。確認後に書き込みます。'),
+          dry_run_report: actionData.dry_run_report,
+          preview: actionData.preview,
+        }
+        setPendingActions(prev => (actionId && prev.some(a => a.action_id === actionId)) ? prev : [...prev, action])
+        setLocalMessages(prev => [...prev, {
+          role: 'assistant', content: '', timestamp: Date.now(), action,
+        }])
+        return
       }
 
       if (event.event_type === 'content_chunk' && event.data.content) {
@@ -526,7 +588,7 @@ export default function DocumentOperation() {
           task_stats: result.task_stats,
         }
         if (result.download_url) {
-          aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id }
+          aiMsg.action = { action_type: 'completed', filled_file_url: result.download_url, filled_file_id: result.output_file_id, filled_filename: result.output_filename }
           setOutputsRefreshKey(k => k + 1)
         }
         setLocalMessages(prev => [...prev, aiMsg])
@@ -581,6 +643,27 @@ export default function DocumentOperation() {
 
   // ===== fro 原有函数 =====
 
+  // 导出对话（Markdown 留档/debug）
+  const [exporting, setExporting] = useState(false)
+  const handleExportConversation = async () => {
+    if (!activeSessionId || exporting) return
+    setExporting(true)
+    try {
+      const resp = await api.get(`/conversations/${activeSessionId}/export`, { responseType: 'blob' })
+      const filename = parseDownloadFilename(
+        resp.headers['content-disposition'],
+        `conversation-${new Date().toISOString().slice(0, 10)}.md`
+      )
+      triggerFileDownload(new Blob([resp.data], { type: 'text/markdown;charset=utf-8' }), filename)
+      toast.success(tr('对话已导出', 'Conversation exported', '会話をエクスポートしました'))
+    } catch (e) {
+      console.error('导出对话失败:', e)
+      toast.error(tr('导出失败', 'Export failed', 'エクスポートに失敗しました'))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const handleNewChat = async () => {
     disconnectCurrentConnection()
     setSelectedDocIds([])
@@ -590,7 +673,7 @@ export default function DocumentOperation() {
     const sessionId = await createSession(null, tr('通用对话', 'General Chat', '一般チャット'), [], null)
     setActiveSession(sessionId)
     setLocalMessages([])
-    setPendingAction(null)
+    setPendingActions([])
     toast.success(tr('已创建新对话', 'New chat created', '新しい会話を作成しました'))
   }
 
@@ -626,10 +709,11 @@ export default function DocumentOperation() {
   }, [addOperatedFile])
 
   const handleSend = async (actionConfirmed = false) => {
+    if (sendingRef.current) return
     const userMessage = inputValue.trim()
     if (!userMessage && !actionConfirmed) return
 
-    if (!actionConfirmed && pendingAction) {
+    if (!actionConfirmed && pendingActions.length > 0) {
       toast.error(tr('请先处理待确认的操作', 'Please handle the pending action first', '保留中の操作を先に処理してください'))
       return
     }
@@ -640,6 +724,8 @@ export default function DocumentOperation() {
       toast.error(tr('请先在左下角选择一个模型', 'Please select a model first', 'まず左下でモデルを選択してください'))
       return
     }
+    sendingRef.current = true
+    try {
 
     let currentSessionId = activeSessionId
     const isNewSession = !currentSessionId
@@ -704,10 +790,14 @@ export default function DocumentOperation() {
         file_ids: selectedDocIds,
         template_id: selectedTemplateId || undefined,
         conversation_id: currentSessionId,
+        auto_review: autoReview,
       },
       onEvent, onComplete, onError
     )
     currentConnectionRef.current = connId
+    } finally {
+      sendingRef.current = false
+    }
   }
 
   // 停止生成
@@ -741,25 +831,32 @@ export default function DocumentOperation() {
     toast(tr('已停止生成', 'Generation stopped', '生成を停止しました'), { icon: '⏹️' })
   }
 
-  const handleConfirmAction = async () => {
-    if (!pendingAction) return
+  // 确认写入：走 action_response 通道（内部指令驱动 Agent commit，不产生用户消息气泡）
+  // 支持从持久化恢复的卡片直接确认（此时 pendingActions 队列为空，用卡片自身的 action）
+  const handleConfirmAction = async (cardAction?: ActionData) => {
+    if (sendingRef.current) return
+    const actionToConfirm = cardAction || pendingActions[0]
+    if (!actionToConfirm || !actionToConfirm.action_id) return
+    sendingRef.current = true
+    try {
 
-    const currentPendingAction = { ...pendingAction }
+    const currentPendingAction = { ...actionToConfirm }
     const confirmSessionId = activeSessionId!
 
+    // 卡片状态置为已确认（持久化由后端在接收 action_response 时完成）
     setLocalMessages((prev) => {
       const newMessages = [...prev]
-      const lastAiIndex = newMessages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
-      if (lastAiIndex !== undefined) {
-        newMessages[lastAiIndex] = {
-          ...newMessages[lastAiIndex],
-          action: { ...pendingAction, action_type: 'executing', progress: 0 }
+      const cardIndex = newMessages.map((m, i) => m.action?.action_id === actionToConfirm.action_id ? i : -1).filter(i => i >= 0).pop()
+      if (cardIndex !== undefined) {
+        newMessages[cardIndex] = {
+          ...newMessages[cardIndex],
+          action: { ...newMessages[cardIndex].action!, status: 'confirmed' }
         }
       }
       return newMessages
     })
 
-    setPendingAction(null)
+    setPendingActions(prev => prev.filter(a => a.action_id !== actionToConfirm.action_id))
 
     setIsLoading(true)
     setIsStreaming(true)
@@ -796,33 +893,59 @@ export default function DocumentOperation() {
     const connId = agentStreamService.startStream(
       confirmSessionId,
       {
-        message: tr('确认执行之前的操作', 'Confirm previous operation', '前の操作を実行確認'),
+        message: '',
         file_ids: selectedDocIds,
         template_id: selectedTemplateId || undefined,
-        conversation_id: confirmSessionId
+        conversation_id: confirmSessionId,
+        auto_review: autoReview,
+        action_response: { action_id: currentPendingAction.action_id, decision: 'confirm' },
       },
       onEvent, onComplete, onError
     )
     currentConnectionRef.current = connId
+    } finally {
+      sendingRef.current = false
+    }
   }
 
-  const handleCancelAction = () => {
-    setPendingAction(null)
+  // 取消写入：REST 标记终态 + 卡片置为已取消（不启动 Agent，不产生用户消息）
+  const handleCancelAction = async (cardAction?: ActionData) => {
+    const actionToCancel = cardAction || pendingActions[0]
+    if (!actionToCancel) return
+    const actionId = actionToCancel.action_id
+    const sessionId = activeSessionId
+
     setLocalMessages((prev) => {
       const newMessages = [...prev]
-      const lastAiIndex = newMessages
-        .map((m, i) => (m.role === 'assistant' ? i : -1))
+      const cardIndex = newMessages
+        .map((m, i) => (m.action?.action_id && m.action.action_id === actionId ? i : -1))
         .filter((i) => i >= 0)
         .pop()
-      if (lastAiIndex !== undefined) {
-        newMessages[lastAiIndex] = {
-          ...newMessages[lastAiIndex],
-          content: tr('已取消当前操作。你可以继续输入新指令。', 'Operation cancelled. You can continue with new instructions.', '操作がキャンセルされました。新しい指示を入力できます。'),
-          action: undefined,
+      if (cardIndex !== undefined) {
+        newMessages[cardIndex] = {
+          ...newMessages[cardIndex],
+          action: { ...newMessages[cardIndex].action!, status: 'cancelled' },
         }
       }
       return newMessages
     })
+    setPendingActions(prev => prev.filter(a => a.action_id !== actionToCancel.action_id))
+
+    if (actionId && sessionId) {
+      try {
+        const token = getAuthToken()
+        await fetch('/api/v1/agent/action/cancel', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ action_id: actionId, conversation_id: sessionId }),
+        })
+      } catch (e) {
+        console.warn('[ActionCard] 取消操作同步失败:', e)
+      }
+    }
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -849,14 +972,14 @@ export default function DocumentOperation() {
       setLocalMessages([])
       setSelectedDocIds([])
       setSelectedTemplateId(null)
-      setPendingAction(null)
+      setPendingActions([])
     }
   }
 
   const handleRestoreSession = async (sessionId: string) => {
     disconnectCurrentConnection()
     setShowHistory(false)
-    setPendingAction(null)
+    setPendingActions([])
     setActiveSession(sessionId)
     clearPreview()
 
@@ -1025,7 +1148,7 @@ export default function DocumentOperation() {
                 <History className="w-4 h-4" />
               </button>
               <div className="flex items-center gap-2">
-                <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs">
+                <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs h-8">
                   <Plus className="w-3 h-3" />
                   {tr('新建', 'New', '新規')}
                 </button>
@@ -1038,17 +1161,25 @@ export default function DocumentOperation() {
                       togglePanel()
                     }
                   }}
-                  className={`p-2 rounded-lg transition-colors ${isPanelOpen && !isMobile ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                  className={`p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center ${isPanelOpen && !isMobile ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                   title={tr('文档预览', 'Preview', 'プレビュー')}
                 >
                   <Eye className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => setOutputsOpen(o => !o)}
-                  className={`p-2 rounded-lg transition-colors ${outputsOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                  className={`p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center ${outputsOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                   title={tr('会话产出', 'Session outputs', 'セッション成果物')}
                 >
                   <FileOutput className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={handleExportConversation}
+                  disabled={!activeSessionId || exporting}
+                  className="p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center hover:bg-slate-100 text-slate-500 border border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={tr('导出对话', 'Export conversation', '会話をエクスポート')}
+                >
+                  {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 </button>
               </div>
             </div>
@@ -1277,16 +1408,24 @@ export default function DocumentOperation() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs">
+              <button onClick={handleNewChat} title={tr('新建对话', 'New Chat', '新しい会話')} className="btn-secondary px-3 py-1.5 text-xs h-8">
                 <Plus className="w-3 h-3" />
                 {tr('新建对话', 'New Chat', '新しい会話')}
               </button>
               <button
                 onClick={togglePanel}
-                className={`p-2 rounded-lg transition-colors ${isPanelOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                className={`p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center ${isPanelOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                 title={tr('文档预览', 'Document Preview', '文書プレビュー')}
               >
                 <Eye className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleExportConversation}
+                disabled={!activeSessionId || exporting}
+                className="p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center hover:bg-slate-100 text-slate-500 border border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+                title={tr('导出对话', 'Export conversation', '会話をエクスポート')}
+              >
+                {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
               </button>
             </div>
           </div>
@@ -1329,7 +1468,7 @@ export default function DocumentOperation() {
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm max-w-none">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                        {message.content}
+                        {displayContent(message)}
                       </ReactMarkdown>
                     </div>
                   ) : (
@@ -1345,7 +1484,7 @@ export default function DocumentOperation() {
             {/* 操作卡片 */}
             {message.role === 'assistant' && message.action && (
               <div className="ml-0 max-w-[80%]">
-                <ActionCard action={message.action} onConfirm={handleConfirmAction} onCancel={handleCancelAction} />
+                <ActionCard action={message.action} onConfirm={() => handleConfirmAction(message.action)} onCancel={() => handleCancelAction(message.action)} onPreview={handlePreviewOutput} />
                 {message.action.action_type === 'completed' && message.action.result?.preview && (
                   <div className="mt-2 flex">
                     <button
@@ -1479,13 +1618,64 @@ export default function DocumentOperation() {
       )}
 
       <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
+        {/* 待确认操作悬浮条：确认卡片会被后续 AI 回复顶上去了，这里在输入区上方镜像一份，
+            用户无需回滚即可确认/取消；消息流中的卡片保留为最终状态记录。
+            多张待确认卡（多表分别确认）横向堆叠，通过左右按钮切换 */}
+        {(() => {
+          const pendingCards = pendingActions.filter(a => !a.status || a.status === 'pending')
+          if (pendingCards.length === 0) return null
+          const idx = Math.min(pendingIndex, pendingCards.length - 1)
+          const card = pendingCards[idx]
+          return (
+            <div className="mb-2 flex items-stretch gap-1.5">
+              {pendingCards.length > 1 && (
+                <button
+                  onClick={() => setPendingIndex(Math.max(0, idx - 1))}
+                  disabled={idx === 0}
+                  className={`self-center p-1.5 rounded-lg transition-colors disabled:opacity-30 ${
+                    isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-slate-100 text-slate-500'
+                  }`}
+                  title={tr('上一个待确认', 'Previous pending', '前の確認')}
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              )}
+              <div className="flex-1 min-w-0">
+                <ActionCard
+                  key={card.action_id}
+                  action={card}
+                  onConfirm={() => handleConfirmAction(card)}
+                  onCancel={() => handleCancelAction(card)}
+                  onPreview={handlePreviewOutput}
+                />
+                {pendingCards.length > 1 && (
+                  <div className={`mt-1 text-center text-xs ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {tr(`第 ${idx + 1} / ${pendingCards.length} 个待确认`, `${idx + 1} / ${pendingCards.length} pending`, `${idx + 1} / ${pendingCards.length} 件確認待ち`)}
+                  </div>
+                )}
+              </div>
+              {pendingCards.length > 1 && (
+                <button
+                  onClick={() => setPendingIndex(Math.min(pendingCards.length - 1, idx + 1))}
+                  disabled={idx >= pendingCards.length - 1}
+                  className={`self-center p-1.5 rounded-lg transition-colors disabled:opacity-30 ${
+                    isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-slate-100 text-slate-500'
+                  }`}
+                  title={tr('下一个待确认', 'Next pending', '次の確認')}
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          )
+        })()}
         <div className="flex gap-2 sm:gap-3">
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={pendingAction ? tr('操作待确认，请先点击上方卡片完成确认。', 'Action pending confirmation, please confirm above first.', '操作は確認待ちです。先に上のカードで確認してください。') : tr('输入你的问题或指令...', 'Enter your question or instruction...', '質問または指示を入力してください...')}
+            placeholder={pendingActions.length > 0 ? tr('操作待确认，请先点击上方卡片完成确认。', 'Action pending confirmation, please confirm above first.', '操作は確認待ちです。先に上のカードで確認してください。') : tr('输入你的问题或指令...', 'Enter your question or instruction...', '質問または指示を入力してください...')}
             className="input flex-1 min-w-0"
             disabled={isLoading}
           />
@@ -1499,10 +1689,29 @@ export default function DocumentOperation() {
               {tr('停止', 'Stop', '停止')}
             </button>
           ) : (
-            <button onClick={() => handleSend()} title={tr('发送', 'Send', '送信')} disabled={isLoading || (!inputValue.trim() && !pendingAction)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={() => handleSend()} title={tr('发送', 'Send', '送信')} disabled={isLoading || (!inputValue.trim() && pendingActions.length === 0)} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
               {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
             </button>
           )}
+        </div>
+        {/* AI 自动复核开关：关闭后，填表写入前需人工确认 dry_run 校验报告 */}
+        <div className="flex items-center gap-2 mt-2">
+          <button
+            onClick={toggleAutoReview}
+            title={autoReview
+              ? tr('AI 自动复核已开启：校验通过后直接写入。点击关闭，改为人工确认', 'Auto-review on: writes apply after validation passes. Click to require manual confirmation', 'AI自動レビュー中：検証通過後そのまま書き込みます。クリックで手動確認に切替')
+              : tr('人工确认模式：写入前会显示校验报告供你确认。点击开启 AI 自动复核', 'Manual confirmation: a validation report is shown before writes. Click to enable auto-review', '手動確認モード：書き込み前に検証レポートを表示します。クリックで自動レビューに切替')}
+            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+              autoReview ? 'bg-primary-500' : isDarkMode ? 'bg-slate-600' : 'bg-slate-300'
+            }`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+              autoReview ? 'translate-x-[18px]' : 'translate-x-[3px]'
+            }`} />
+          </button>
+          <span className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            {tr('自动审核', 'Auto-review', '自動レビュー')}
+          </span>
         </div>
         {/* 快捷提示 */}
         <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-thin">
@@ -1557,6 +1766,7 @@ export default function DocumentOperation() {
               previewFiles={previewFiles}
               currentFile={previewCurrentFile}
               onFileSelect={setPreviewCurrentFile}
+              onFileRemove={removePreviewFile}
               isLoading={previewIsLoading}
             />
           </div>
@@ -1578,6 +1788,7 @@ export default function DocumentOperation() {
                 previewFiles={previewFiles}
                 currentFile={previewCurrentFile}
                 onFileSelect={setPreviewCurrentFile}
+                onFileRemove={removePreviewFile}
                 isLoading={previewIsLoading}
               />
             </div>

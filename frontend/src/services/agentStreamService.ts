@@ -21,8 +21,11 @@ export interface AgentStreamRequest {
   template_id?: string | null
   conversation_id?: string | null
   task_type?: 'auto' | 'fill_table' | 'fill_form' | 'query' | 'operation'
+  auto_review?: boolean  // AI自动复核开关：false 时 dry_run 结果需用户确认后才写入
+  action_response?: { action_id?: string; decision: 'confirm' | 'cancel' }  // 确认卡片响应（不产生用户消息）
   task_id?: string  // 重连时携带
   last_event_id?: number  // 断点续传
+  client_message_id?: string  // 幂等键：一次发送生成一次，连接级重试原样携带，服务端据此刻重防止重复建任务
 }
 
 export interface AgentEvent {
@@ -65,6 +68,7 @@ export interface StreamCompleteResult {
   success: boolean
   message: string
   output_file_id?: string
+  output_filename?: string
   download_url?: string
   task_stats?: TaskStats
   /** 任务在断连期间已完成，结果来自状态查询而非事件流（消息已在 DB 中，页面不应重复添加） */
@@ -242,6 +246,10 @@ class AgentStreamService {
     // 如果是新任务（非重连），先清除旧的任务数据
     if (!existingTaskId) {
       this.clearPersistedTask(sessionId)
+      // 幂等键：本连接的每次重试都原样携带（state.request 是重试重建 body 的唯一来源），
+      // 服务端按 (conversation_id, client_message_id) 去重——即使重试发生在 task_id 建立之前，
+      // 也不会被当成新任务重复执行。重连（有 existingTaskId）走 task_id 通道，无需生成。
+      request.client_message_id = request.client_message_id || crypto.randomUUID()
     }
 
     // 如果该 session 已有连接，先取消旧的
@@ -444,6 +452,7 @@ class AgentStreamService {
             success: true,
             message: event.data.message || tr('任务完成', 'Task completed', 'タスク完了'),
             output_file_id: event.data.result?.output_file_id,
+            output_filename: event.data.result?.output_filename,
             download_url: event.data.result?.download_url,
             task_stats: event.data.result?.task_stats,
           })
@@ -451,7 +460,12 @@ class AgentStreamService {
         } else if (event.event_type === 'failed') {
           state.status = 'done'
           this.clearPersistedTask(state.sessionId)
-          state.onError(event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗'))
+          if (event.data.stale_task) {
+            // 陈旧任务（切出页面超过 TTL 后切回）：消息早已落库并由页面从 DB 加载，静默收尾
+            state.onComplete({ success: true, message: '', fromStatusQuery: true })
+          } else {
+            state.onError(event.data.error || tr('任务执行失败', 'Task execution failed', 'タスク実行失敗'))
+          }
           state.abortController.abort()
         } else if (event.event_type === 'cancelled') {
           state.status = 'done'
@@ -499,9 +513,11 @@ class AgentStreamService {
       throw new Error('task status query failed')
     }
     if (status.status === 'not_found') {
-      state.status = 'error'
+      // 陈旧任务（切出页面超过 TTL 后切回）：消息早已落库并已由页面从 DB 加载，
+      // 静默收尾即可，不报错打扰用户
+      state.status = 'done'
       this.clearPersistedTask(state.sessionId)
-      state.onError(tr('任务不存在或已过期', 'Task not found or expired', 'タスクが見つからないか期限切れです'))
+      state.onComplete({ success: true, message: '', fromStatusQuery: true })
       return
     }
     if (status.status === 'completed') {
@@ -512,6 +528,7 @@ class AgentStreamService {
         success: true,
         message: result.message || '',
         output_file_id: result.result?.output_file_id,
+        output_filename: result.result?.output_filename,
         download_url: result.result?.download_url,
         task_stats: result.result?.task_stats,
         fromStatusQuery: true, // 消息已在 DB 中，页面不应重复添加

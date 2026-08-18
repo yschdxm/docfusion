@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 from datetime import datetime, timedelta
+from app.core.json_utils import local_iso
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -375,7 +376,7 @@ class AgentlyMailService:
             "file_size": doc.file_size,
             "status": doc.status,
             "metadata_info": doc.metadata_info or {},
-            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "created_at": local_iso(doc.created_at),
         } for doc in imported]
 
     # ==================== OAuth Token 管理 ====================

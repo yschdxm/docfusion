@@ -148,6 +148,23 @@ export function useDocumentPreview() {
     setCurrentFileState(null)
   }, [])
 
+  // 关闭单个预览标签页：移除文件；若关掉的是当前文件则切换到剩余最后一个
+  const removePreviewFile = useCallback((fileId: string) => {
+    setPreviewFiles(prev => {
+      const next = prev.filter(f => f.id !== fileId)
+      setCurrentFileState(cur => {
+        if (cur?.id !== fileId) return cur
+        // 销毁旧编辑器实例，由 currentFile 变化的 effect 为新文件重建
+        if (editorInstanceRef.current) {
+          try { editorInstanceRef.current.destroyEditor?.() } catch { /* ignore */ }
+          editorInstanceRef.current = null
+        }
+        return next[next.length - 1] ?? null
+      })
+      return next
+    })
+  }, [])
+
   // 独立请求预览（不依赖 isPanelOpen，用于手机端）
   const requestPreview = useCallback(() => {
     if (!window.DocsAPI && !scriptLoadAttempted.current) {
@@ -180,6 +197,7 @@ export function useDocumentPreview() {
     currentFile,
     setCurrentFile,
     addOperatedFile,
+    removePreviewFile,
     clearPreview,
     requestPreview,
     ensureEditor,

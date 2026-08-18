@@ -13,7 +13,7 @@ SSE 协议规范（标准三字段）：
 
 import json
 from typing import Optional
-from datetime import date, datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pydantic import BaseModel, Field
 import logging
@@ -79,7 +79,7 @@ class AgentEvent(BaseModel):
 
     event_type: AgentEventType = Field(..., description="事件类型")
     step_id: Optional[str] = Field(None, description="步骤ID")
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat(), description="时间戳")
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat(), description="时间戳（aware UTC）")
     data: dict = Field(default_factory=dict, description="事件数据")
     seq: Optional[int] = Field(None, description="事件序号（由 TaskEventLog.publish 分配）")
 
@@ -88,11 +88,11 @@ class AgentEvent(BaseModel):
 
     def to_sse_format(self) -> str:
         """转换为SSE格式（标准三字段：id/event/data）"""
+        from app.core.json_utils import jsonable
+
         def json_serializer(obj):
-            """自定义 JSON 序列化器，处理 date 和 datetime 对象"""
-            if isinstance(obj, (date, datetime)):
-                return obj.isoformat()
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+            """自定义 JSON 序列化器：date/datetime/Decimal 等统一走 jsonable"""
+            return jsonable(obj)
 
         event_type = self.event_type.value if isinstance(self.event_type, AgentEventType) else self.event_type
         # 将step_id和timestamp包含在data中，以便前端使用

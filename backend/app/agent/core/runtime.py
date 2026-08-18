@@ -70,6 +70,7 @@ class AgentRuntime:
         db=None,
         conversation_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        auto_review: bool = True,
     ) -> Dict[str, Any]:
         """运行Agent
 
@@ -88,6 +89,8 @@ class AgentRuntime:
                 # run_id 标识同一轮指令（委派子Agent时透传），用于文档版本化的同run判定
                 "run_id": run_id or uuid4().hex,
                 "conversation_id": conversation_id,
+                # 人工确认开关：False 时 dry_run 结果需用户确认后才 commit
+                "auto_review": auto_review,
             },
         )
 
@@ -167,6 +170,18 @@ class AgentRuntime:
         # 构建用户上下文信息（选择的文件）
         user_context = await self._build_user_context(context)
         system_content = self.system_prompt + user_context
+
+        # 人工确认模式：约束 LLM 在 dry_run 后停下等用户确认，不要自行 commit
+        if context.metadata.get("auto_review") is False:
+            system_content += (
+                "\n\n## 人工确认模式（用户已开启）\n"
+                "fill_table_execute / fill_form 的 mode=dry_run 返回后，禁止立即调用 mode=commit。"
+                "你应总结校验报告（总项数、异常项及处理建议），然后结束本轮回复，等待用户确认。\n"
+                "用户点确认后由服务端直接按暂存参数执行写入，不会再调用你，无需等待也无需重复操作。\n"
+                "即使你认为用户已确认（例如历史消息中有确认记录），也禁止自行 commit——"
+                "commit 只能由服务端在用户点击确认后触发，你的任何 commit 调用都会被拒绝。\n"
+                "若用户用文字表达修改意愿（而非确认），按新意愿调整映射并重新 dry_run。"
+            )
 
         messages = [{"role": "system", "content": system_content}]
         messages.extend(context.conversation_history)
@@ -469,6 +484,20 @@ class AgentRuntime:
                         result=result.data if isinstance(result.data, dict) else {"data": str(result.data)},
                         execution_time_ms=result.execution_time_ms
                     )
+                    # 人工确认模式：工具结果标记了 requires_confirmation 时发确认事件
+                    # （前端据此渲染确认卡片；确认/取消经 action_response 通道，不产生用户消息）
+                    if result.metadata.get("requires_confirmation"):
+                        action_data = {
+                            "action_id": result.metadata.get("action_id"),
+                            # preview 在 metadata 中（LLM 不可见）；report 在 data 中
+                            "preview": result.metadata.get("preview"),
+                            "dry_run_report": result.data.get("dry_run_report") if isinstance(result.data, dict) else None,
+                        }
+                        await stream.emit_action_required(
+                            action_type="fill_confirm",
+                            action_data=action_data,
+                            message=result.data.get("summary", "") if isinstance(result.data, dict) else "",
+                        )
                     await stream.emit_step_end(tool_step.id, "工具执行成功")
                 else:
                     logger.error(f"[AgentRuntime._execute_loop] 工具 {tool_name} 失败 | 耗时: {tool_time:.2f}s | 错误: {result.error}")

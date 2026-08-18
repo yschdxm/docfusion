@@ -234,7 +234,9 @@ class SQLQueryService:
                 result = await conn.execute(text(sql))
                 columns = list(result.keys())
                 rows = result.fetchall()
-                row_dicts = [dict(zip(columns, row)) for row in rows]
+                # jsonable：PG numeric 列返回 Decimal，下游 SSE/落库/LLM 数据都要求可 JSON 序列化
+                from app.core.json_utils import jsonable
+                row_dicts = [jsonable(dict(zip(columns, row))) for row in rows]
 
                 logger.info("[SQL-ONCE] 执行成功: %d 条记录, 列: %s", len(rows), columns)
                 return {"sql": sql, "records": row_dicts, "error": None, "columns": columns}

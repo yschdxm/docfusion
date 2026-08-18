@@ -22,6 +22,7 @@ import Dropdown from '../components/ui/Dropdown'
 import api from '../services/api'
 import { getAuthUser, isAdmin } from '../services/auth'
 import { useDocumentStore, type DocumentInfo, type DocumentVersion } from '../stores/documentStore'
+import { parseDownloadFilename, triggerFileDownload } from '../utils/download'
 
 // 判断当前用户是否可以编辑/删除文档
 const canEditDoc = (doc: DocumentInfo): boolean => {
@@ -55,34 +56,6 @@ function formatFileSize(size?: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
-}
-
-function parseDownloadFilename(contentDisposition?: string, fallbackName?: string) {
-  if (!contentDisposition) return fallbackName ?? 'download'
-
-  const utf8Match = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1])
-    } catch {
-      return utf8Match[1]
-    }
-  }
-
-  const filenameMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i)
-  const parsed = filenameMatch?.[1] ?? filenameMatch?.[2]
-  return parsed?.trim() || fallbackName || 'download'
-}
-
-function triggerFileDownload(blob: Blob, filename: string) {
-  const objectUrl = window.URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = objectUrl
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  window.URL.revokeObjectURL(objectUrl)
 }
 
 export default function DocumentManager() {

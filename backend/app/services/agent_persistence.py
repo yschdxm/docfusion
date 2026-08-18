@@ -404,6 +404,7 @@ def _extract_action_data(event_data: dict) -> Optional[dict]:
             "action_type": "completed",
             "filled_file_url": result["download_url"],
             "filled_file_id": result.get("output_file_id"),
+            "filled_filename": result.get("output_filename"),
         }
     return None
 
@@ -423,6 +424,13 @@ async def save_message(
     # 规范化消息中的下载链接（只处理assistant消息）
     if role == "assistant" and content:
         content = _normalize_download_urls(content)
+
+    # JSON 安全化：PG numeric 列的 Decimal 等类型会导致 JSON 列插入 TypeError，
+    # 不拦截会让整条消息从对话历史中丢失（曾发生：含查询结果的 steps 落库失败）
+    from app.core.json_utils import jsonable
+    action_data = jsonable(action_data)
+    steps = jsonable(steps)
+    task_stats = jsonable(task_stats)
 
     async def _do_save():
         async with async_session() as db:
@@ -496,6 +504,24 @@ class AgentPersistence:
                 self.last_saved_content = msg
                 self.accumulator.reset()
                 logger.info(f"[Persist] assistant_message saved: {msg[:80]} | steps={len(steps)}")
+
+        elif event_type == "action_required":
+            # 确认卡片落库：刷新/重进会话后可恢复卡片及其状态。
+            # 不携带 steps：随后的 assistant_message（校验总结）会携带同一批 steps，
+            # 两处都带会在前端重复渲染
+            action_data = data.get("action_data") or {}
+            await save_message(
+                self.conversation_id, "assistant", "",
+                action_data={
+                    "action_type": "confirm_fill",
+                    "action_id": action_data.get("action_id"),
+                    "status": "pending",
+                    "summary": data.get("message", ""),
+                    "dry_run_report": action_data.get("dry_run_report"),
+                    "preview": action_data.get("preview"),
+                },
+            )
+            logger.info(f"[Persist] action_required 卡片已保存 | action_id={action_data.get('action_id')}")
 
         elif event_type == "completed":
             msg = data.get("message", "")

@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from typing import Any, List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
+from app.core.json_utils import epoch_s, local_iso
 import os
 import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -137,7 +138,7 @@ def _resolve_document_path(file_path: str | None) -> str | None:
 
 
 def _build_onlyoffice_document_key(doc: Document) -> str:
-    updated = int(doc.updated_at.timestamp()) if doc.updated_at else int(datetime.utcnow().timestamp())
+    updated = epoch_s(doc.updated_at) or epoch_s(datetime.utcnow())
     return f"{doc.id}-{doc.file_size or 0}-{updated}"
 
 
@@ -334,7 +335,7 @@ async def _do_extraction(
                 current_result.update({
                     "current_step": message,
                     "progress": progress or current_result.get("progress", "0%"),
-                    "updated_at": datetime.utcnow().isoformat()
+                    "updated_at": local_iso(datetime.utcnow())
                 })
                 stmt = sql_update(ExtractionTask).where(
                     ExtractionTask.id == task.id
@@ -542,7 +543,7 @@ async def list_documents(
             "file_size": doc.file_size,
             "status": doc.status,
             "metadata_info": doc.metadata_info or {},
-            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "created_at": local_iso(doc.created_at),
             "extraction_status": None,
             "user_id": str(doc.user_id) if doc.user_id else None,
             "is_shared": bool(doc.is_shared),
@@ -933,7 +934,7 @@ async def save_document_content(
             "status": doc.status,
             "version": doc.version,
             "new_version_created": new_version_created,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": local_iso(datetime.utcnow()),
         },
     }
 
@@ -1063,7 +1064,7 @@ async def list_document_versions(
             "origin_conversation_id": v.origin_conversation_id,
             "file_size": v.file_size,
             "status": v.status,
-            "created_at": v.created_at.isoformat() if v.created_at else None,
+            "created_at": local_iso(v.created_at),
             "download_url": f"/api/v1/documents/{v.id}/download",
         }
         for i, v in enumerate(versions)

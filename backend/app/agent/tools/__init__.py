@@ -9,7 +9,10 @@
 - query_pg_database: PG数据库查询
 - query_knowledge_graph: 知识图谱查询
 - list_documents: 文档列表
-- fill_table: 表格填写
+- fill_table_plan: 填表计划（结构+数据+建议映射，只读）
+- fill_table_execute: 填表执行（dry_run 校验 / commit 写入）
+- extract_records: 从 docx/md/txt 提取结构化记录（服务端执行，返回 data_token）
+- fill_table: 表格填写（旧版，已被 plan/execute 取代，保留备用）
 - fill_form: 表单填写
 - edit_xlsx_cells: Excel单元格精确编辑
 - edit_docx_cell: Word表格单元格精确编辑
@@ -29,6 +32,9 @@ from .pg_query_tool import PGQueryTool
 from .neo4j_query_tool import Neo4jQueryTool
 from .list_docs_tool import ListDocumentsTool
 from .fill_table_tool import FillTableTool
+from .fill_table_plan_tool import FillTablePlanTool
+from .fill_table_execute_tool import FillTableExecuteTool
+from .extract_records_tool import ExtractRecordsTool
 from .fill_form_tool import FillFormTool
 from .edit_cells_tool import EditXlsxCellsTool, EditDocxCellTool, FindReplaceAllTool
 from .web_search_tool import WebSearchTool
@@ -48,6 +54,9 @@ __all__ = [
     "Neo4jQueryTool",
     "ListDocumentsTool",
     "FillTableTool",
+    "FillTablePlanTool",
+    "FillTableExecuteTool",
+    "ExtractRecordsTool",
     "FillFormTool",
     "EditXlsxCellsTool",
     "EditDocxCellTool",

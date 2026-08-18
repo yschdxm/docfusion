@@ -15,12 +15,17 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
-from app.agent.tools.document_edit_tools import (
-    _finish_edit,
-    _get_doc_info,
-    _replace_in_paragraph_runs,
-    _resolve_edit_target,
+from app.agent.document_engine import lifecycle, ops
+from app.agent.document_engine.address import (
+    AddressResolver,
+    DocxTableCellAddr,
+    XlsxCellAddr,
 )
+from app.agent.document_engine.snapshot import DocSnapshot
+
+_get_doc_info = lifecycle.get_doc_info
+_resolve_edit_target = lifecycle.resolve_edit_target
+_finish_edit = lifecycle.finish_edit
 
 logger = logging.getLogger(__name__)
 
@@ -113,55 +118,39 @@ class EditXlsxCellsTool(BaseTool):
 
         try:
             from openpyxl import load_workbook
-            from openpyxl.utils import coordinate_to_tuple
+            from openpyxl.utils import get_column_letter
 
             wb = load_workbook(target_path)
+            snapshot = DocSnapshot(target_path, "xlsx", wb=wb)
 
             applied: List[Dict[str, Any]] = []
             errors: List[str] = []
 
             for i, edit in enumerate(edits):
-                try:
-                    # 选择工作表（允许每项单独指定）
-                    target_sheet_name = edit.get("sheet") or sheet_name
-                    if target_sheet_name:
-                        if target_sheet_name not in wb.sheetnames:
-                            errors.append(f"第{i + 1}项: 工作表不存在: {target_sheet_name}")
-                            continue
-                        ws = wb[target_sheet_name]
-                    else:
-                        ws = wb.active
+                # 归一化为引擎地址（row/col 转 A1 坐标）
+                coord = edit.get("cell")
+                if not coord and edit.get("row") and edit.get("col"):
+                    coord = f"{get_column_letter(int(edit['col']))}{int(edit['row'])}"
+                if not coord:
+                    errors.append(f"第{i + 1}项: 缺少坐标（需要 cell 或 row+col）")
+                    continue
 
-                    # 解析坐标
-                    if edit.get("cell"):
-                        row, col = coordinate_to_tuple(edit["cell"])
-                    elif edit.get("row") and edit.get("col"):
-                        row, col = int(edit["row"]), int(edit["col"])
-                    else:
-                        errors.append(f"第{i + 1}项: 缺少坐标（需要 cell 或 row+col）")
-                        continue
+                addr = XlsxCellAddr(sheet=edit.get("sheet") or sheet_name, cell=coord)
+                resolved = AddressResolver.resolve(addr, snapshot)
+                if not resolved.ok:
+                    errors.append(f"第{i + 1}项: {resolved.detail}")
+                    continue
 
-                    value = edit.get("value")
-                    # 类型处理
-                    if value is not None and edit.get("value_type") == "number":
-                        try:
-                            f = float(value)
-                            value = int(f) if f.is_integer() else f
-                        except (TypeError, ValueError):
-                            errors.append(f"第{i + 1}项: 值 '{value}' 无法转换为数值")
-                            continue
-
-                    cell = ws.cell(row=row, column=col)
-                    before = cell.value
-                    cell.value = value
+                result = ops.set_xlsx_cell(resolved.target, edit.get("value"), edit.get("value_type"))
+                if result.ok:
                     applied.append({
-                        "sheet": ws.title,
-                        "cell": cell.coordinate,
-                        "before": None if before is None else str(before),
-                        "after": None if value is None else str(value),
+                        "sheet": addr.sheet or wb.active.title,
+                        "cell": resolved.target.coordinate,
+                        "before": result.before,
+                        "after": result.after,
                     })
-                except Exception as e:
-                    errors.append(f"第{i + 1}项: {str(e)}")
+                else:
+                    errors.append(f"第{i + 1}项: {result.error}")
 
             if not applied:
                 wb.close()
@@ -258,44 +247,16 @@ class EditDocxCellTool(BaseTool):
         from docx import Document as DocxDocument
         doc = DocxDocument(target_path)
 
-        # 索引校验
-        if table_index >= len(doc.tables):
-            return ToolResult(
-                success=False,
-                error=f"表格索引 {table_index} 超出范围（文档共 {len(doc.tables)} 个表格）"
-            )
-        table = doc.tables[table_index]
-        if row_index >= len(table.rows):
-            return ToolResult(
-                success=False,
-                error=f"行索引 {row_index} 超出范围（表格共 {len(table.rows)} 行）"
-            )
-        row = table.rows[row_index]
-        if cell_index >= len(row.cells):
-            return ToolResult(
-                success=False,
-                error=f"列索引 {cell_index} 超出范围（该行共 {len(row.cells)} 列）"
-            )
+        # 引擎寻址 + 统一单元格写入（保留首 run 格式）
+        snapshot = DocSnapshot(target_path, "docx", docx=doc)
+        addr = DocxTableCellAddr(table_index=table_index, row=row_index, col=cell_index)
+        resolved = AddressResolver.resolve(addr, snapshot)
+        if not resolved.ok:
+            return ToolResult(success=False, error=resolved.detail)
 
-        cell = row.cells[cell_index]
-        before = cell.text
-
-        new_text = before + value if mode == "append" else value
-
-        # 写入：保留第一个段落第一个run的格式，清空其余内容
-        if cell.paragraphs:
-            first_para = cell.paragraphs[0]
-            if first_para.runs:
-                first_para.runs[0].text = new_text
-                for run in first_para.runs[1:]:
-                    run.text = ""
-            else:
-                first_para.text = new_text
-            for para in cell.paragraphs[1:]:
-                for run in para.runs:
-                    run.text = ""
-        else:
-            cell.text = new_text
+        result = ops.set_cell_text(resolved.target, value, mode=mode)
+        before = result.before
+        new_text = result.after
 
         doc.save(target_path)
 
@@ -413,7 +374,7 @@ class FindReplaceAllTool(BaseTool):
                 if total_replaced >= limit:
                     return
                 if old_text in para.text:
-                    n = _replace_in_paragraph_runs(para, old_text, new_text)
+                    n = ops.replace_in_paragraph_runs(para, old_text, new_text)
                     if n > 0:
                         locations.append(location_prefix)
                         total_replaced += n

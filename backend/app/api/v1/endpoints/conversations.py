@@ -1,14 +1,19 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import JSONResponse, Response
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, or_, func, and_
 from datetime import datetime
+from urllib.parse import quote
+import re
 from app.core.config import get_settings
 from app.core.deps import get_current_user
 from app.db.postgres import get_db
 from app.models.document import Conversation, Message, Document
 from app.models.user import User
+from app.services import conversation_export
+from app.core.json_utils import epoch_ms, local_iso
 
 settings = get_settings()
 router = APIRouter()
@@ -96,8 +101,8 @@ async def list_conversations(
             "title": conv.title,
             "file_ids": conv.file_ids or [],
             "template_id": conv.template_id,
-            "created_at": conv.created_at.isoformat() if conv.created_at else None,
-            "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+            "created_at": local_iso(conv.created_at),
+            "updated_at": local_iso(conv.updated_at),
             "last_message": last_msg.content[:50] if last_msg else None
         })
 
@@ -126,8 +131,8 @@ async def get_conversation(
         "title": conv.title,
         "file_ids": conv.file_ids or [],
         "template_id": conv.template_id,
-        "created_at": conv.created_at.isoformat() if conv.created_at else None,
-        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        "created_at": local_iso(conv.created_at),
+        "updated_at": local_iso(conv.updated_at),
         "messages": [
             {
                 "id": msg.id,
@@ -136,11 +141,76 @@ async def get_conversation(
                 "action_data": msg.action_data,
                 "steps": msg.steps,
                 "task_stats": msg.task_stats,
-                "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else None
+                "timestamp": epoch_ms(msg.created_at)
             }
             for msg in messages
         ]
     }
+
+
+@router.get("/{conversation_id}/export")
+async def export_conversation(
+    conversation_id: str,
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """导出对话为文件（留档/debug）：Markdown 默认，format=json 返回结构化 JSON"""
+    conv = await _get_user_conversation(conversation_id, current_user.id, db)
+
+    msg_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id.asc())
+    )
+    messages = msg_result.scalars().all()
+
+    date_str = datetime.now().strftime("%Y%m%d_%H%M")
+    safe_title = re.sub(r'[\\/:*?"<>|]+', "_", conv.title or "对话")[:50]
+
+    if format == "json":
+        payload = {
+            "id": conv.id,
+            "title": conv.title,
+            "file_ids": conv.file_ids or [],
+            "template_id": conv.template_id,
+            "created_at": local_iso(conv.created_at),
+            "updated_at": local_iso(conv.updated_at),
+            "exported_at": local_iso(datetime.utcnow()),
+            "messages": [
+                {
+                    "id": msg.id,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "action_data": msg.action_data,
+                    "steps": msg.steps,
+                    "task_stats": msg.task_stats,
+                    "timestamp": epoch_ms(msg.created_at)
+                }
+                for msg in messages
+            ]
+        }
+        return JSONResponse(
+            content=payload,
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=\"conversation-{date_str}.json\"; "
+                    f"filename*=UTF-8''{quote(f'{safe_title}-{date_str}.json')}"
+                )
+            },
+        )
+
+    md_text = conversation_export.render_markdown(conv, messages)
+    return Response(
+        content=md_text,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"conversation-{date_str}.md\"; "
+                f"filename*=UTF-8''{quote(f'{safe_title}-{date_str}.md')}"
+            )
+        },
+    )
 
 
 @router.get("/{conversation_id}/outputs")
@@ -187,7 +257,7 @@ async def list_conversation_outputs(
             "version_count": version_count,
             "origin_type": doc.origin_type,
             "origin_label": doc.origin_label,
-            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "created_at": local_iso(doc.created_at),
             "download_url": f"/api/v1/documents/{doc.id}/download",
         }
         for doc, version_count in rows
@@ -217,8 +287,8 @@ async def create_conversation(
         "title": conv.title,
         "file_ids": conv.file_ids,
         "template_id": conv.template_id,
-        "created_at": conv.created_at.isoformat(),
-        "updated_at": conv.updated_at.isoformat()
+        "created_at": local_iso(conv.created_at),
+        "updated_at": local_iso(conv.updated_at)
     }
 
 

@@ -16,6 +16,9 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
+from app.agent.document_engine import lifecycle, ops
+from app.agent.document_engine.address import AddressResolver, DocxParagraphAddr
+from app.agent.document_engine.snapshot import DocSnapshot
 from app.db.postgres import async_session
 from app.models.document import Document
 from app.services import document_versioning, file_storage
@@ -34,170 +37,34 @@ CONVERT_RULES = {
 
 
 # ──────────────────────────── 公共辅助函数 ────────────────────────────
-
-async def _get_doc_info(file_id: str) -> Optional[Dict[str, Any]]:
-    """通过数据库查询文档信息，返回 {file_path, file_type, original_filename, doc_id, is_output}"""
-    try:
-        doc_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
-    except ValueError:
-        return None
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(Document).where(Document.id == doc_uuid)
-        )
-        doc = result.scalar_one_or_none()
-        if doc and doc.file_path and os.path.exists(doc.file_path):
-            return {
-                "file_path": doc.file_path,
-                "file_type": doc.file_type,
-                "original_filename": doc.original_filename or os.path.basename(doc.file_path),
-                "doc_id": str(doc.id),
-                "is_output": (doc.doc_category == "output"),
-            }
-    return None
+# 文件生命周期与文本处理已收敛到文档引擎层（单点维护），此处以别名保持兼容
+_get_doc_info = lifecycle.get_doc_info
+_resolve_edit_target = lifecycle.resolve_edit_target
+_finish_edit = lifecycle.finish_edit
+_replace_in_paragraph_runs = ops.replace_in_paragraph_runs
 
 
-async def _resolve_edit_target(doc_info: Dict[str, Any], output_file_id: Optional[str], context) -> tuple:
-    """解析编辑目标（版本化）。
+def _get_editable_paragraphs(doc) -> list:
+    """获取所有非空段落列表（实现单点维护在 AddressResolver.editable_paragraphs）"""
+    return AddressResolver.editable_paragraphs(doc)
 
-    - output 文档：同 run 原地改；新 run 首次编辑创建 version+1（文件已复制好）
-    - source/template 首次编辑：创建新 root 的输出 v1（文件已复制好）
-
-    Returns:
-        (target_path, original_filename, target_doc_id, is_new_version)
-        编辑直接在 target_path 上进行，目标 Document 行已存在。
-    """
-    run_id = context.metadata.get("run_id") if context else None
-    conversation_id = context.metadata.get("conversation_id") if context else None
-
-    async with async_session() as db:
-        doc = None
-        # 优先使用 LLM 传入的 output_file_id（链式编辑）
-        if output_file_id:
-            try:
-                result = await db.execute(select(Document).where(Document.id == UUID(str(output_file_id))))
-                doc = result.scalar_one_or_none()
-            except ValueError:
-                doc = None
-        if doc is None:
-            result = await db.execute(select(Document).where(Document.id == UUID(doc_info["doc_id"])))
-            doc = result.scalar_one_or_none()
-        if doc is None:
-            return doc_info["file_path"], doc_info["original_filename"], doc_info["doc_id"], False
-
-        if doc.doc_category == "output":
-            target, is_new = await document_versioning.resolve_output_target(
-                db, doc,
-                run_id=run_id,
-                origin_type="edit",
-                conversation_id=conversation_id,
-            )
-        else:
-            target = await document_versioning.create_root_output(
-                db,
-                user_id=doc.user_id,
-                file_type=doc.file_type,
-                origin_type="edit",
-                source_doc=doc,
-                run_id=run_id,
-                conversation_id=conversation_id,
-            )
-            is_new = True
-        await db.commit()
-        return target.file_path, target.original_filename, str(target.id), is_new
-
-
-# ──────────────────────────── 文本处理辅助 ────────────────────────────
 
 def _find_paragraph_by_index(doc, index: int):
     """获取 doc.paragraphs 中第 index 个非空段落。"""
-    editable = [p for p in doc.paragraphs if p.text.strip()]
+    editable = _get_editable_paragraphs(doc)
     if 0 <= index < len(editable):
         return editable[index]
     return None
 
 
-def _get_editable_paragraphs(doc) -> list:
-    """获取所有非空段落列表。"""
-    return [p for p in doc.paragraphs if p.text.strip()]
+def _set_paragraph_text(paragraph, new_text: str):
+    """设置段落文本，保留第一个 run 的格式（实现见 ops.set_paragraph_text）"""
+    ops.set_paragraph_text(paragraph, new_text)
 
 
 def _insert_paragraph_after(paragraph, text: str = ""):
-    """在指定段落后插入新段落并返回（python-docx 无原生 insert_paragraph_after）"""
-    from docx.oxml.ns import qn
-    from docx.text.paragraph import Paragraph
-
-    new_p = paragraph._p.makeelement(qn("w:p"), {})
-    paragraph._p.addnext(new_p)
-    new_para = Paragraph(new_p, paragraph._parent)
-    if text:
-        new_para.add_run(text)
-    return new_para
-
-
-def _set_paragraph_text(paragraph, new_text: str):
-    """设置段落文本，保留第一个 run 的格式。"""
-    if paragraph.runs:
-        paragraph.runs[0].text = new_text
-        for run in paragraph.runs[1:]:
-            run.text = ""
-    else:
-        paragraph.text = new_text
-
-
-def _replace_in_paragraph_runs(paragraph, old: str, new: str) -> int:
-    """在段落内做 run 感知的文本替换，尽量保留段内混排格式。
-
-    只改写被替换文本覆盖到的 run，其余 run 原样保留；
-    新文本继承匹配起点所在 run 的格式。
-
-    Returns:
-        替换次数
-    """
-    if not old or not paragraph.runs:
-        return 0
-
-    runs = paragraph.runs
-    count = 0
-    while True:
-        full = "".join(r.text or "" for r in runs)
-        idx = full.find(old)
-        if idx < 0:
-            break
-        end = idx + len(old)
-
-        # 定位匹配区间跨越的 run
-        pos = 0
-        start_run = end_run = None
-        start_off = end_off = 0
-        for i, r in enumerate(runs):
-            rlen = len(r.text or "")
-            if start_run is None and idx < pos + rlen:
-                start_run, start_off = i, idx - pos
-            if start_run is not None and end <= pos + rlen:
-                end_run, end_off = i, end - pos
-                break
-            pos += rlen
-
-        if start_run is None or end_run is None:
-            break
-
-        if start_run == end_run:
-            r = runs[start_run]
-            text = r.text or ""
-            r.text = text[:start_off] + new + text[end_off:]
-        else:
-            first = runs[start_run]
-            last = runs[end_run]
-            first.text = (first.text or "")[:start_off] + new
-            for r in runs[start_run + 1:end_run]:
-                r.text = ""
-            last.text = (last.text or "")[end_off:]
-
-        count += 1
-
-    return count
+    """在指定段落后插入新段落并返回（实现见 ops.insert_paragraph_after）"""
+    return ops.insert_paragraph_after(paragraph, text)
 
 
 def _make_change_record(op_name: str, index: int, before: str, after: str, reason: str) -> Dict[str, Any]:
@@ -358,6 +225,7 @@ class EditParagraphTool(BaseTool):
 通用参数：
 - file_id: 文档ID（首次用原始ID，后续用上次返回的 output_file_id）
 - paragraph_index: 目标段落索引（从0开始，与 get_document_outline 的 [Pn] 一致；md/txt 为行号[Ln]）
+- anchor: 段落锚点（大纲返回的段落前20字，建议带上）。索引因前序编辑漂移时，可用锚点自动重定位
 - 支持 docx / md / txt；表格单元格内容请用 edit_docx_cell 或 find_replace_all"""
 
     @property
@@ -369,6 +237,7 @@ class EditParagraphTool(BaseTool):
                 "output_file_id": {"type": "string", "description": "链式编辑时上次返回的 output_file_id（可选）"},
                 "op": {"type": "string", "enum": ["replace", "rewrite", "insert_after", "split"], "description": "操作类型"},
                 "paragraph_index": {"type": "integer", "description": "目标段落索引（从0开始，来自 get_document_outline 的 [Pn]）"},
+                "anchor": {"type": "string", "description": "段落锚点（大纲中该段的前20字）。带上它可在索引漂移时自动重定位，强烈建议提供"},
                 "old_text": {"type": "string", "description": "（op=replace）要替换的原文本"},
                 "new_text": {"type": "string", "description": "（op=replace）替换后的新文本"},
                 "rewrite_instruction": {"type": "string", "description": "（op=rewrite）重写指令"},
@@ -416,10 +285,20 @@ class EditParagraphTool(BaseTool):
         from docx import Document as DocxDocument
 
         doc = DocxDocument(target_path)
-        editable = _get_editable_paragraphs(doc)
-        if not (0 <= paragraph_index < len(editable)):
-            return {"ok": False, "error": f"段落索引 {paragraph_index} 超出范围（共 {len(editable)} 个非空段落）"}
-        paragraph = editable[paragraph_index]
+        # 锚点优先校验：索引漂移时自动按锚点重定位
+        snapshot = DocSnapshot(target_path, "docx", docx=doc)
+        resolved = AddressResolver.resolve(
+            DocxParagraphAddr(
+                paragraph_index=paragraph_index,
+                anchor=params.get("anchor"),
+                index_scope="editable",
+            ),
+            snapshot,
+        )
+        if not resolved.ok:
+            return {"ok": False, "error": resolved.detail}
+        paragraph = resolved.target
+        relocate_note = f"（{resolved.detail}）" if resolved.detail else ""
         before = paragraph.text
 
         if op == "replace":
@@ -482,7 +361,7 @@ class EditParagraphTool(BaseTool):
             return {"ok": False, "error": f"不支持的操作类型: {op}（可选 replace/rewrite/insert_after/split）"}
 
         doc.save(target_path)
-        return {"ok": True, "message": message, "before": before, "after": after}
+        return {"ok": True, "message": message + relocate_note, "before": before, "after": after}
 
     def _apply_text(self, target_path: str, op: str, paragraph_index: int, params: Dict[str, Any]) -> Dict[str, Any]:
         with open(target_path, "r", encoding="utf-8") as f:
@@ -548,7 +427,8 @@ class FormatParagraphTool(BaseTool):
 
 通用参数：
 - file_id: 文档ID（首次用原始ID，后续用上次返回的 output_file_id）
-- paragraph_indexes: 段落索引数组（从0开始，来自 get_document_outline 的 [Pn]）"""
+- paragraph_indexes: 段落索引数组（从0开始，来自 get_document_outline 的 [Pn]）
+- anchors: 段落锚点数组（可选，与 paragraph_indexes 一一对应，取大纲中各段的前20字），索引漂移时自动重定位"""
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -559,6 +439,7 @@ class FormatParagraphTool(BaseTool):
                 "output_file_id": {"type": "string", "description": "链式编辑时上次返回的 output_file_id（可选）"},
                 "op": {"type": "string", "enum": ["heading", "list", "style"], "description": "操作类型"},
                 "paragraph_indexes": {"type": "array", "items": {"type": "integer"}, "description": "段落索引数组（来自 get_document_outline 的 [Pn]）"},
+                "anchors": {"type": "array", "items": {"type": "string"}, "description": "段落锚点数组（可选，与 paragraph_indexes 一一对应）。提供后可在索引漂移时自动重定位"},
                 "level": {"type": "integer", "description": "（op=heading）标题级别 1-6"},
                 "list_type": {"type": "string", "enum": ["bullet", "number"], "description": "（op=list）列表类型"},
                 "font_name": {"type": "string", "description": "（op=style）字体名称（可选）"},
@@ -608,15 +489,26 @@ class FormatParagraphTool(BaseTool):
         from docx import Document as DocxDocument
 
         doc = DocxDocument(target_path)
-        editable = _get_editable_paragraphs(doc)
+        snapshot = DocSnapshot(target_path, "docx", docx=doc)
+        anchors = params.get("anchors") or []
+
+        def _resolve_pos(i: int, index: int):
+            """锚点优先校验的段落定位；失败返回 None（跳过该段）"""
+            anchor = anchors[i] if i < len(anchors) else None
+            resolved = AddressResolver.resolve(
+                DocxParagraphAddr(paragraph_index=index, anchor=anchor, index_scope="editable"),
+                snapshot,
+            )
+            return resolved.target if resolved.ok else None
+
         changes = []
 
         if op == "heading":
             level = max(1, min(6, int(params.get("level", 1))))
-            for index in indexes:
-                if not (0 <= index < len(editable)):
+            for i, index in enumerate(indexes):
+                paragraph = _resolve_pos(i, index)
+                if paragraph is None:
                     continue
-                paragraph = editable[index]
                 before = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
                 paragraph.style = f"Heading {level}"
                 after = f"[{paragraph.style.name}] {paragraph.text}"
@@ -626,9 +518,9 @@ class FormatParagraphTool(BaseTool):
         elif op == "list":
             list_type = params.get("list_type", "bullet")
             for position, index in enumerate(indexes, start=1):
-                if not (0 <= index < len(editable)):
+                paragraph = _resolve_pos(position - 1, index)
+                if paragraph is None:
                     continue
-                paragraph = editable[index]
                 before = paragraph.text
                 clean_text = _strip_list_prefix(before)
                 if list_type == "number":
@@ -649,10 +541,10 @@ class FormatParagraphTool(BaseTool):
         elif op == "style":
             font_name = params.get("font_name", "")
             font_size_pt = params.get("font_size_pt")
-            for index in indexes:
-                if not (0 <= index < len(editable)):
+            for i, index in enumerate(indexes):
+                paragraph = _resolve_pos(i, index)
+                if paragraph is None:
                     continue
-                paragraph = editable[index]
                 before = f"[{paragraph.style.name if paragraph.style else 'Normal'}] {paragraph.text}"
                 for run in paragraph.runs:
                     if font_name:
@@ -745,9 +637,10 @@ class ConvertTool(BaseTool):
 
         parsed_data = parser.parse(doc_info["file_path"])
 
-        # 先创建新 root 的输出行，再把转换内容写入其版本文件
-        base_name = doc_info["original_filename"].rsplit(".", 1)[0]
-        output_filename = f"{base_name}.{target_format}"
+        # 先创建新 root 的输出行，再把转换内容写入其版本文件（统一命名：词干_转换_时间戳）
+        output_filename = document_versioning.build_output_filename(
+            doc_info["original_filename"], "convert", target_format
+        )
         user_id = None
         if getattr(context, "user_id", None):
             try:
@@ -808,24 +701,4 @@ class ConvertTool(BaseTool):
         )
 
 
-# ──────────────────────────── 工具共用的完成处理 ────────────────────────────
-
-async def _finish_edit(target_doc_id: str, context) -> Dict[str, str]:
-    """编辑完成后更新目标版本行的大小/哈希，返回下载信息（键保持不变）。"""
-    async with async_session() as db:
-        result = await db.execute(
-            select(Document).where(Document.id == UUID(str(target_doc_id)))
-        )
-        doc = result.scalar_one_or_none()
-        if not doc:
-            return {
-                "output_file_id": str(target_doc_id),
-                "output_filename": "",
-                "download_url": f"/api/v1/documents/{target_doc_id}/download",
-            }
-        if doc.file_path and os.path.exists(doc.file_path):
-            doc.file_size = os.path.getsize(doc.file_path)
-            doc.sha256 = file_storage.sha256_file(doc.file_path)
-        doc.status = "completed"
-        await db.commit()
-        return document_versioning.download_info(doc)
+# 注：写工具共用的完成处理 _finish_edit 已收敛到 document_engine.lifecycle（见文件顶部别名）

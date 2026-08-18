@@ -8,8 +8,11 @@ Neo4j知识图谱查询工具 - 从图谱中查询实体和关系
 """
 
 from typing import Any, Dict
+import logging
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
+
+logger = logging.getLogger(__name__)
 
 # 延迟导入，避免循环依赖
 neo4j_query_service = None
@@ -89,89 +92,59 @@ class Neo4jQueryTool(BaseTool):
         }
 
     async def execute(self, params: Dict[str, Any], context: ToolContext) -> ToolResult:
-        """执行Neo4j查询"""
-        try:
-            query = params.get("query", "")
-            doc_ids = params.get("doc_ids", context.file_ids)
-            max_results = params.get("max_results", 50)
+        """执行Neo4j查询
 
-            if not query:
-                return ToolResult(
-                    success=False,
-                    error="查询描述不能为空"
-                )
+        所有 doc_ids 一次生成 Cypher（schema 跨文档汇总），不再逐文档各调一次 LLM；
+        失败时携带错误信息重试（最多 3 次），对齐 query_pg_database 的容错能力。
+        """
+        query = params.get("query", "")
+        doc_ids = params.get("doc_ids", context.file_ids)
+        max_results = params.get("max_results", 50)
 
-            # 使用Neo4j查询服务生成并执行Cypher
-            all_records = []
-            errors = []
+        if not query:
+            return ToolResult(success=False, error="查询描述不能为空")
 
-            service = get_neo4j_query_service()
+        service = get_neo4j_query_service()
+        previous_error = ""
+        last_error = ""
+        cypher = ""
 
-            if doc_ids:
-                for doc_id in doc_ids:
-                    try:
-                        result = await service.generate_and_execute_once(
-                            question=query,
-                            table_headers=[],  # 暂时为空，让LLM自动推断
-                            doc_ids=[doc_id]
-                        )
-
-                        if result.get("error") is None:
-                            records = result.get("records", [])
-                            all_records.extend(records)
-                        else:
-                            errors.append(f"Doc {doc_id}: {result.get('error', '未知错误')}")
-                    except Exception as e:
-                        errors.append(f"Doc {doc_id}: {str(e)}")
-            else:
-                # 尝试通用查询
-                try:
-                    result = await service.generate_and_execute_once(
-                        question=query,
-                        table_headers=[],
-                        doc_ids=[]
-                    )
-                    if result.get("error") is None:
-                        all_records = result.get("records", [])
-                except Exception as e:
-                    errors.append(str(e))
-
-            # 去重
-            seen = set()
-            unique_records = []
-            for record in all_records:
-                key = str(record)
-                if key not in seen:
-                    seen.add(key)
-                    unique_records.append(record)
-
-            # 限制结果数
-            unique_records = unique_records[:max_results]
-
-            # 如果有错误且无结果，返回失败而非静默空列表
-            if not unique_records and errors:
-                error_summary = "; ".join(errors[:3])
-                return ToolResult(
-                    success=False,
-                    error=f"Neo4j查询未返回结果，查询过程中出现错误: {error_summary}",
-                    metadata={"queried_doc_ids": doc_ids, "errors": errors}
-                )
-
-            return ToolResult(
-                success=True,
-                data={
-                    "query": query,
-                    "records_count": len(unique_records),
-                    "records": unique_records
-                },
-                metadata={
-                    "queried_doc_ids": doc_ids,
-                    "errors": errors if errors else None
-                }
+        for attempt in range(3):
+            result = await service.generate_and_execute_once(
+                question=query,
+                table_headers=[],  # 让 LLM 根据图谱 schema 自动推断
+                doc_ids=doc_ids or [],
+                previous_error=previous_error,
             )
+            cypher = result.get("cypher", "") or cypher
+            if result.get("error") is None:
+                records = result.get("records", [])
+                # 去重
+                seen = set()
+                unique_records = []
+                for record in records:
+                    key = str(record)
+                    if key not in seen:
+                        seen.add(key)
+                        unique_records.append(record)
+                truncated = len(unique_records) > max_results
+                unique_records = unique_records[:max_results]
+                return ToolResult(
+                    success=True,
+                    data={
+                        "query": query,
+                        "records_count": len(unique_records),
+                        "records": unique_records,
+                        "executed_cypher": cypher[:500],
+                        **({"note": f"结果超过 {max_results} 条，已截断"} if truncated else {}),
+                    },
+                )
+            last_error = result["error"]
+            previous_error = last_error
+            logger.warning(f"[Neo4jQueryTool] 第 {attempt + 1}/3 次查询失败: {last_error[:200]}")
 
-        except Exception as e:
-            return ToolResult(
-                success=False,
-                error=f"Neo4j查询失败: {str(e)}"
-            )
+        return ToolResult(
+            success=False,
+            error=f"Neo4j查询失败（已重试3次）: {last_error}",
+            metadata={"queried_doc_ids": doc_ids, "executed_cypher": cypher[:500] if cypher else None},
+        )

@@ -17,6 +17,12 @@ class KnowledgeGraphService:
             return "Other"
         return safe[0].upper() + safe[1:] if len(safe) > 1 else safe.upper()
 
+    @staticmethod
+    def _esc_prop(key: str) -> str:
+        """属性名反引号转义：Cypher 标识符不能以数字开头/含特殊字符，
+        如列名"65岁及以上人口占比"不转义会直接 SyntaxError 导致整批实体写入失败。"""
+        return f"`{key.replace('`', '``')}`"
+
     async def build_graph_from_entities(
         self,
         document_id: str,
@@ -105,8 +111,9 @@ class KnowledgeGraphService:
                         create_set_parts = ["n.name = item.name", "n.document_ids = [item.doc_id]"]
                         match_set_parts = ["n.document_ids = CASE WHEN item.doc_id IN n.document_ids THEN n.document_ids ELSE n.document_ids + item.doc_id END"]
                         for key in prop_keys:
-                            create_set_parts.append(f"n.{key} = item.{key}")
-                            match_set_parts.append(f"n.{key} = CASE WHEN item.{key} IS NOT NULL THEN item.{key} ELSE n.{key} END")
+                            p = KnowledgeGraphService._esc_prop(key)
+                            create_set_parts.append(f"n.{p} = item.{p}")
+                            match_set_parts.append(f"n.{p} = CASE WHEN item.{p} IS NOT NULL THEN item.{p} ELSE n.{p} END")
 
                         create_set = ", ".join(create_set_parts)
                         match_set = ", ".join(match_set_parts)

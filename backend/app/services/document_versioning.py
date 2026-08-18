@@ -10,6 +10,7 @@
 import logging
 import os
 import uuid
+from datetime import datetime
 from typing import Optional, Tuple
 
 from sqlalchemy import select, func
@@ -20,6 +21,27 @@ from app.models.document import Document
 from app.services import file_storage
 
 logger = logging.getLogger(__name__)
+
+# origin_type → 输出文件名中的操作标签（统一命名规则用）
+_ORIGIN_ACTION_LABELS = {
+    "fill": "填写",
+    "edit": "编辑",
+    "convert": "转换",
+}
+
+
+def build_output_filename(source_name: Optional[str], origin_type: str, file_type: str) -> str:
+    """统一的输出文件命名：{源文件词干}_{操作}_{YYYYmmdd_HHmm}.{ext}
+
+    例：百强城市模板_填写_20260817_2105.xlsx
+    后续版本继承 v1 文件名（create_next_version 不变），由版本号区分。
+    """
+    stem = os.path.splitext(source_name)[0] if source_name else "document"
+    action = _ORIGIN_ACTION_LABELS.get(origin_type, origin_type or "输出")
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    ext = (file_type or "").lstrip(".")
+    return f"{stem}_{action}_{ts}.{ext}" if ext else f"{stem}_{action}_{ts}"
+
 
 MAX_VERSION_RETRIES = 3
 
@@ -75,7 +97,13 @@ async def create_root_output(
     文件来源优先级：content_bytes > 复制 source_doc 文件 > 不创建文件（调用方自行写入返回的路径）。
     """
     doc_id = uuid.uuid4()
-    filename = original_filename or (source_doc.original_filename if source_doc else None) or f"document.{file_type}"
+    filename = (
+        original_filename
+        # 未显式指定文件名时按统一规则命名（源文件词干_操作_时间戳），不再与源文件同名
+        or build_output_filename(
+            source_doc.original_filename if source_doc else None, origin_type, file_type
+        )
+    )
 
     if content_bytes is not None:
         file_path, digest = file_storage.write_version_file(

@@ -45,10 +45,12 @@ class Settings(BaseSettings):
     SSL_VERIFY: bool = True  # 总开关，默认开启SSL验证
 
     # ONLYOFFICE
-    ONLYOFFICE_SERVER_URL: str = "http://localhost:8088"
+    # 宿主机端口（Windows 常占用 8088，改这里即可，URL 未显式配置时按此端口拼装）
+    ONLYOFFICE_PORT: int = 8088
+    ONLYOFFICE_SERVER_URL: str = ""
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"
     ONLYOFFICE_ENABLED: bool = False
-    ONLYOFFICE_DOCUMENT_SERVER_URL: str = "http://localhost:8088"
+    ONLYOFFICE_DOCUMENT_SERVER_URL: str = ""
     ONLYOFFICE_CALLBACK_BASE_URL: str = "http://host.docker.internal:8000"
     ONLYOFFICE_API_PREFIX: str = "/api/v1"
     ONLYOFFICE_PUBLIC_FILE_TTL_SECONDS: int = 900
@@ -85,6 +87,16 @@ class Settings(BaseSettings):
         env_file = "../.env"
         # 忽略未定义的字段（兼容旧的环境变量）
         extra = "ignore"
+
+    @model_validator(mode="after")
+    def fill_onlyoffice_urls(self):
+        """ONLYOFFICE URL 未显式配置时，按 ONLYOFFICE_PORT 拼装 localhost 地址"""
+        default_base = f"http://localhost:{self.ONLYOFFICE_PORT}"
+        if not self.ONLYOFFICE_SERVER_URL:
+            self.ONLYOFFICE_SERVER_URL = default_base
+        if not self.ONLYOFFICE_DOCUMENT_SERVER_URL:
+            self.ONLYOFFICE_DOCUMENT_SERVER_URL = default_base
+        return self
 
     @model_validator(mode="after")
     def validate_required_fields(self):

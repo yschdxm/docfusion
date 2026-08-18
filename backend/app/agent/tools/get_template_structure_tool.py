@@ -14,7 +14,7 @@ fill_form 直接复用同一份字段列表，不再重复 LLM 检测。
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 
@@ -26,46 +26,9 @@ from app.models.document import Document
 
 # ──────────────────────────── 通用启发式 ────────────────────────────
 
-def detect_xlsx_header_row(rows: List[Tuple], max_scan: int = 10) -> int:
-    """探测 Excel 的真实表头行（处理标题行、说明行等情况）。
-
-    打分规则：
-    - 非空率高的行更可能是表头
-    - 文本比例高的行更可能是表头（数据行通常含数值）
-    - 下一行非空数与当前行接近的，更可能是"表头→数据"的衔接
-
-    Args:
-        rows: 从第1行开始的行数据列表（values_only）
-        max_scan: 最多扫描的行数
-
-    Returns:
-        表头行号（1-based）
-    """
-    best_row, best_score = 1, -1.0
-
-    for i, row in enumerate(rows[:max_scan], start=1):
-        cells = list(row)
-        non_empty = [v for v in cells if v is not None and str(v).strip() != ""]
-        if not non_empty:
-            continue
-
-        fill_rate = len(non_empty) / max(len(cells), 1)
-        text_rate = sum(1 for v in non_empty if isinstance(v, str)) / len(non_empty)
-
-        # 下一行是否有数据（表头的下一行通常有数据，且列覆盖接近）
-        next_bonus = 0.0
-        if i < len(rows):
-            next_non_empty = sum(
-                1 for v in rows[i] if v is not None and str(v).strip() != ""
-            )
-            if next_non_empty >= len(non_empty) * 0.5:
-                next_bonus = 1.0
-
-        score = fill_rate * 2 + text_rate + next_bonus
-        if score > best_score:
-            best_score, best_row = score, i
-
-    return best_row
+# 表头行探测已抽到文档引擎层（单点维护），此处 re-export 保持向后兼容
+from app.agent.document_engine.headers import detect_xlsx_header_row  # noqa: F401
+from app.agent.document_engine.address import list_content_controls
 
 
 def _infer_field_type(label: str) -> str:
@@ -88,6 +51,49 @@ def _infer_field_type(label: str) -> str:
 def _clean_label(text: str) -> str:
     """清理标签文本：去掉尾部冒号、空白"""
     return re.sub(r'[：:\s]+$', '', text.strip())
+
+
+def _is_number_like(value) -> bool:
+    """值是否为数值形态（含 1,000 / 12.5% / ￥100 等常见格式）"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return True
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        float(text.replace(',', '').replace('%', '').replace('￥', '').replace('¥', ''))
+        return True
+    except ValueError:
+        return False
+
+
+def looks_like_cross_table(headers: List[str], data_rows: List[list]) -> bool:
+    """交叉表启发式：首行是列标签 + 首列是行标签 + 内部单元格以数值/空为主
+
+    统计表（data_table）的第一列可能是姓名/编号等文本，内部单元格文本混杂；
+    交叉表（cross_table）的内部区域应主要是数值或待填写的空格。
+    """
+    non_empty_headers = [h for h in headers if h and not str(h).startswith("Column_")]
+    if len(non_empty_headers) < 2 or len(data_rows) < 2:
+        return False
+    if len(headers) < 2:
+        return False
+
+    # 首列全部为文本标签
+    first_col = [row[0] for row in data_rows if row]
+    if not first_col or not all(
+        isinstance(v, str) and v.strip() and not _is_number_like(v) for v in first_col
+    ):
+        return False
+
+    # 内部单元格（第2列起）以数值或空为主
+    interior = [v for row in data_rows for v in row[1:]]
+    if not interior:
+        return False
+    numeric_or_empty = sum(
+        1 for v in interior if not str(v).strip() or _is_number_like(v)
+    )
+    return numeric_or_empty >= len(interior) * 0.6
 
 
 # ──────────────────────────── xlsx 解析 ────────────────────────────
@@ -187,8 +193,11 @@ def parse_xlsx_structure(file_path: str) -> Dict[str, Any]:
                 sample_data.append(row_data)
 
         non_empty_headers = sum(1 for h in headers if not h.startswith("Column_"))
+        kind = "data_table" if non_empty_headers >= 2 else "unknown"
+        if kind == "data_table" and looks_like_cross_table(headers, data_rows):
+            kind = "cross_table"
         sheet_info.update({
-            "kind": "data_table" if non_empty_headers >= 2 else "unknown",
+            "kind": kind,
             "header_row_index": header_row_idx,
             "headers": headers,
             "column_count": len(headers),
@@ -249,6 +258,11 @@ def parse_docx_tables(doc) -> List[Dict[str, Any]]:
             kind = "form_table"
         elif non_empty_headers >= 2:
             kind = "data_table"
+            # 交叉表：首列是行标签 + 内部单元格以数值/空为主
+            if looks_like_cross_table(
+                headers, [[cell.text.strip() for cell in row.cells] for row in data_rows]
+            ):
+                kind = "cross_table"
         else:
             kind = "unknown"
 
@@ -560,7 +574,7 @@ def _analyze_xlsx(file_path: str) -> Dict[str, Any]:
     sheets = parsed["sheets"]
 
     kinds = {s.get("kind") for s in sheets}
-    has_data = "data_table" in kinds
+    has_data = bool(kinds & {"data_table", "cross_table"})
     has_form = "form" in kinds
 
     if has_data and has_form:
@@ -591,10 +605,11 @@ async def _analyze_docx(file_path: str) -> Dict[str, Any]:
 
     tables = parse_docx_tables(doc)
     heuristic_fields = scan_paragraph_placeholders(doc)
+    controls = list_content_controls(doc)
 
-    has_data_table = any(t["kind"] == "data_table" for t in tables)
+    has_data_table = any(t["kind"] in ("data_table", "cross_table") for t in tables)
     has_form_table = any(t["kind"] == "form_table" for t in tables)
-    has_para_fields = bool(heuristic_fields)
+    has_para_fields = bool(heuristic_fields) or bool(controls)
 
     if has_data_table and not has_form_table and not has_para_fields:
         structure_type = "data_table"
@@ -619,6 +634,29 @@ async def _analyze_docx(file_path: str) -> Dict[str, Any]:
         elif has_p_fields:
             form_type = "unstructured"
         # 修正 unknown：LLM 找到字段说明确实是表单
+        if structure_type == "unknown" and fields:
+            structure_type = "form"
+
+    # 内容控件是明确的填写目标：补充进 fields（按 location 去重）
+    if controls:
+        existing_locations = {
+            json.dumps(f["location"], sort_keys=True) for f in fields
+        }
+        for ctrl in controls:
+            location: Dict[str, Any] = {"sdt_index": ctrl["sdt_index"]}
+            if ctrl["tag"]:
+                location["tag"] = ctrl["tag"]
+            if json.dumps(location, sort_keys=True) in existing_locations:
+                continue
+            label = ctrl["alias"] or ctrl["tag"] or ctrl["text"][:20] \
+                or f"内容控件{ctrl['sdt_index']}"
+            fields.append({
+                "label": label,
+                "placeholder_type": "content_control",
+                "location": location,
+                "current_value": ctrl["text"],
+                "detected_type": _infer_field_type(label),
+            })
         if structure_type == "unknown" and fields:
             structure_type = "form"
 
@@ -650,16 +688,20 @@ class GetTemplateStructureTool(BaseTool):
 
 返回内容：
 - structure_type: data_table(数据表格) / form(表单) / mixed(混合) / unknown
+- 表格 kind: data_table(统计表) / cross_table(交叉表，首行首列均为标签、内部为数值或待填空格)
+  / form(纵向表单) / form_table(docx键值表)
 - xlsx 数据表格: 每个 sheet 的表头（自动探测真实表头行，支持标题行/说明行）、
   header_row_index、示例数据、合并单元格；多工作表全部列出
 - xlsx 纵向表单（A列标签B列填值）: 每个字段的标签和写入坐标（fields[].location.cell）
 - docx 数据表格: 每个表格的表头、行列数、示例数据、context.preceding_text（表格用途）
 - docx 表单: 所有可填写字段 fields[]，每个字段带稳定 field_id（F1..Fn）、
-  label、placeholder_type、location、detected_type
+  label、placeholder_type、location、detected_type；
+  内容控件字段 placeholder_type=content_control，location 带 tag（稳定标识）和 sdt_index
 
 后续动作指引：
-- structure_type=data_table → 用 fill_table 填写（xlsx 多工作表传 sheet_name；
-  header_row_index>1 时传 header_row；docx 多表格传 target_table_index）
+- structure_type=data_table → 走 fill_table_plan → fill_table_execute 流程
+  （xlsx 多工作表传 sheet_name；header_row_index>1 时传 header_row；docx 多表格必须显式指定 target.table_index）
+- 交叉表（cross_table）→ 用 fill_table_execute 的 cell_fills 逐格填写
 - structure_type=form → 用 fill_form 填写，fields 参数引用 field_id
 - mixed → 两种工具按需各填一部分
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { FileText, Loader2 } from 'lucide-react'
+import { FileText, Loader2, X } from 'lucide-react'
 import type { PreviewFile } from '../hooks/useDocumentPreview'
 import { useI18n } from '../hooks/useI18n'
 import { getTheme } from '../services/theme'
@@ -8,6 +8,7 @@ interface DocumentPreviewPanelProps {
   previewFiles: PreviewFile[]
   currentFile: PreviewFile | null
   onFileSelect: (file: PreviewFile) => void
+  onFileRemove: (fileId: string) => void
   isLoading: boolean
 }
 
@@ -15,6 +16,7 @@ export default function DocumentPreviewPanel({
   previewFiles,
   currentFile,
   onFileSelect,
+  onFileRemove,
   isLoading,
 }: DocumentPreviewPanelProps) {
   const { language } = useI18n()
@@ -51,10 +53,9 @@ export default function DocumentPreviewPanel({
           isDarkMode ? 'border-slate-600' : 'border-white/10'
         }`}>
           {previewFiles.map(f => (
-            <button
+            <span
               key={f.id}
-              onClick={() => onFileSelect(f)}
-              className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg whitespace-nowrap transition-colors ${
+              className={`group flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
                 f.id === currentFile?.id
                   ? isDarkMode
                     ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
@@ -64,10 +65,20 @@ export default function DocumentPreviewPanel({
                     : 'text-slate-400 hover:bg-white/5 border border-transparent'
               }`}
               title={f.name}
+              onClick={() => onFileSelect(f)}
             >
               <FileText className="w-3 h-3 flex-shrink-0" />
               <span className="truncate max-w-[100px]">{f.name}</span>
-            </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onFileRemove(f.id) }}
+                className={`ml-0.5 rounded p-0.5 transition-colors ${
+                  isDarkMode ? 'hover:bg-slate-600 hover:text-slate-200' : 'hover:bg-slate-200 hover:text-slate-600'
+                }`}
+                title={tr('关闭预览', 'Close preview', 'プレビューを閉じる')}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </span>
           ))}
         </div>
       )}

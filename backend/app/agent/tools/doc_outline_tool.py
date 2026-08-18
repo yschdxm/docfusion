@@ -50,6 +50,8 @@ class GetDocumentOutlineTool(BaseTool):
 
 索引约定：
 - [Pn]: 第n个非空段落（从0开始），与 edit_paragraph 等编辑工具的 paragraph_index 完全一致
+- 每个段落条目带 anchor（前20字）：调用 edit_paragraph / format_paragraph 时建议回传，
+  索引因前序插入/删除漂移时工具会按锚点自动重定位
 - [Tn]: 第n个表格（从0开始，按文档中出现顺序）
 - [TnRmCk]: 第n个表格第m行第k列的单元格（均从0开始）
 - md/txt: [Ln] 为行号（含空行，从0开始），与编辑工具的 paragraph_index 一致
@@ -175,6 +177,7 @@ class GetDocumentOutlineTool(BaseTool):
                     "label": f"[P{para_edit_idx}]",
                     "style": style_name,
                     "preview": preview,
+                    "anchor": text[:20],
                     "char_count": len(text),
                 })
                 para_edit_idx += 1
