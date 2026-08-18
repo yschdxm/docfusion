@@ -37,6 +37,32 @@ class AdminUpdateUserRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
+class BatchCreateUserItem(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    email: str = Field(min_length=3, max_length=255)
+    phone: str = Field(min_length=11, max_length=20)
+    password: Optional[str] = Field(None, min_length=6, max_length=128)  # 缺省用请求的 default_password
+
+
+class BatchCreateUsersRequest(BaseModel):
+    users: list[BatchCreateUserItem] = Field(min_length=1, max_length=200)
+    default_password: Optional[str] = Field(None, min_length=6, max_length=128)
+    role: str = Field(default="user", pattern="^(user|admin)$")
+
+
+class BatchCreateUserResult(BaseModel):
+    username: str
+    email: str
+    ok: bool
+    error: Optional[str] = None
+
+
+class BatchCreateUsersResponse(BaseModel):
+    created: int
+    failed: int
+    results: list[BatchCreateUserResult]
+
+
 class SystemConfigItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

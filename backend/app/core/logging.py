@@ -57,6 +57,12 @@ def setup_logging():
     log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
     os.makedirs(log_dir, exist_ok=True)
 
+    # 段错误等原生崩溃不会经过 logging（进程直接死、无任何报错），
+    # 用 faulthandler 在崩溃时把 Python 栈写入独立文件，便于事后定位
+    import faulthandler
+    fh_file = open(os.path.join(log_dir, "faulthandler.log"), "a", encoding="utf-8")
+    faulthandler.enable(fh_file)
+
     # 生成带时间戳的日志文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = os.path.join(log_dir, f"app_{timestamp}.log")

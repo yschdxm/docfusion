@@ -47,6 +47,7 @@ interface DocumentStore {
   documents: DocumentInfo[]
   isLoading: boolean
   uploadProgress: number | null  // 上传进度 0-100，null 表示未上传中
+  uploadCategory: string | null  // 正在上传的类别（source/template），用于把进度条挂到对应上传区
   fetchDocuments: (category?: string) => Promise<void>
   addDocuments: (files: File[], category?: string) => Promise<DocumentInfo[]>
   deleteDocument: (id: string) => Promise<void>
@@ -59,6 +60,7 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
   documents: [],
   isLoading: false,
   uploadProgress: null,
+  uploadCategory: null,
 
   fetchDocuments: async (category?: string) => {
     set({ isLoading: true })
@@ -84,7 +86,7 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       formData.append('files', file)
     })
 
-    set({ uploadProgress: 0 })
+    set({ uploadProgress: 0, uploadCategory: category })
 
     try {
       const response = await api.post(`/documents/upload?doc_category=${category}`, formData, {
@@ -113,10 +115,10 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
         }
         return doc
       })
-      set((state) => ({ documents: [...state.documents, ...docsWithStatus], uploadProgress: null }))
+      set((state) => ({ documents: [...state.documents, ...docsWithStatus], uploadProgress: null, uploadCategory: null }))
       return docsWithStatus
     } catch (error) {
-      set({ uploadProgress: null })
+      set({ uploadProgress: null, uploadCategory: null })
       console.error('Failed to upload documents:', error)
       throw error
     }

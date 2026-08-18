@@ -19,6 +19,9 @@ from app.schemas.admin import (
     UserListResponse,
     UpdateUserRoleRequest,
     AdminUpdateUserRequest,
+    BatchCreateUsersRequest,
+    BatchCreateUserResult,
+    BatchCreateUsersResponse,
     SystemConfigItem,
     UpdateSystemConfigRequest,
     RegistrationStatusResponse,
@@ -93,6 +96,65 @@ async def list_users(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post("/users/batch", response_model=BatchCreateUsersResponse)
+async def batch_create_users(
+    payload: BatchCreateUsersRequest,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量创建账号：逐行校验，跳过冲突项，返回每行结果（不整体失败）
+
+    - 密码缺省时使用 default_password，两者都没有则该行失败
+    - 创建 admin 角色需要 super_admin 权限
+    """
+    if payload.role == "admin" and current_user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="创建管理员账号需要主管理员权限")
+
+    results: list[BatchCreateUserResult] = []
+    to_add: list[User] = []
+    seen_emails: set[str] = set()
+    seen_phones: set[str] = set()
+
+    for item in payload.users:
+        username = item.username.strip()
+        email = item.email.strip().lower()
+        phone = item.phone.strip()
+        password = item.password or payload.default_password
+
+        if not password:
+            results.append(BatchCreateUserResult(username=username, email=email, ok=False, error="缺少密码（行内与默认密码均为空）"))
+            continue
+        if email in seen_emails or phone in seen_phones:
+            results.append(BatchCreateUserResult(username=username, email=email, ok=False, error="与本批次中前面的行重复"))
+            continue
+        existing = await db.execute(
+            select(User).where(or_(User.email == email, User.phone == phone))
+        )
+        conflict = existing.scalars().first()
+        if conflict:
+            msg = "邮箱已注册" if conflict.email == email else "手机号已注册"
+            results.append(BatchCreateUserResult(username=username, email=email, ok=False, error=msg))
+            continue
+
+        seen_emails.add(email)
+        seen_phones.add(phone)
+        to_add.append(User(
+            username=username,
+            email=email,
+            phone=phone,
+            password_hash=get_password_hash(password),
+            role=payload.role,
+        ))
+        results.append(BatchCreateUserResult(username=username, email=email, ok=True))
+
+    if to_add:
+        db.add_all(to_add)
+        await db.commit()
+    created = sum(1 for r in results if r.ok)
+    logger.info(f"[Admin] {current_user.username} 批量创建账号: 成功 {created}，失败 {len(results) - created}，角色 {payload.role}")
+    return BatchCreateUsersResponse(created=created, failed=len(results) - created, results=results)
 
 
 @router.get("/users/{user_id}")

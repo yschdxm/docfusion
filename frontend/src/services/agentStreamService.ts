@@ -402,7 +402,11 @@ class AgentStreamService {
       requestBody.last_event_id = state.lastSeq
     }
 
-    await fetchEventSource('/api/v1/agent/stream', {
+    // fetch-event-source 的 promise 只覆盖到流关闭；我们主动 abort 时（终态事件已处理后）
+    // 库内部 catch 发现 signal.aborted 会直接吞掉、promise 永不 settle，
+    // 所以 race 一个 abort 监听保证 _openStream 一定能返回
+    await Promise.race([
+      fetchEventSource('/api/v1/agent/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -475,25 +479,35 @@ class AgentStreamService {
         }
       },
 
-      onclose: async () => {
-        // 流被服务端正常关闭。正常路径下终态事件已在缓冲中回放并处理，
-        // 走到这里说明未收到终态事件 → 通过状态端点做权威判定
-        // （state.status 可能被 onmessage 回调并发修改，用 string 比较绕过 TS 窄化）
+      onclose: () => {
+        // 必须是同步函数：fetch-event-source 调用 onclose 时不 await，
+        // async 函数里的 throw 会变成 unhandled rejection 浮空（控制台红字来源），
+        // 且库会立即 resolve，等不到异步里的状态查询结果。
+        // 终态事件已被 onmessage 处理 → 同步 throw，库捕获后经 onerror reject，
+        // 由 _connectLoop 按终态收尾；未收到终态 → 正常返回，让库 resolve，
+        // 由 _openStream 在 await 之后做权威状态查询。
         const currentStatus: string = state.status
         if (currentStatus === 'done' || currentStatus === 'error' || state.cancelled) {
           throw new Error('stream already terminated')
         }
-        // await 状态查询：终态 → 设置 status 并回调；仍在运行 → 内部抛错触发重连
-        await this._resolveByStatusQuery(state)
-        // _resolveByStatusQuery 返回说明已判定为终态，抛错让 _connectLoop 退出循环
-        throw new Error('stream closed by server')
       },
 
       onerror: (err) => {
         // 抛出异常，禁用 fetch-event-source 内部重试，交由 _connectLoop 退避重连
         throw err
       },
-    })
+      }),
+      new Promise<void>((resolve) => {
+        if (state.abortController.signal.aborted) resolve()
+        else state.abortController.signal.addEventListener('abort', () => resolve(), { once: true })
+      }),
+    ])
+
+    // 流正常关闭（onclose 未抛错）或本地 abort：若终态事件未处理，走状态端点权威判定。
+    // 判定为终态由回调收尾并返回；查询失败/任务仍在运行会抛错，由 _connectLoop 退避重连
+    const statusAfterClose: string = state.status
+    if (state.cancelled || statusAfterClose === 'done' || statusAfterClose === 'error') return
+    await this._resolveByStatusQuery(state)
   }
 
   /**

@@ -146,6 +146,26 @@ def _target_headers(snapshot: DocSnapshot, target) -> List[str]:
     return []
 
 
+def _clear_xlsx_below_header(ws, header_row: int) -> None:
+    """清空表头以下的数据区（overwrite 用）。
+
+    严禁逐行 delete_rows：openpyxl 每删一行都要全量调整合并区域，
+    在病态模板（27000 行 × 5 万条合并区域，实测存在）上会卡死几十分钟，
+    且同步执行会阻塞整个事件循环（曾把后端打到无响应）。
+    正确姿势：先丢弃完全位于表头以下的合并区域，再一次性块删除数据行。
+    """
+    if ws.max_row <= header_row:
+        return
+    ranges = list(ws.merged_cells.ranges)
+    if ranges:
+        keep = [r for r in ranges if r.max_row <= header_row]
+        dropped = len(ranges) - len(keep)
+        if dropped:
+            ws.merged_cells.ranges = keep
+            logger.info(f"[Fill] overwrite 清空数据区：丢弃表头以下合并区域 {dropped} 个，保留 {len(keep)} 个")
+    ws.delete_rows(header_row + 1, ws.max_row - header_row)
+
+
 def _commit_xlsx_rows(snapshot: DocSnapshot, ws, plan: TableFillPlan,
                       headers: List[str], row_values) -> List[Dict[str, Any]]:
     """xlsx 行物化：overwrite 删除表头以下数据行；append 直接追加"""
@@ -156,8 +176,7 @@ def _commit_xlsx_rows(snapshot: DocSnapshot, ws, plan: TableFillPlan,
         header_row = plan.target.header_row or 1
 
     if plan.fill_mode == "overwrite":
-        for row in range(ws.max_row, header_row, -1):
-            ws.delete_rows(row)
+        _clear_xlsx_below_header(ws, header_row)
 
     filled = 0
     sample = []

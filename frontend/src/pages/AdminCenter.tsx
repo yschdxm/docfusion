@@ -2,17 +2,17 @@ import { useState, useEffect } from 'react'
 import { useI18n } from '../hooks/useI18n'
 import { getAuthUser, isSuperAdmin } from '../services/auth'
 import {
-  getAdminUsers, getAdminUser, updateAdminUser, updateUserRole,
+  getAdminUsers, getAdminUser, updateAdminUser, updateUserRole, batchCreateUsers,
   getSystemConfigs, updateSystemConfigs,
   getSharedDocs, setDocShared, removeDocShared,
-  AdminUser, SharedDoc,
+  AdminUser, SharedDoc, BatchCreateUserResult,
 } from '../services/admin'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 import {
   Users, Settings, Share, Search, Edit, Trash2, Save,
   FileText, Table, Lock, Unlock, Eye, EyeOff, RefreshCw, Plus, ChevronDown, X, Boxes,
-  Download, Upload, FolderOpen,
+  Download, Upload, FolderOpen, UserPlus,
 } from 'lucide-react'
 import Dropdown from '../components/ui/Dropdown'
 import DocumentPreviewModal from '../components/DocumentPreviewModal'
@@ -129,6 +129,16 @@ const zh = {
   download: '下载', preview: '预览',
   downloadSuccess: '下载已开始', downloadFail: '下载失败',
   outputDocsCat: '输出文档',
+  // 批量创建账号
+  batchCreate: '批量创建',
+  batchCreateTitle: '批量创建账号',
+  batchFormatHint: '每行一个账号，逗号分隔：用户名,邮箱,手机号,密码（第 4 列密码可省略，省略时使用默认密码）',
+  batchPlaceholder: '张三,zhangsan@example.com,13800000001,pass123\n李四,lisi@example.com,13800000002',
+  batchDefaultPassword: '默认密码（行内未填密码时使用）',
+  batchSubmit: '创建',
+  batchEmpty: '请输入至少一行账号信息',
+  batchParseError: (line: number) => `第 ${line} 行格式错误：至少需要 3 列（用户名,邮箱,手机号）`,
+  batchSummary: (created: number, failed: number) => `创建完成：成功 ${created} 个，失败 ${failed} 个`,
 }
 
 const en = {
@@ -197,6 +207,16 @@ const en = {
   download: 'Download', preview: 'Preview',
   downloadSuccess: 'Download started', downloadFail: 'Download failed',
   outputDocsCat: 'Output',
+  // Batch create accounts
+  batchCreate: 'Batch Create',
+  batchCreateTitle: 'Batch Create Accounts',
+  batchFormatHint: 'One account per line, comma-separated: username,email,phone,password (4th column optional; falls back to default password)',
+  batchPlaceholder: 'John,john@example.com,13800000001,pass123\nJane,jane@example.com,13800000002',
+  batchDefaultPassword: 'Default password (used when a line omits password)',
+  batchSubmit: 'Create',
+  batchEmpty: 'Enter at least one account line',
+  batchParseError: (line: number) => `Line ${line} invalid: at least 3 columns required (username,email,phone)`,
+  batchSummary: (created: number, failed: number) => `Done: ${created} created, ${failed} failed`,
 }
 
 const ja = {
@@ -261,6 +281,16 @@ const ja = {
   download: 'ダウンロード', preview: 'プレビュー',
   downloadSuccess: 'ダウンロード開始', downloadFail: 'ダウンロード失敗',
   outputDocsCat: '出力文書',
+  // アカウント一括作成
+  batchCreate: '一括作成',
+  batchCreateTitle: 'アカウント一括作成',
+  batchFormatHint: '1行1アカウント、カンマ区切り：ユーザー名,メール,電話番号,パスワード（4列目省略時はデフォルトパスワードを使用）',
+  batchPlaceholder: '太郎,taro@example.com,13800000001,pass123\n花子,hanako@example.com,13800000002',
+  batchDefaultPassword: 'デフォルトパスワード（行内未入力時に使用）',
+  batchSubmit: '作成',
+  batchEmpty: 'アカウント情報を1行以上入力してください',
+  batchParseError: (line: number) => `${line} 行目の形式が不正です：最低3列（ユーザー名,メール,電話番号）が必要です`,
+  batchSummary: (created: number, failed: number) => `作成完了：成功 ${created} 件、失敗 ${failed} 件`,
 }
 
 export default function AdminCenter() {
@@ -279,6 +309,14 @@ export default function AdminCenter() {
   const [viewingUserDocs, setViewingUserDocs] = useState<{ user: AdminUser; docs: any[] } | null>(null)
   const [editForm, setEditForm] = useState({ username: '', email: '', phone: '', password: '' })
   const [registrationEnabled, setRegistrationEnabled] = useState(true)
+
+  // 批量创建账号
+  const [showBatchModal, setShowBatchModal] = useState(false)
+  const [batchText, setBatchText] = useState('')
+  const [batchDefaultPassword, setBatchDefaultPassword] = useState('')
+  const [batchRole, setBatchRole] = useState('user')
+  const [batchSubmitting, setBatchSubmitting] = useState(false)
+  const [batchResults, setBatchResults] = useState<BatchCreateUserResult[] | null>(null)
 
   // 供应商和模型
   const [providers, setProviders] = useState<LlmProvider[]>([])
@@ -513,6 +551,36 @@ export default function AdminCenter() {
     if (user.id === currentUser?.id) { toast.error(tl.selfProtect); return }
     try { await updateAdminUser(user.id, { is_active: !user.is_active }); toast.success(tl.toastUserStatusUpdated); loadUsers() }
     catch (error: any) { toast.error(error.response?.data?.detail || '操作失败') }
+  }
+
+  // 批量创建：解析文本（每行 用户名,邮箱,手机号[,密码]，支持中文逗号），逐行结果展示
+  const handleBatchCreate = async () => {
+    const lines = batchText.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (lines.length === 0) { toast.error(tl.batchEmpty); return }
+    const users: { username: string; email: string; phone: string; password?: string }[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const cols = lines[i].split(/[,，]/).map((c) => c.trim())
+      if (cols.length < 3 || cols.slice(0, 3).some((c) => !c)) {
+        toast.error(tl.batchParseError(i + 1))
+        return
+      }
+      users.push({ username: cols[0], email: cols[1], phone: cols[2], password: cols[3] || undefined })
+    }
+    setBatchSubmitting(true)
+    try {
+      const data = await batchCreateUsers({
+        users,
+        default_password: batchDefaultPassword || undefined,
+        role: batchRole,
+      })
+      setBatchResults(data.results)
+      toast.success(tl.batchSummary(data.created, data.failed))
+      loadUsers()
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || '操作失败')
+    } finally {
+      setBatchSubmitting(false)
+    }
   }
 
   const handleSaveRegistration = async () => {
@@ -844,6 +912,11 @@ export default function AdminCenter() {
               <option value="admin">{tl.admin}</option>
               {isSuper && <option value="super_admin">{tl.superAdmin}</option>}
             </select>
+            <button onClick={() => { setShowBatchModal(true); setBatchResults(null) }} title={tl.batchCreateTitle}
+              className="flex items-center gap-1.5 rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25">
+              <UserPlus className="h-4 w-4" />
+              {tl.batchCreate}
+            </button>
           </div>
 
           <div className="grid gap-3">
@@ -1216,6 +1289,56 @@ export default function AdminCenter() {
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setEditingUser(null)} title={tl.cancel} className="rounded-xl px-5 py-2.5 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">{tl.cancel}</button>
               <button onClick={handleSaveUser} title={tl.save} className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25">{tl.save}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量创建账号弹窗 */}
+      {showBatchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-800 p-6 shadow-2xl max-h-[85vh] overflow-y-auto scrollbar-thin">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-2">{tl.batchCreateTitle}</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{tl.batchFormatHint}</p>
+            <textarea
+              value={batchText}
+              onChange={(e) => setBatchText(e.target.value)}
+              placeholder={tl.batchPlaceholder}
+              rows={6}
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-3 space-y-3">
+              {renderFormInput(tl.batchDefaultPassword, batchDefaultPassword, setBatchDefaultPassword, { type: 'text' })}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">{tl.role}</label>
+                <select value={batchRole} onChange={(e) => setBatchRole(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-4 py-2.5 text-sm">
+                  <option value="user">{tl.user}</option>
+                  {isSuper && <option value="admin">{tl.admin}</option>}
+                </select>
+              </div>
+            </div>
+
+            {batchResults && (
+              <div className="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-700 max-h-48 overflow-y-auto scrollbar-thin">
+                {batchResults.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2 px-3 py-2 text-xs">
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${r.ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'}`}>
+                      {r.ok ? '✓' : '✗'}
+                    </span>
+                    <span className="text-slate-700 dark:text-slate-300 truncate">{r.username}（{r.email}）</span>
+                    {r.error && <span className="ml-auto shrink-0 text-rose-600 dark:text-rose-400">{r.error}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setShowBatchModal(false)} title={tl.close} className="rounded-xl px-5 py-2.5 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">{tl.close}</button>
+              <button onClick={handleBatchCreate} disabled={batchSubmitting} title={tl.batchSubmit}
+                className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/25 disabled:opacity-50">
+                {batchSubmitting ? '...' : tl.batchSubmit}
+              </button>
             </div>
           </div>
         </div>

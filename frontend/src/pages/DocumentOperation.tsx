@@ -1694,8 +1694,8 @@ export default function DocumentOperation() {
             </button>
           )}
         </div>
-        {/* AI 自动复核开关：关闭后，填表写入前需人工确认 dry_run 校验报告 */}
-        <div className="flex items-center gap-2 mt-2">
+        {/* 自动审核开关 + 快捷提示（同一行，开关固定在最左） */}
+        <div className="flex items-center gap-2 mt-2 overflow-x-auto pb-1 scrollbar-thin">
           <button
             onClick={toggleAutoReview}
             title={autoReview
@@ -1709,12 +1709,9 @@ export default function DocumentOperation() {
               autoReview ? 'translate-x-[18px]' : 'translate-x-[3px]'
             }`} />
           </button>
-          <span className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+          <span className={`text-xs whitespace-nowrap shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
             {tr('自动审核', 'Auto-review', '自動レビュー')}
           </span>
-        </div>
-        {/* 快捷提示 */}
-        <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-thin">
           <button onClick={() => setInputValue(tr('帮我分析这些文档', 'Help me analyze these documents', 'これらの文書を分析してください'))} title={tr('分析文档', 'Analyze docs', '文書分析')} className={`px-3 py-1.5 text-xs border rounded-full whitespace-nowrap transition-colors ${
             isDarkMode
               ? 'bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-300'

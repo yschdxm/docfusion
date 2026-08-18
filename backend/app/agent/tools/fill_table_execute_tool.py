@@ -9,6 +9,7 @@ mode=dry_run：纯确定性校验，不写盘，逐条报告 ok/type_mismatch/am
 mode=commit：先重跑 dry_run 复核，硬错误则拒绝；通过后版本化写入，逐格 before/after diff
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -363,16 +364,21 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
             target_doc_id = str(output_doc.id)
             is_new_version = True
 
-        # 在目标文件上应用映射
-        with DocSnapshot.open(target_path, doc_info["file_type"]) as snapshot:
-            changes: List[Dict[str, Any]] = []
-            if table_plan:
-                table_changes, _ = commit_table_fill(snapshot, table_plan)
-                changes.extend(table_changes)
-            if cell_fills:
-                cell_changes, _ = commit_cell_fills(snapshot, cell_fills)
-                changes.extend(cell_changes)
-            snapshot.save()
+        # 在目标文件上应用映射。重活（打开/写入/保存 workbook）放到线程里执行，
+        # 避免病态模板（数万行/数万合并区域）的同步计算阻塞事件循环、拖死整个后端
+        def _apply_changes() -> List[Dict[str, Any]]:
+            with DocSnapshot.open(target_path, doc_info["file_type"]) as snapshot:
+                applied: List[Dict[str, Any]] = []
+                if table_plan:
+                    table_changes, _ = commit_table_fill(snapshot, table_plan)
+                    applied.extend(table_changes)
+                if cell_fills:
+                    cell_changes, _ = commit_cell_fills(snapshot, cell_fills)
+                    applied.extend(cell_changes)
+                snapshot.save()
+            return applied
+
+        changes = await asyncio.to_thread(_apply_changes)
 
         reg = await lifecycle.finish_edit(target_doc_id, context)
 

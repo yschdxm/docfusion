@@ -65,6 +65,29 @@ export const updateUserRole = async (userId: string, role: string): Promise<{ me
   return data
 }
 
+export interface BatchCreateUserItem {
+  username: string
+  email: string
+  phone: string
+  password?: string
+}
+
+export interface BatchCreateUserResult {
+  username: string
+  email: string
+  ok: boolean
+  error?: string | null
+}
+
+export const batchCreateUsers = async (payload: {
+  users: BatchCreateUserItem[]
+  default_password?: string
+  role?: string
+}): Promise<{ created: number; failed: number; results: BatchCreateUserResult[] }> => {
+  const { data } = await api.post('/admin/users/batch', payload)
+  return data
+}
+
 // ==================== 系统配置 ====================
 
 export const getSystemConfigs = async (): Promise<SystemConfig[]> => {

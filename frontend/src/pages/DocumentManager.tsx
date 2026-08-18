@@ -61,7 +61,7 @@ function formatFileSize(size?: number) {
 export default function DocumentManager() {
   const { language } = useI18n()
   const tr = (zh: string, en: string, ja = en) => (language === 'zh-CN' ? zh : language === 'ja-JP' ? ja : en)
-  const { documents, fetchDocuments, addDocuments, deleteDocument, uploadProgress, fetchVersions, rollbackDocument, deleteVersion } = useDocumentStore()
+  const { documents, fetchDocuments, addDocuments, deleteDocument, uploadProgress, uploadCategory, fetchVersions, rollbackDocument, deleteVersion } = useDocumentStore()
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
@@ -506,7 +506,7 @@ export default function DocumentManager() {
         <div className="grid grid-cols-2 gap-2 md:hidden">
           <div {...getSourceRootProps()} className={`glass px-3 py-2.5 cursor-pointer transition-all ${isSourceDragActive ? 'ring-2 ring-blue-400' : ''}`}>
             <input {...getSourceInputProps()} />
-            {uploadProgress !== null ? (
+            {uploadProgress !== null && uploadCategory === 'source' ? (
               <div className="flex flex-col items-center gap-1">
                 <span className="text-[11px] text-blue-400">{tr('上传中...', 'Uploading...', '...')}</span>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
@@ -529,6 +529,15 @@ export default function DocumentManager() {
           </div>
           <div {...getTemplateRootProps()} className={`glass px-3 py-2.5 cursor-pointer transition-all ${isTemplateDragActive ? 'ring-2 ring-green-400' : ''}`}>
             <input {...getTemplateInputProps()} />
+            {uploadProgress !== null && uploadCategory === 'template' ? (
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[11px] text-green-400">{tr('上传中...', 'Uploading...', '...')}</span>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
+                  <div className="h-full rounded-full bg-green-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                </div>
+                <span className="text-[10px] text-slate-400">{uploadProgress}%</span>
+              </div>
+            ) : (
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-green-500/20 shrink-0">
                 <Table className="h-3.5 w-3.5 text-green-400" />
@@ -539,6 +548,7 @@ export default function DocumentManager() {
               </div>
               <Plus className="h-4 w-4 text-slate-400 shrink-0 ml-auto" />
             </div>
+            )}
           </div>
         </div>
         {/* 桌面端：完整卡片 */}
@@ -555,7 +565,7 @@ export default function DocumentManager() {
             </div>
             <div {...getSourceRootProps()} className={`upload-zone ${isSourceDragActive ? 'upload-zone-active' : ''}`}>
               <input {...getSourceInputProps()} />
-              {uploadProgress !== null ? (
+              {uploadProgress !== null && uploadCategory === 'source' ? (
                 <div className="flex flex-col items-center gap-2">
                   <span className="text-sm text-blue-400">{tr('上传中...', 'Uploading...', 'アップロード中...')}</span>
                   <div className="h-2 w-48 overflow-hidden rounded-full bg-slate-700">
@@ -583,10 +593,20 @@ export default function DocumentManager() {
             </div>
             <div {...getTemplateRootProps()} className={`upload-zone ${isTemplateDragActive ? 'upload-zone-active' : ''}`}>
               <input {...getTemplateInputProps()} />
+              {uploadProgress !== null && uploadCategory === 'template' ? (
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-sm text-green-400">{tr('上传中...', 'Uploading...', 'アップロード中...')}</span>
+                  <div className="h-2 w-48 overflow-hidden rounded-full bg-slate-700">
+                    <div className="h-full rounded-full bg-green-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                  <span className="text-xs text-slate-400">{uploadProgress}%</span>
+                </div>
+              ) : (
               <div className="flex items-center justify-center gap-2">
                 <Plus className="h-4 w-4 text-slate-400" />
                 <span className="text-sm text-slate-400">{tr('点击或拖拽上传模板', 'Click or drag to upload templates', 'クリックまたはドラッグしてテンプレートをアップロード')}</span>
               </div>
+              )}
             </div>
           </div>
         </div>
@@ -697,7 +717,7 @@ export default function DocumentManager() {
               return (
                 <div key={doc.id}>
                 <div
-                  className={`flex items-center gap-2 sm:gap-3 border-b border-slate-100 px-3 sm:px-4 py-2 sm:py-3 transition-colors hover:bg-slate-50 ${
+                  className={`flex items-center gap-2 sm:gap-3 border-b border-slate-100 px-3 sm:px-4 py-2 sm:py-3 transition-colors hover:bg-slate-50 dark:border-slate-700/60 dark:hover:bg-slate-700/40 ${
                     selectedDocs.includes(doc.id) ? 'bg-primary-500/10' : ''
                   }`}
                 >
@@ -718,11 +738,11 @@ export default function DocumentManager() {
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <p className="truncate text-xs sm:text-sm font-medium text-slate-900">{doc.original_filename}</p>
+                      <p className="truncate text-xs sm:text-sm font-medium text-slate-900 dark:text-slate-100">{doc.original_filename}</p>
                       {(doc.version_count ?? 1) > 1 && (
                         <button
                           onClick={() => toggleVersions(doc)}
-                          className="flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] sm:text-xs text-slate-600 hover:bg-slate-200 shrink-0"
+                          className="flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] sm:text-xs text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 shrink-0"
                           title={tr('查看版本历史', 'View version history', 'バージョン履歴')}
                         >
                           v{doc.version ?? 1} / {doc.version_count}{tr('个版本', ' versions', '版')}
@@ -753,7 +773,7 @@ export default function DocumentManager() {
                     <button
                       onClick={() => openPreview(doc)}
                       aria-label={tr('预览文档', 'Preview document', '文書をプレビュー')}
-                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                      className="rounded p-1.5 sm:p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-700 dark:hover:text-slate-100"
                       title={tr('预览', 'Preview', 'プレビュー')}
                     >
                       <Eye className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
@@ -775,20 +795,20 @@ export default function DocumentManager() {
                 </div>
 
                 {expandedDocId === doc.id && (
-                  <div className="border-b border-slate-100 bg-slate-50/70 px-8 sm:px-14 py-1">
+                  <div className="border-b border-slate-100 bg-slate-50/70 px-8 sm:px-14 py-1 dark:border-slate-700/60 dark:bg-slate-800/60">
                     {versionsLoading ? (
                       <p className="py-2 text-[11px] text-slate-400">{tr('加载版本...', 'Loading versions...', 'バージョンを読み込み中...')}</p>
                     ) : (
                       versions.map((v) => (
-                        <div key={v.id} className="flex items-center gap-2 border-b border-slate-100 last:border-0 py-1.5 text-[11px] sm:text-xs">
-                          <span className={`rounded px-1.5 py-0.5 font-mono ${v.is_latest ? 'bg-primary-100 text-primary-700' : 'bg-slate-200 text-slate-600'}`}>
+                        <div key={v.id} className="flex items-center gap-2 border-b border-slate-100 last:border-0 py-1.5 text-[11px] sm:text-xs dark:border-slate-700/60">
+                          <span className={`rounded px-1.5 py-0.5 font-mono ${v.is_latest ? 'bg-primary-100 text-primary-700 dark:bg-primary-500/20 dark:text-primary-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
                             v{v.version}{v.is_latest ? ` ${tr('最新', 'latest', '最新')}` : ''}
                           </span>
-                          <span className="text-slate-500">{v.origin_label || v.origin_type || '-'}</span>
+                          <span className="text-slate-500 dark:text-slate-400">{v.origin_label || v.origin_type || '-'}</span>
                           <span className="text-slate-400 hidden sm:inline">{formatFileSize(v.file_size)}</span>
                           <span className="text-slate-400 hidden md:inline">{v.created_at ? new Date(v.created_at).toLocaleString(language, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
                           <div className="ml-auto flex items-center gap-0.5">
-                            <button onClick={() => openVersionPreview(doc, v)} title={tr('预览', 'Preview', 'プレビュー')} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-900">
+                            <button onClick={() => openVersionPreview(doc, v)} title={tr('预览', 'Preview', 'プレビュー')} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-900 dark:hover:bg-slate-600 dark:hover:text-slate-100">
                               <Eye className="h-3.5 w-3.5" />
                             </button>
                             <button onClick={() => handleDownloadVersion(doc, v)} title={tr('下载', 'Download', 'ダウンロード')} className="rounded p-1 text-slate-400 hover:bg-blue-500/20 hover:text-blue-400">

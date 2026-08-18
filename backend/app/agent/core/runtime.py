@@ -191,6 +191,9 @@ class AgentRuntime:
 
         final_result = None
         total_tool_calls = 0
+        # 最近一次成功的文档产出（下载信息），用于 completed 事件携带 output_file_id/download_url，
+        # 使自动审核模式（无确认卡片）也能渲染下载卡片并被持久化（_extract_action_data 读 result.download_url）
+        last_download: dict = {}
 
         def build_task_stats():
             """构建任务统计信息"""
@@ -382,14 +385,14 @@ class AgentRuntime:
                         # 有思考内容但没有最终回复，说明LLM完成了任务但不需要回复
                         logger.info(f"[AgentRuntime._execute_loop] LLM完成任务但无最终回复（有思考内容），思考长度: {len(full_reasoning)}")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "LLM完成任务但无最终回复"})
-                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成", **last_download})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
                     elif is_after_tool_result:
                         # 刚执行完工具，LLM没有回复内容，可能是任务已完成（如填表任务）
                         # 但只有在 finish_reason 正常（stop 或 tool_calls）时才认为是完成
                         logger.info("[AgentRuntime._execute_loop] LLM在工具执行后无回复，可能是任务已完成")
                         tracker.complete_step(step.id, {"response": "", "reasoning": full_reasoning, "note": "任务已完成（工具执行后无回复）"})
-                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成"})
+                        await stream.emit_completed("", {**build_task_stats(), "final_response": "", "reasoning": full_reasoning, "note": "任务已完成", **last_download})
                         return {"success": True, "message": "", "reasoning": full_reasoning, "steps": tracker.to_dict()}
                     else:
                         # 没有工具调用且没有内容/思考，说明LLM返回为空（可能是content_filter或其他问题）
@@ -413,7 +416,7 @@ class AgentRuntime:
 
                 # 有实际回复内容，正常完成任务
                 tracker.complete_step(step.id, {"response": full_content, "reasoning": full_reasoning})
-                await stream.emit_completed(full_content, {**build_task_stats(), "final_response": full_content, "reasoning": full_reasoning})
+                await stream.emit_completed(full_content, {**build_task_stats(), "final_response": full_content, "reasoning": full_reasoning, **last_download})
                 logger.info(f"[AgentRuntime._execute_loop] 任务完成 | 总迭代: {iteration + 1} | 总工具调用: {total_tool_calls}")
                 return {"success": True, "message": full_content, "reasoning": full_reasoning, "steps": tracker.to_dict()}
 
@@ -475,6 +478,12 @@ class AgentRuntime:
                 # 记录结果
                 if result.success:
                     logger.info(f"[AgentRuntime._execute_loop] 工具 {tool_name} 成功 | 耗时: {tool_time:.2f}s")
+                    if isinstance(result.data, dict) and result.data.get("download_url"):
+                        last_download = {
+                            "output_file_id": result.data.get("output_file_id"),
+                            "output_filename": result.data.get("output_filename"),
+                            "download_url": result.data.get("download_url"),
+                        }
                     tracker.complete_step(
                         tool_step.id,
                         result=result.data if isinstance(result.data, dict) else {"data": result.data}
