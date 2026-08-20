@@ -126,7 +126,7 @@ export default function Register() {
 
   if (registrationEnabled === false) {
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
+      <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
         <div className="auth-bg-grid" />
         <div className="relative z-10 mx-auto max-w-md rounded-2xl border border-white/15 bg-white/10 p-8 text-center backdrop-blur-xl">
           <h2 className="text-2xl font-semibold text-white">{t.disabledTitle}</h2>
@@ -176,7 +176,7 @@ export default function Register() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
       <div className="auth-bg-grid" />
       <div className="auth-orb auth-orb-one left-1/4 top-[-10%] h-72 w-72 bg-indigo-500/30" />
       <div className="auth-orb auth-orb-two right-[-10%] top-1/4 h-80 w-80 bg-blue-500/25" />

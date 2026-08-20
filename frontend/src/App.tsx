@@ -49,7 +49,7 @@ function App() {
   }, [])
 
   return (
-    <Suspense fallback={<div className="flex h-screen items-center justify-center text-gray-400">加载中…</div>}>
+    <Suspense fallback={<div className="flex h-screen h-dvh items-center justify-center text-gray-400">加载中…</div>}>
       <Routes>
       <Route
         path="/login"

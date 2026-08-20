@@ -127,7 +127,7 @@ export default function Login() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
+    <div className="relative flex min-h-screen min-h-dvh items-center justify-center overflow-hidden bg-slate-950 p-6 md:p-10">
       <div className="auth-bg-grid" />
       <div className="auth-orb auth-orb-one -left-24 -top-24 h-72 w-72 bg-blue-500/30" />
       <div className="auth-orb auth-orb-two -right-28 top-1/3 h-80 w-80 bg-cyan-400/20" />

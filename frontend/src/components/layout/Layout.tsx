@@ -134,7 +134,7 @@ export default function Layout() {
   }, [location.pathname, navigate, shortcutsEnabled])
 
   return (
-    <div className="h-screen flex overflow-hidden">
+    <div className="h-screen h-dvh flex overflow-hidden">
       <input
         ref={sourceInputRef}
         type="file"

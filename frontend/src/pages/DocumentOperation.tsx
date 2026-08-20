@@ -1587,7 +1587,7 @@ export default function DocumentOperation() {
 
       {previewState && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-6 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className={`max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl border shadow-2xl ${
+          <div role="dialog" aria-modal="true" aria-labelledby="doc-op-preview-title" className={`max-h-[85vh] max-h-[85dvh] w-full max-w-5xl overflow-hidden rounded-xl border shadow-2xl ${
             isDarkMode ? 'border-slate-600 bg-slate-800' : 'border-slate-200 bg-white'
           }`}>
             <div className={`flex items-start justify-between border-b px-6 py-4 ${
@@ -1609,7 +1609,7 @@ export default function DocumentOperation() {
               </button>
             </div>
 
-            <div className="max-h-[calc(85vh-88px)] space-y-4 overflow-y-auto p-6 scrollbar-thin">
+            <div className="max-h-[calc(85vh-88px)] max-h-[calc(85dvh-88px)] space-y-4 overflow-y-auto p-6 scrollbar-thin">
               {previewState.items.map((item, index) => (
                 <div key={`${item.op}-${item.paragraph_index}-${index}`} className={`rounded-xl border p-4 ${
                   isDarkMode ? 'border-slate-600 bg-slate-700/80' : 'border-slate-200 bg-slate-50'
@@ -1641,7 +1641,7 @@ export default function DocumentOperation() {
         </div>
       )}
 
-      <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
+      <div className={`p-3 sm:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-[max(1rem,env(safe-area-inset-bottom))] border-t ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
         {/* 待确认操作悬浮条：确认卡片会被后续 AI 回复顶上去了，这里在输入区上方镜像一份，
             用户无需回滚即可确认/取消；消息流中的卡片保留为最终状态记录。
             多张待确认卡（多表分别确认）横向堆叠，通过左右按钮切换 */}
