@@ -305,6 +305,11 @@ async def _run_confirmed_commit(task: Task, action_id: str, user_id: str,
     )
     commit_params = {"mode": "commit", "confirm_action_id": action_id}
 
+    # 显式开启一个步骤并设 step_id：tool_call/tool_result 据此关联到同一步骤。
+    # 不设的话两事件 step_id 都是 None，前端各自兜底成不同时间戳 id，
+    # tool_call 建的步骤（50%）永远等不到 tool_result（在另一个 id 上设 100%）。
+    step_id = f"confirm_commit_{action_id[:12]}"
+    await stream.emit_step_start(step_id, f"确认写入 {tool_name}", "按已确认参数执行写入")
     await stream.emit_tool_call(tool_name, commit_params)
     result = await executor.execute(
         tool_name=tool_name, tool_params=commit_params, context=context, max_retries=1
@@ -315,6 +320,7 @@ async def _run_confirmed_commit(task: Task, action_id: str, user_id: str,
         await stream.emit_tool_result(
             tool_name=tool_name, result=data, execution_time_ms=result.execution_time_ms
         )
+        await stream.emit_step_end(step_id, "写入完成")
         # 多表分别确认场景：本次确认从模板产出了输出文件，把同会话同模板的其它
         # 待确认操作改指到该输出文档——后续确认写入同一文件（版本叠加）而非各自新建
         output_file_id = data.get("output_file_id")
@@ -327,6 +333,7 @@ async def _run_confirmed_commit(task: Task, action_id: str, user_id: str,
         await stream.emit_completed(message, result_data=data)
     else:
         await stream.emit_tool_error(tool_name, result.error or "写入失败")
+        await stream.emit_step_end(step_id, f"写入失败: {result.error}")
         await stream.emit_failed(result.error or "写入失败")
 
 
