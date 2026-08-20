@@ -251,6 +251,7 @@ export default function DocumentOperation() {
     if (isMobile) {
       requestPreview()
       setShowMobilePreview(true)
+      setOutputsOpen(false)
     }
   }, [addOperatedFile, isMobile, requestPreview])
 
@@ -268,11 +269,13 @@ export default function DocumentOperation() {
   }, [isPanelOpen])
 
   // 产出面板开关：与预览面板行为一致（同一宽度动画容器），打开时收起预览。
-  // 预览面板只是宽度收起、保持挂载——OnlyOffice 编辑器实例挂在其 DOM 节点上，卸载会丢
+  // 预览面板只是宽度收起、保持挂载——OnlyOffice 编辑器实例挂在其 DOM 节点上，卸载会丢。
+  // 移动端：产出为全屏 overlay，打开时收起移动端预览 overlay。
   const toggleOutputs = useCallback(() => {
     const next = !outputsOpen
     setOutputsOpen(next)
     if (next && isPanelOpen) togglePanelRaw()
+    if (next) setShowMobilePreview(false)
   }, [outputsOpen, isPanelOpen, togglePanelRaw])
 
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
@@ -1170,6 +1173,7 @@ export default function DocumentOperation() {
                     if (isMobile) {
                       requestPreview()
                       setShowMobilePreview(true)
+                      setOutputsOpen(false)
                     } else {
                       togglePanel()
                     }
@@ -1825,6 +1829,26 @@ export default function DocumentOperation() {
                 isLoading={previewIsLoading}
               />
             </div>
+          </div>
+        </>
+      )}
+
+      {/* 手机端全屏会话产出（与预览 overlay 结构一致，互斥开一关一） */}
+      {isMobile && outputsOpen && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setOutputsOpen(false)} />
+          <div className="fixed inset-0 z-50 flex flex-col animate-fade-in p-3">
+            <ConversationOutputsPanel
+              sessionId={activeSessionId}
+              refreshKey={outputsRefreshKey}
+              isDarkMode={isDarkMode}
+              onOpenFile={(file) => {
+                addOperatedFile(file)
+                setOutputsOpen(false)
+                setShowMobilePreview(true)
+              }}
+              onClose={() => setOutputsOpen(false)}
+            />
           </div>
         </>
       )}
