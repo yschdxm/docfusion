@@ -1,17 +1,19 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { useEffect } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import Layout from './components/layout/Layout'
-import Dashboard from './pages/Dashboard'
-import DocumentManager from './pages/DocumentManager'
-import DocumentOperation from './pages/DocumentOperation'
-import KnowledgeGraph from './pages/KnowledgeGraph'
-import WorkLog from './pages/WorkLog'
-import EmailManagement from './pages/EmailManagement'
-import ProfileCenter from './pages/ProfileCenter'
-import AdminCenter from './pages/AdminCenter'
-import Login from './pages/Login'
-import Register from './pages/Register'
 import { fetchCurrentUser, isAuthenticated, logout, isAdmin } from './services/auth'
+
+// 按路由懒加载，首屏只下载当前页代码（知识图谱页含 vis-network 等大依赖）
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const DocumentManager = lazy(() => import('./pages/DocumentManager'))
+const DocumentOperation = lazy(() => import('./pages/DocumentOperation'))
+const KnowledgeGraph = lazy(() => import('./pages/KnowledgeGraph'))
+const WorkLog = lazy(() => import('./pages/WorkLog'))
+const EmailManagement = lazy(() => import('./pages/EmailManagement'))
+const ProfileCenter = lazy(() => import('./pages/ProfileCenter'))
+const AdminCenter = lazy(() => import('./pages/AdminCenter'))
+const Login = lazy(() => import('./pages/Login'))
+const Register = lazy(() => import('./pages/Register'))
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   if (!isAuthenticated()) {
@@ -47,7 +49,8 @@ function App() {
   }, [])
 
   return (
-    <Routes>
+    <Suspense fallback={<div className="flex h-screen items-center justify-center text-gray-400">加载中…</div>}>
+      <Routes>
       <Route
         path="/login"
         element={
@@ -90,7 +93,8 @@ function App() {
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
-    </Routes>
+      </Routes>
+    </Suspense>
   )
 }
 

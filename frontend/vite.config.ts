@@ -23,7 +23,9 @@ function detectOnlyOfficeUrl(): string {
     const ips = execSync("hostname -I 2>/dev/null", { encoding: 'utf-8' }).trim().split(/\s+/)
     const hostIp = ips.find(ip => /^192\.168\./.test(ip))
     if (hostIp) return `http://${hostIp}:${ONLYOFFICE_PORT}`
-  } catch {}
+  } catch {
+    // hostname 检测失败（非 Linux/WSL 环境），走默认 localhost
+  }
 
   // 3. 默认 localhost
   return `http://localhost:${ONLYOFFICE_PORT}`
@@ -38,6 +40,17 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-vis': ['vis-network', 'vis-data'],
+          'vendor-markdown': ['react-markdown', 'remark-gfm'],
+        },
+      },
     },
   },
   server: {

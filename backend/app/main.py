@@ -106,6 +106,9 @@ class TrustedHostMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TrustedHostMiddleware)
 
+# 注意：不在此处加 GZipMiddleware —— starlette 0.38 的流式 gzip 不按块 flush，
+# 会缓冲 SSE（Agent 流式对话）。JSON 压缩由前端 nginx 的 gzip_proxied 统一处理。
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
