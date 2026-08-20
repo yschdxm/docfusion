@@ -4,6 +4,17 @@ import toast from 'react-hot-toast'
 import { getTheme } from '../services/theme'
 import { useI18n } from '../hooks/useI18n'
 import { downloadWithAuth } from '../utils/download'
+import { sourceLabel } from './ProvenanceModal'
+
+/** 行级溯源标签（与后端 provenance.SOURCE_KEY 结构对齐） */
+export interface RowSourceTag {
+  doc_id?: string | null
+  doc_name?: string
+  origin?: string
+  detail?: string | null
+  /** 程序化辅助信息（sheet 行号、chunk 序号等），不进展示文案 */
+  meta?: { row_no?: number | null; chunk?: string } | null
+}
 
 export interface DryRunReportItem {
   subject: string
@@ -22,11 +33,21 @@ export interface FillPreview {
   table?: {
     headers: string[]
     rows: string[][]
+    /** 与 rows 逐行对齐的来源标签（无标签为 null） */
+    row_sources?: (RowSourceTag | null)[]
     total_rows: number
     fill_mode: string
     target: string
   }
-  cells?: { target: string; before: string; after: string; status: string }[]
+  cells?: {
+    target: string
+    before: string
+    after: string
+    status: string
+    /** 值来源说明（LLM 在 CellFill.source 中声明，可能为空） */
+    source?: string | null
+    rationale?: string | null
+  }[]
 }
 
 export interface ActionData {
@@ -329,9 +350,12 @@ function PreviewButton({ preview, isDarkMode, tr }: {
   const [cellsPage, setCellsPage] = useState(0)
 
   const tableRows = preview.table?.rows ?? []
+  const rowSources = preview.table?.row_sources ?? []
+  const showSourceCol = rowSources.some((s) => s != null)
   const tablePageCount = Math.max(1, Math.ceil(tableRows.length / PREVIEW_PAGE_SIZE))
   const pagedTableRows = tableRows.slice(tablePage * PREVIEW_PAGE_SIZE, (tablePage + 1) * PREVIEW_PAGE_SIZE)
   const cells = preview.cells ?? []
+  const showCellSourceCol = cells.some((c) => c.source || c.rationale)
   const cellsPageCount = Math.max(1, Math.ceil(cells.length / PREVIEW_PAGE_SIZE))
   const pagedCells = cells.slice(cellsPage * PREVIEW_PAGE_SIZE, (cellsPage + 1) * PREVIEW_PAGE_SIZE)
   return (
@@ -385,18 +409,34 @@ function PreviewButton({ preview, isDarkMode, tr }: {
                             isDarkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'
                           }`}>{h}</th>
                         ))}
+                        {showSourceCol && (
+                          <th className={`border px-3 py-1.5 text-left font-medium ${
+                            isDarkMode ? 'border-slate-700 bg-blue-900/40 text-blue-300' : 'border-slate-200 bg-blue-50 text-blue-700'
+                          }`}>{tr('来源', 'Source', '出所')}</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
-                      {pagedTableRows.map((row, ri) => (
-                        <tr key={tablePage * PREVIEW_PAGE_SIZE + ri}>
-                          {row.map((cell, ci) => (
-                            <td key={ci} className={`border px-3 py-1.5 ${
-                              isDarkMode ? 'border-slate-700' : 'border-slate-200'
-                            }`}>{cell || <span className="text-slate-400">—</span>}</td>
-                          ))}
-                        </tr>
-                      ))}
+                      {pagedTableRows.map((row, ri) => {
+                        const globalIdx = tablePage * PREVIEW_PAGE_SIZE + ri
+                        const src = rowSources[globalIdx]
+                        return (
+                          <tr key={globalIdx}>
+                            {row.map((cell, ci) => (
+                              <td key={ci} className={`border px-3 py-1.5 ${
+                                isDarkMode ? 'border-slate-700' : 'border-slate-200'
+                              }`}>{cell || <span className="text-slate-400">—</span>}</td>
+                            ))}
+                            {showSourceCol && (
+                              <td className={`border px-3 py-1.5 text-xs ${
+                                isDarkMode ? 'border-slate-700 text-blue-300' : 'border-slate-200 text-blue-700'
+                              }`} title={src?.detail || undefined}>
+                                {sourceLabel(src) || <span className="text-slate-400">—</span>}
+                              </td>
+                            )}
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -412,6 +452,9 @@ function PreviewButton({ preview, isDarkMode, tr }: {
                       <th className={`border px-3 py-1.5 text-left font-medium ${isDarkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'}`}>{tr('位置', 'Target', '位置')}</th>
                       <th className={`border px-3 py-1.5 text-left font-medium ${isDarkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'}`}>{tr('当前内容', 'Current', '現在の内容')}</th>
                       <th className={`border px-3 py-1.5 text-left font-medium ${isDarkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'}`}>{tr('写入后', 'After', '書き込み後')}</th>
+                      {showCellSourceCol && (
+                        <th className={`border px-3 py-1.5 text-left font-medium ${isDarkMode ? 'border-slate-700 bg-blue-900/40 text-blue-300' : 'border-slate-200 bg-blue-50 text-blue-700'}`}>{tr('来源', 'Source', '出所')}</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
@@ -420,6 +463,11 @@ function PreviewButton({ preview, isDarkMode, tr }: {
                         <td className={`border px-3 py-1.5 ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>{cell.target}</td>
                         <td className={`border px-3 py-1.5 ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>{cell.before || <span className="text-slate-400">—</span>}</td>
                         <td className={`border px-3 py-1.5 ${isDarkMode ? 'border-slate-700 text-green-400' : 'border-slate-200 text-green-700'}`}>{cell.after || <span className="text-slate-400">—</span>}</td>
+                        {showCellSourceCol && (
+                          <td className={`border px-3 py-1.5 text-xs ${isDarkMode ? 'border-slate-700 text-blue-300' : 'border-slate-200 text-blue-700'}`} title={cell.rationale || undefined}>
+                            {cell.source || <span className="text-slate-400">—</span>}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

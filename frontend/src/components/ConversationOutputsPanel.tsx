@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, FileOutput, X } from 'lucide-react'
+import { Download, FileOutput, Network, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import { useI18n } from '../hooks/useI18n'
 import { getFileType, type PreviewFile } from '../hooks/useDocumentPreview'
+import ProvenanceModal from './ProvenanceModal'
 
 interface ConversationOutput {
   id: string
@@ -16,6 +17,7 @@ interface ConversationOutput {
   origin_label?: string | null
   created_at?: string | null
   download_url: string
+  has_provenance?: boolean
 }
 
 interface Props {
@@ -40,6 +42,7 @@ export default function ConversationOutputsPanel({ sessionId, refreshKey, isDark
 
   const [outputs, setOutputs] = useState<ConversationOutput[]>([])
   const [loading, setLoading] = useState(false)
+  const [provenanceFor, setProvenanceFor] = useState<ConversationOutput | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchOutputs = useCallback(async () => {
@@ -91,13 +94,15 @@ export default function ConversationOutputsPanel({ sessionId, refreshKey, isDark
   }
 
   return (
-    <div className={`absolute right-0 top-0 z-20 flex h-full w-72 flex-col border-l shadow-xl ${
-      isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'
+    <div className={`h-full overflow-hidden flex flex-col rounded-xl border ${
+      isDarkMode ? 'bg-slate-800/80 border-slate-600' : 'glass'
     }`}>
-      <div className={`flex items-center justify-between border-b px-3 py-2.5 ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
-        <div className="flex items-center gap-1.5">
-          <FileOutput className="h-4 w-4 text-primary-500" />
-          <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+      <div className={`flex items-center justify-between px-4 py-3 border-b ${
+        isDarkMode ? 'border-slate-600 bg-slate-700/50' : 'border-white/10 bg-white/5'
+      }`}>
+        <div className="flex items-center gap-2 min-w-0">
+          <FileOutput className={`w-4 h-4 flex-shrink-0 ${isDarkMode ? 'text-blue-400' : 'text-primary-400'}`} />
+          <span className={`text-sm truncate ${isDarkMode ? 'text-slate-200' : 'text-slate-300'}`}>
             {tr('本次会话产出', 'Session outputs', 'このセッションの成果物')}
           </span>
           <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>({outputs.length})</span>
@@ -141,6 +146,18 @@ export default function ConversationOutputsPanel({ sessionId, refreshKey, isDark
                 </span>
                 <span>{item.file_type.toUpperCase()}</span>
                 <span>{formatSize(item.file_size)}</span>
+                {item.has_provenance && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setProvenanceFor(item) }}
+                    title={tr('查看数据溯源', 'View data provenance', 'データ出所を見る')}
+                    className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 ${
+                      isDarkMode ? 'bg-blue-900/40 text-blue-300 hover:bg-blue-900/60' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                    }`}
+                  >
+                    <Network className="h-3 w-3" />
+                    {tr('溯源', 'Source', '出所')}
+                  </button>
+                )}
                 {item.created_at && (
                   <span className="ml-auto">{new Date(item.created_at).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}</span>
                 )}
@@ -149,6 +166,16 @@ export default function ConversationOutputsPanel({ sessionId, refreshKey, isDark
           ))
         )}
       </div>
+
+      {provenanceFor && (
+        <ProvenanceModal
+          documentId={provenanceFor.id}
+          filename={provenanceFor.original_filename}
+          isDarkMode={isDarkMode}
+          tr={tr}
+          onClose={() => setProvenanceFor(null)}
+        />
+      )}
     </div>
   )
 }

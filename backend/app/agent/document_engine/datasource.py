@@ -8,6 +8,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.agent.document_engine.provenance import data_columns_of, strip_record
+
 logger = logging.getLogger(__name__)
 
 _MAX_TOTAL_ROWS = 50000  # 最多获取5万行，防止无限循环
@@ -88,7 +90,8 @@ def build_data_summary(records: List[Dict[str, Any]], template_headers: List[str
         return "无数据"
 
     total = len(records)
-    columns = list(records[0].keys())
+    # 排除溯源标签等内部键，只统计数据列
+    columns = data_columns_of(records)
 
     null_counts = {col: 0 for col in columns}
     unique_counts = {col: set() for col in columns}
@@ -115,17 +118,17 @@ def build_data_summary(records: List[Dict[str, Any]], template_headers: List[str
     head_count = min(10, total)
     lines.append(f"=== 前 {head_count} 行 ===")
     for i, record in enumerate(records[:head_count]):
-        lines.append(f"行{i + 1}: {json.dumps(record, ensure_ascii=False)}")
+        lines.append(f"行{i + 1}: {json.dumps(strip_record(record), ensure_ascii=False)}")
 
     if total > 20:
         mid_start = total // 2 - 2
         lines.append(f"\n=== 中间第 {mid_start + 1}-{mid_start + 5} 行 ===")
         for i, record in enumerate(records[mid_start:mid_start + 5]):
-            lines.append(f"行{mid_start + i + 1}: {json.dumps(record, ensure_ascii=False)}")
+            lines.append(f"行{mid_start + i + 1}: {json.dumps(strip_record(record), ensure_ascii=False)}")
 
     if total > 10:
         lines.append("\n=== 末尾 5 行 ===")
         for i, record in enumerate(records[-5:], start=total - 4):
-            lines.append(f"行{i + 1}: {json.dumps(record, ensure_ascii=False)}")
+            lines.append(f"行{i + 1}: {json.dumps(strip_record(record), ensure_ascii=False)}")
 
     return "\n".join(lines)

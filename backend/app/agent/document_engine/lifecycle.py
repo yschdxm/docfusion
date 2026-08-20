@@ -114,6 +114,7 @@ async def record_template_usage(
     template_name: str,
     output_file_id: str,
     context,
+    source_file_ids: Optional[list] = None,
 ) -> None:
     """记录模板使用事件（原 fill_table/fill_form 各自内联的逻辑）"""
     from app.models.document import TemplateUsageEvent
@@ -123,6 +124,7 @@ async def record_template_usage(
         template_id=template_id,
         template_name=template_name,
         source_file_count=len(context.file_ids) if context and context.file_ids else 0,
+        source_file_ids=source_file_ids or [],
         output_file_id=output_file_id,
     ))
     await db.commit()

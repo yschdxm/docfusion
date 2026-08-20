@@ -42,6 +42,7 @@ async def init_db():
         await _ensure_super_admin(conn)
         await _ensure_agently_token_table(conn)
         await _ensure_document_version_columns(conn)
+        await _ensure_template_usage_source_columns(conn)
     logger.info("PostgreSQL database initialized")
 
 
@@ -216,3 +217,11 @@ async def _ensure_document_version_columns(conn):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_root_version ON documents(root_document_id, version)"
     ))
     logger.info("document version columns ensured for documents table")
+
+
+async def _ensure_template_usage_source_columns(conn):
+    """幂等地为 template_usage_events 表添加溯源列（向后兼容）"""
+    await conn.execute(text(
+        "ALTER TABLE template_usage_events ADD COLUMN IF NOT EXISTS source_file_ids JSON"
+    ))
+    logger.info("source_file_ids column ensured for template_usage_events table")

@@ -262,6 +262,19 @@ export default function DocumentOperation() {
     }
   }, [isPanelOpen, togglePanelRaw])
 
+  // 预览/产出面板互斥：预览打开时（含 addOperatedFile 自动打开）关闭产出面板
+  useEffect(() => {
+    if (isPanelOpen) setOutputsOpen(false)
+  }, [isPanelOpen])
+
+  // 产出面板开关：与预览面板行为一致（同一宽度动画容器），打开时收起预览。
+  // 预览面板只是宽度收起、保持挂载——OnlyOffice 编辑器实例挂在其 DOM 节点上，卸载会丢
+  const toggleOutputs = useCallback(() => {
+    const next = !outputsOpen
+    setOutputsOpen(next)
+    if (next && isPanelOpen) togglePanelRaw()
+  }, [outputsOpen, isPanelOpen, togglePanelRaw])
+
   const sourceDocs = documents.filter((d) => d.doc_category === 'source')
   const templateDocs = documents.filter((d) => d.doc_category === 'template')
 
@@ -1167,7 +1180,7 @@ export default function DocumentOperation() {
                   <Eye className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={() => setOutputsOpen(o => !o)}
+                  onClick={toggleOutputs}
                   className={`p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center ${outputsOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
                   title={tr('会话产出', 'Session outputs', 'セッション成果物')}
                 >
@@ -1418,6 +1431,13 @@ export default function DocumentOperation() {
                 title={tr('文档预览', 'Document Preview', '文書プレビュー')}
               >
                 <Eye className="w-4 h-4" />
+              </button>
+              <button
+                onClick={toggleOutputs}
+                className={`p-2 rounded-lg transition-colors h-8 w-8 flex items-center justify-center ${outputsOpen ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-100 text-slate-500 border border-transparent'}`}
+                title={tr('会话产出', 'Session outputs', 'セッション成果物')}
+              >
+                <FileOutput className="w-4 h-4" />
               </button>
               <button
                 onClick={handleExportConversation}
@@ -1737,10 +1757,10 @@ export default function DocumentOperation() {
       </div>
       </div>
 
-      {/* 拖动手柄 + 右侧文档预览面板（移动端隐藏） */}
+      {/* 拖动手柄 + 右侧面板容器（预览/产出互斥，共用同一宽度动画；移动端隐藏） */}
       {!isMobile && (
         <>
-          {isPanelOpen && (
+          {(isPanelOpen || outputsOpen) && (
             <div
               onMouseDown={(e) => handleDragStart(e.clientX)}
               onTouchStart={(e) => handleDragStart(e.touches[0].clientX)}
@@ -1756,9 +1776,11 @@ export default function DocumentOperation() {
             <div className="fixed inset-0 z-30 cursor-col-resize" />
           )}
           <div
-            className={`shrink-0 overflow-hidden ${isDragging ? '' : 'transition-[width] duration-300 ease-in-out'}`}
-            style={{ width: isPanelOpen ? previewWidth : 0 }}
+            className={`relative shrink-0 overflow-hidden ${isDragging ? '' : 'transition-[width] duration-300 ease-in-out'}`}
+            style={{ width: isPanelOpen || outputsOpen ? previewWidth : 0 }}
           >
+            {/* 预览面板始终保持挂载：OnlyOffice 编辑器实例挂在其 DOM 节点上，
+                切到产出面板时仅被覆盖不卸载，切回编辑器无需重建 */}
             <DocumentPreviewPanel
               previewFiles={previewFiles}
               currentFile={previewCurrentFile}
@@ -1766,6 +1788,20 @@ export default function DocumentOperation() {
               onFileRemove={removePreviewFile}
               isLoading={previewIsLoading}
             />
+            {/* 产出面板：覆盖在预览面板之上，行为/样式/动画与预览一致（同一容器驱动） */}
+            {outputsOpen && (
+              <div className="absolute inset-0">
+                <ConversationOutputsPanel
+                  sessionId={activeSessionId}
+                  refreshKey={outputsRefreshKey}
+                  isDarkMode={isDarkMode}
+                  onOpenFile={(file) => {
+                    addOperatedFile(file)
+                  }}
+                  onClose={() => setOutputsOpen(false)}
+                />
+              </div>
+            )}
           </div>
         </>
       )}
@@ -1793,23 +1829,6 @@ export default function DocumentOperation() {
         </>
       )}
 
-      {/* 会话产出面板（右侧抽屉） */}
-      {outputsOpen && (
-        <ConversationOutputsPanel
-          sessionId={activeSessionId}
-          refreshKey={outputsRefreshKey}
-          isDarkMode={isDarkMode}
-          onOpenFile={(file) => {
-            addOperatedFile(file)
-            if (isMobile) {
-              setShowMobilePreview(true)
-            } else if (!isPanelOpen) {
-              togglePanel()
-            }
-          }}
-          onClose={() => setOutputsOpen(false)}
-        />
-      )}
     </div>
   )
 }

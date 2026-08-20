@@ -146,11 +146,12 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
             return ToolResult(success=False, error="table_fill 和 cell_fills 至少提供一个")
 
         # 2. table_fill 数据装配（data_token 优先于内联 data）
+        stash_meta: Dict[str, Any] = {}
         if table_plan and not table_plan.data:
             records_or_error = self._resolve_records(table_plan, params)
             if isinstance(records_or_error, ToolResult):
                 return records_or_error
-            table_plan.data = records_or_error
+            table_plan.data, stash_meta = records_or_error
 
         try:
             # 3. 定位校验用文件（dry_run 与 commit 复核都针对当前文件）
@@ -183,11 +184,119 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
             return await self._commit(
                 table_plan, cell_fills, report,
                 template_id, output_doc_id, doc_info, context,
+                stash_meta=stash_meta,
             )
 
         except Exception as e:
             logger.exception(f"[FillTableExecute] 失败: {e}")
             return ToolResult(success=False, error=f"填表执行失败: {str(e)}")
+
+    # ──────────────────────────── 溯源 manifest ────────────────────────────
+
+    async def _persist_provenance(
+        self,
+        target_doc_id: str,
+        table_plan: Optional[TableFillPlan],
+        cell_fills: List[CellFill],
+        changes: List[Dict[str, Any]],
+        template_id: str,
+        template_doc,
+        stash_meta: Dict[str, Any],
+        context: ToolContext,
+    ) -> List[str]:
+        """把本次填写的溯源信息追加到输出版本 metadata_info["provenance"]["fills"]。
+
+        Returns:
+            源文档 ID 列表（供 TemplateUsageEvent.source_file_ids 落库）
+        """
+        from datetime import datetime
+        from uuid import UUID
+
+        from app.agent.document_engine.provenance import get_source
+
+        # 源文档清单：stash meta 优先（取数时已确认），内联 data 兜底为会话选中文档
+        via = stash_meta.get("via") or ("inline" if table_plan and table_plan.data else None)
+        source_doc_ids: List[str] = [str(d) for d in (stash_meta.get("doc_ids") or [])]
+        if not source_doc_ids and table_plan is not None:
+            source_doc_ids = [str(d) for d in (context.file_ids or [])] if context else []
+            if source_doc_ids and not via:
+                via = "inline"
+
+        doc_names: Dict[str, str] = {}
+        if source_doc_ids:
+            try:
+                uuids = [UUID(d) for d in source_doc_ids]
+            except ValueError:
+                uuids = []
+            if uuids:
+                async with async_session() as db:
+                    result = await db.execute(
+                        select(Document.id, Document.original_filename).where(Document.id.in_(uuids))
+                    )
+                    doc_names = {str(r[0]): r[1] for r in result.fetchall()}
+
+        source_documents = [
+            {"doc_id": d, "doc_name": doc_names.get(d, d), "via": via}
+            for d in source_doc_ids
+        ]
+
+        # 行级来源：commit 时由引擎随 changes 产出（已压缩为区间）
+        row_sources = [
+            {"target": c.get("target"), "fill_mode": c.get("fill_mode"),
+             "filled_rows": c.get("filled_rows"), **(c.get("row_sources") or {})}
+            for c in changes if c.get("op") == "table_fill"
+        ]
+        # 逐格来源：CellFill 声明的 source/rationale
+        cell_sources = [
+            {"target": c.get("target"), "after": c.get("after"),
+             "source": c.get("source"), "rationale": c.get("rationale")}
+            for c in changes if c.get("op") == "set_cell"
+        ]
+        # 防御统计：行数据中实际带溯源标签的行数
+        tagged_rows = 0
+        if table_plan:
+            tagged_rows = sum(1 for r in table_plan.data if get_source(r))
+
+        entry: Dict[str, Any] = {
+            "at": datetime.utcnow().isoformat(),
+            "run_id": context.metadata.get("run_id") if context else None,
+            "conversation_id": context.metadata.get("conversation_id") if context else None,
+            "template": (
+                {"id": template_id,
+                 "name": template_doc.original_filename if template_doc else template_id}
+                if template_id else None
+            ),
+            "via": via,
+            "query": stash_meta.get("query") or None,
+            "sql": stash_meta.get("sql") or None,
+            "source_documents": source_documents,
+            "column_map": table_plan.column_map if table_plan else None,
+            "row_sources": row_sources,
+            "cell_sources": cell_sources,
+            "filled_rows": sum(c.get("filled_rows", 0) for c in changes),
+            "tagged_rows": tagged_rows,
+        }
+
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Document).where(Document.id == UUID(str(target_doc_id)))
+                )
+                doc = result.scalar_one_or_none()
+                if doc:
+                    info = dict(doc.metadata_info or {})
+                    provenance = dict(info.get("provenance") or {})
+                    fills = list(provenance.get("fills") or [])
+                    fills.append(entry)
+                    provenance["fills"] = fills
+                    info["provenance"] = provenance
+                    doc.metadata_info = info
+                    await db.commit()
+        except Exception as e:
+            # 溯源落库失败不影响填写主流程（数据已写入文件）
+            logger.warning(f"[FillTableExecute] 溯源 manifest 落库失败（不影响填写结果）: {e}")
+
+        return source_doc_ids
 
     # ──────────────────────────── 内部 ────────────────────────────
 
@@ -241,7 +350,10 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
 
     @staticmethod
     def _resolve_records(table_plan: TableFillPlan, params: Dict[str, Any]):
-        """从 data_token 取暂存数据"""
+        """从 data_token 取暂存数据。返回 (records, stash_meta) 或错误 ToolResult。
+
+        stash_meta 携带取数口径（doc_ids/query/sql/via），commit 时写入溯源 manifest。
+        """
         token = (params.get("table_fill") or {}).get("data_token")
         if not token:
             return ToolResult(
@@ -254,7 +366,7 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
                 success=False,
                 error=f"data_token 已过期或不存在: {token}，请重新调用 fill_table_plan"
             )
-        return entry["records"]
+        return entry["records"], (entry.get("meta") or {})
 
     @staticmethod
     def _dry_run(snapshot: DocSnapshot,
@@ -329,7 +441,8 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
 
     async def _commit(self, table_plan, cell_fills, report: DryRunReport,
                       template_id: str, output_doc_id: str,
-                      doc_info: Dict[str, Any], context: ToolContext) -> ToolResult:
+                      doc_info: Dict[str, Any], context: ToolContext,
+                      stash_meta: Optional[Dict[str, Any]] = None) -> ToolResult:
         """版本化写入：新建输出 v1 或同 run 原地改/新 run version+1"""
         # 解析写入目标（版本化）
         if output_doc_id:
@@ -382,6 +495,13 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
 
         reg = await lifecycle.finish_edit(target_doc_id, context)
 
+        # 溯源 manifest：把本次填写的取数口径与行/格级来源写入输出版本的 metadata_info
+        # （新版本复制父版本 metadata_info，历史天然随版本链累积）
+        source_doc_ids = await self._persist_provenance(
+            target_doc_id, table_plan, cell_fills, changes,
+            template_id, template_doc, stash_meta or {}, context,
+        )
+
         # 记录模板使用事件
         if template_id:
             async with async_session() as db:
@@ -392,6 +512,7 @@ dry_run 报告状态：ok / not_found（地址或列不存在）/ ambiguous（�
                     template_name=template_name,
                     output_file_id=target_doc_id,
                     context=context,
+                    source_file_ids=source_doc_ids,
                 )
 
         filled_rows = sum(c.get("filled_rows", 0) for c in changes)

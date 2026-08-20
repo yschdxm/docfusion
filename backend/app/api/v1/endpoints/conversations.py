@@ -259,6 +259,7 @@ async def list_conversation_outputs(
             "origin_label": doc.origin_label,
             "created_at": local_iso(doc.created_at),
             "download_url": f"/api/v1/documents/{doc.id}/download",
+            "has_provenance": bool((doc.metadata_info or {}).get("provenance", {}).get("fills")),
         }
         for doc, version_count in rows
     ]

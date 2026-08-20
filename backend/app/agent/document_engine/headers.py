@@ -121,14 +121,21 @@ def match_value_for_header(row_data: dict, header: str) -> str:
     """三级列名匹配兜底：精确 → 大小写不敏感 → 包含
 
     主映射应由 LLM 显式给出（column_map）；本函数仅作兜底。
+    跳过 `_source`/`chunk` 等内部保留键，防止包含匹配误把标签写进表格。
     """
+    from app.agent.document_engine.provenance import RESERVED_KEYS
+
     if header in row_data and row_data[header] is not None:
         return str(row_data[header])
     header_lower = header.strip().lower()
     for key, value in row_data.items():
+        if key in RESERVED_KEYS:
+            continue
         if value is not None and key.strip().lower() == header_lower:
             return str(value)
     for key, value in row_data.items():
+        if key in RESERVED_KEYS:
+            continue
         if value is not None:
             key_clean = key.strip().lower()
             if header_lower in key_clean or key_clean in header_lower:

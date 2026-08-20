@@ -22,6 +22,7 @@ from app.agent.document_engine.headers import (
     resolve_xlsx_headers,
 )
 from app.agent.document_engine.mapping import CellFill, DryRunReport, TableFillPlan
+from app.agent.document_engine.provenance import compact_row_sources, get_source
 from app.agent.document_engine.snapshot import DocSnapshot
 
 logger = logging.getLogger(__name__)
@@ -123,13 +124,16 @@ def preview_table_fill(snapshot: DocSnapshot, plan: TableFillPlan, max_rows: int
 
     行数上限 500（preview 只进确认卡片/UI，不进 LLM 上下文），前端分页展示；
     超过上限时截断并由 total_rows 提示实际总数。
+    row_sources 与 rows 逐行对齐（无来源标签的行为 None），供确认卡片展示来源列。
     """
     headers = _target_headers(snapshot, plan.target)
     row_values = make_row_values_fn(headers, plan)
-    rows = [row_values(record) for record in plan.data[:max_rows]]
+    preview_records = plan.data[:max_rows]
+    rows = [row_values(record) for record in preview_records]
     return {
         "headers": headers,
         "rows": rows,
+        "row_sources": [get_source(record) for record in preview_records],
         "total_rows": len(plan.data),
         "fill_mode": plan.fill_mode,
         "target": describe_address(plan.target),
@@ -180,8 +184,10 @@ def _commit_xlsx_rows(snapshot: DocSnapshot, ws, plan: TableFillPlan,
 
     filled = 0
     sample = []
+    row_sources: List[Dict[str, Any]] = []
     for record in plan.data:
         ws.append(row_values(record))
+        row_sources.append({"row": ws.max_row, "source": get_source(record)})
         if filled < 3:
             sample.append({"row": ws.max_row, "values": row_values(record)})
         filled += 1
@@ -192,14 +198,19 @@ def _commit_xlsx_rows(snapshot: DocSnapshot, ws, plan: TableFillPlan,
         "fill_mode": plan.fill_mode,
         "filled_rows": filled,
         "sample": sample,
+        "row_sources": compact_row_sources(row_sources),
     }]
 
 
 def _commit_docx_rows(table, plan: TableFillPlan,
                       headers: List[str], row_values) -> List[Dict[str, Any]]:
-    """docx 行物化：overwrite 清空数据行后逐行写入；append 空行优先再追加"""
+    """docx 行物化：overwrite 清空数据行后逐行写入；append 空行优先再追加
+
+    row_sources 的行号为表格内的 1-based 位置（表头=第 1 行，首行数据=第 2 行）。
+    """
     filled = 0
     sample = []
+    row_sources: List[Dict[str, Any]] = []
 
     if plan.fill_mode == "overwrite":
         old_rows = list(table.rows[1:])
@@ -208,29 +219,36 @@ def _commit_docx_rows(table, plan: TableFillPlan,
         for record in plan.data:
             values = row_values(record)
             ops.append_row(table, values)
+            row_pos = filled + 2  # 表头占第 1 行
+            row_sources.append({"row": row_pos, "source": get_source(record)})
             if filled < 3:
-                sample.append({"row": filled + 1, "values": values})
+                sample.append({"row": row_pos, "values": values})
             filled += 1
     else:
-        # 空行优先
-        empty_rows = [row for row in table.rows[1:] if ops.is_empty_row(row)]
+        # 空行优先（记录每个空行在表格中的实际位置）
+        empty_rows = [(i + 1, row) for i, row in enumerate(table.rows)
+                      if i > 0 and ops.is_empty_row(row)]
         data_index = 0
-        for row in empty_rows:
+        for row_pos, row in empty_rows:
             if data_index >= len(plan.data):
                 break
-            values = row_values(plan.data[data_index])
+            record = plan.data[data_index]
+            values = row_values(record)
             for i, value in enumerate(values):
                 if i < len(row.cells):
                     ops.set_cell_text(row.cells[i], value)
+            row_sources.append({"row": row_pos, "source": get_source(record)})
             if filled < 3:
-                sample.append({"row": data_index + 1, "values": values})
+                sample.append({"row": row_pos, "values": values})
             filled += 1
             data_index += 1
         for record in plan.data[data_index:]:
             values = row_values(record)
             ops.append_row(table, values)
+            row_pos = len(table.rows)  # append 后的 1-based 位置
+            row_sources.append({"row": row_pos, "source": get_source(record)})
             if filled < 3:
-                sample.append({"row": filled + 1, "values": values})
+                sample.append({"row": row_pos, "values": values})
             filled += 1
 
     return [{
@@ -239,6 +257,7 @@ def _commit_docx_rows(table, plan: TableFillPlan,
         "fill_mode": plan.fill_mode,
         "filled_rows": filled,
         "sample": sample,
+        "row_sources": compact_row_sources(row_sources),
     }]
 
 
@@ -281,6 +300,9 @@ def commit_cell_fills(snapshot: DocSnapshot, fills: List[CellFill]) -> Tuple[Lis
                 "target": desc,
                 "before": result.before[:300],
                 "after": result.after[:300],
+                # 溯源：LLM 在 CellFill 上声明的值来源与理由（可能为空）
+                "source": fill.source,
+                "rationale": fill.rationale,
             })
         else:
             report.add(desc, "not_found", result.error)
@@ -289,19 +311,20 @@ def commit_cell_fills(snapshot: DocSnapshot, fills: List[CellFill]) -> Tuple[Lis
 
 
 def preview_cell_fills(snapshot: DocSnapshot, fills: List[CellFill]) -> List[Dict[str, Any]]:
-    """逐格预览：地址、当前值、将写入的值（不写盘）"""
+    """逐格预览：地址、当前值、将写入的值（不写盘）。携带 source/rationale 供确认卡片展示"""
     preview = []
     for fill in fills:
         desc = describe_address(fill.target)
         resolved = AddressResolver.resolve(fill.target, snapshot)
+        base = {"source": fill.source, "rationale": fill.rationale}
         if not resolved.ok:
             preview.append({"target": desc, "before": "", "after": str(fill.value or ""),
-                            "status": resolved.status})
+                            "status": resolved.status, **base})
             continue
         current = _read_current_value(fill.target, resolved.target)
         preview.append({"target": desc, "before": current[:100],
                         "after": "" if fill.value is None else str(fill.value)[:100],
-                        "status": "ok"})
+                        "status": "ok", **base})
     return preview
 
 

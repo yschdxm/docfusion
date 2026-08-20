@@ -958,6 +958,40 @@ async def download_document(
     )
 
 
+@router.get("/{document_id}/provenance")
+async def get_document_provenance(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """数据溯源：返回该输出文档的填表来源清单（源文档、取数口径、行/格级来源映射）
+
+    溯源 manifest 随版本链累积（新版本复制父版本 metadata_info 后追加），
+    因此读取 root 下最新版本的 metadata_info 即得完整历史。
+    """
+    doc = await _get_user_document(document_id, current_user.id, db)
+
+    root_id = doc.root_document_id or doc.id
+    result = await db.execute(
+        select(Document)
+        .where(Document.root_document_id == root_id)
+        .order_by(Document.version.desc())
+    )
+    versions = result.scalars().all()
+    latest = versions[0] if versions else doc
+
+    provenance = (latest.metadata_info or {}).get("provenance") or {}
+    fills = provenance.get("fills") or []
+
+    return {
+        "document_id": str(latest.id),
+        "original_filename": latest.original_filename,
+        "version": latest.version,
+        "fill_count": len(fills),
+        "fills": fills,
+    }
+
+
 @router.get("/{document_id}")
 async def get_document(
     document_id: UUID,

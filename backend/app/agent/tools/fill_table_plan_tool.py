@@ -19,6 +19,7 @@ from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.agent.document_engine import data_stash
 from app.agent.document_engine.datasource import build_data_summary, fetch_all_data
 from app.agent.document_engine.headers import get_template_headers
+from app.agent.document_engine.provenance import data_columns_of, tag_record
 from app.agent.tools.get_template_structure_tool import analyze_template
 from app.db.postgres import async_session
 from app.models.document import Document
@@ -127,6 +128,7 @@ class FillTablePlanTool(BaseTool):
             # 3. 源数据
             records: List[Dict[str, Any]] = []
             executed_sql = ""
+            source_doc_ids: List[str] = []
             if data_token:
                 # extract_records 等工具暂存的数据：直接沿用原 token（不重复暂存）
                 entry = data_stash.get(data_token)
@@ -136,15 +138,17 @@ class FillTablePlanTool(BaseTool):
                         error=f"data_token 已过期或不存在: {data_token}，请重新提取数据"
                     )
                 records = entry["records"]
+                source_doc_ids = (entry.get("meta") or {}).get("doc_ids") or []
             elif source_query and not inline_data:
                 records_or_error = await self._fetch_source_records(
                     source_query, template_headers, context
                 )
                 if isinstance(records_or_error, ToolResult):
                     return records_or_error
-                records, executed_sql = records_or_error
+                records, executed_sql, source_doc_ids = records_or_error
             elif inline_data:
                 records = inline_data
+                source_doc_ids = list(context.file_ids or []) if context else []
 
             response: Dict[str, Any] = {
                 "structure": analysis,
@@ -161,17 +165,21 @@ class FillTablePlanTool(BaseTool):
                     data_token = data_stash.put(records, meta={
                         "template_id": template_id,
                         "query": (source_query or {}).get("query", ""),
+                        # 溯源元数据：execute commit 时据此生成 provenance manifest
+                        "doc_ids": source_doc_ids,
+                        "sql": executed_sql,
+                        "via": "sql_query" if source_query else ("inline" if inline_data else "unknown"),
                     })
                 response.update({
                     "data_token": data_token,
                     "total_records": len(records),
-                    "data_columns": list(records[0].keys()),
+                    "data_columns": data_columns_of(records),
                     "data_summary": build_data_summary(records, template_headers),
                 })
                 # 建议列映射（LLM 草稿，供主 LLM 审核修正）
                 if template_headers:
                     suggested = await self._suggest_column_map(
-                        template_headers, list(records[0].keys())
+                        template_headers, data_columns_of(records)
                     )
                     if suggested:
                         response["suggested_column_map"] = suggested
@@ -187,8 +195,9 @@ class FillTablePlanTool(BaseTool):
     ):
         """source_query 模式取数（仅限 xlsx 源文档）
 
-        返回 (records, executed_sql) 或错误 ToolResult。
+        返回 (records, executed_sql, source_doc_ids) 或错误 ToolResult。
         executed_sql 透给主 LLM 核对取数口径（聚合/过滤是否符合预期），减少盲目重试。
+        取数后为每条记录打 `_source` 溯源标签（见 provenance.py）。
         """
         sq_doc_ids = source_query.get("doc_ids") or context.file_ids
         sq_query = source_query.get("query", "")
@@ -200,13 +209,15 @@ class FillTablePlanTool(BaseTool):
         if not sq_doc_ids:
             return ToolResult(success=False, error="source_query 模式需要 doc_ids 或已选中的源文档")
 
-        # 源文档类型校验：自动查询仅适用于 xlsx
+        # 源文档类型校验（同时取文件名供溯源打标）：自动查询仅适用于 xlsx
         async with async_session() as db:
             result = await db.execute(
-                select(Document.file_type).where(Document.id.in_(sq_doc_ids))
+                select(Document.id, Document.file_type, Document.original_filename)
+                .where(Document.id.in_(sq_doc_ids))
             )
-            source_types = {row[0] for row in result.fetchall()}
-            non_xlsx = source_types - {"xlsx"}
+            rows = result.fetchall()
+            doc_names = {str(row[0]): (row[2] or str(row[0])) for row in rows}
+            non_xlsx = {row[1] for row in rows} - {"xlsx"}
             if non_xlsx:
                 return ToolResult(
                     success=False,
@@ -224,21 +235,49 @@ class FillTablePlanTool(BaseTool):
             "禁止自行 GROUP BY 或聚合函数（SUM/MAX/AVG/COUNT）压缩行数。"
         )
 
+        # 多文档联合查询时让 SQL 携带行级来源表名（用于数据溯源）
+        provenance_hint = ""
+        if len(sq_doc_ids) > 1:
+            provenance_hint = (
+                "本次查询涉及多个数据表。请在 SELECT 中额外输出一个常量列 __source_table，"
+                "值为每行数据所在表的表名（多表 UNION 时每段各写自己的表名字符串字面量；单表查询直接写该表名）。"
+            )
+
+        # 溯源行号：让 SQL 在 SELECT 中带上源表的 __seq 物理序号列（xlsx 入库时生成，= sheet 行号-1）。
+        # 直接 SELECT 一列远比要求模型写 ROW_NUMBER 窗口函数可靠——后者常被模型忽略或用错 ORDER BY，
+        # 导致筛选查询的行号从 1 重排（"德州/潍坊/临沂所有站点"全显示成"2-N行"）。
+        # 只有表里有 __seq 列才提示（存量表没有则退化为文档级溯源，不输出错误行号）。
+        has_seq = await self._tables_have_seq(sq_doc_ids)
+        row_no_hint = ""
+        if has_seq:
+            row_no_hint = (
+                "请在 SELECT 中原样带上源表的 \"__seq\" 列（它是每条记录在源表中的物理序号，"
+                "直接 SELECT 即可，**不要**对它做窗口函数/重命名以外的任何处理，"
+                "也**不要**用查询的排序或筛选重新编号）。多表 UNION 时每段各自带上自己的 __seq。"
+                "若查询有 GROUP BY 聚合则无法对应单条源记录，此时不要输出 __seq。"
+            )
+
         headers_str = "，".join(template_headers)
         if fetch_all:
             augmented = (
                 f"{sq_query}\n\n"
                 f"{anti_aggregation}\n"
+                f"{provenance_hint}\n"
+                f"{row_no_hint}\n"
                 f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
                 f"请使用 AS 将列名重命名为与模板表头一致。请返回所有匹配的数据，不要限制行数。"
             )
             meta: Dict[str, Any] = {}
             records = await fetch_all_data(sql_service, augmented, sq_doc_ids, out_meta=meta)
-            return records, meta.get("sql", "")
+            sheet_names = await self._fetch_sheet_names(sq_doc_ids)
+            self._tag_records(records, sq_doc_ids, doc_names, sheet_names)
+            return records, meta.get("sql", ""), sq_doc_ids
 
         augmented = (
             f"{sq_query}\n\n"
             f"{anti_aggregation}\n"
+            f"{provenance_hint}\n"
+            f"{row_no_hint}\n"
             f"模板表头（可能与数据库列名有差异）：{headers_str}\n"
             f"请使用 AS 将列名重命名为与模板表头一致。请确保返回不超过 {sq_max_rows} 行数据。"
         )
@@ -247,7 +286,120 @@ class FillTablePlanTool(BaseTool):
         )
         if query_result.get("error"):
             return ToolResult(success=False, error=f"源数据查询失败: {query_result['error']}")
-        return query_result.get("records", []), query_result.get("sql", "")
+        records = query_result.get("records", [])
+        sheet_names = await self._fetch_sheet_names(sq_doc_ids)
+        self._tag_records(records, sq_doc_ids, doc_names, sheet_names)
+        return records, query_result.get("sql", ""), sq_doc_ids
+
+    @staticmethod
+    async def _tables_have_seq(doc_ids: List[str]) -> bool:
+        """源文档的 PG 表是否都有 __seq 物理序号列（决定能否做行级溯源）"""
+        patterns = [f"{str(did)[:8]}%" for did in doc_ids if len(str(did)) >= 8]
+        if not patterns:
+            return False
+        from sqlalchemy import text as sa_text
+        try:
+            async with async_session() as db:
+                for pattern in patterns:
+                    result = await db.execute(sa_text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema='public' AND table_name LIKE :p"
+                    ), {"p": pattern})
+                    for (table_name,) in result.fetchall():
+                        col_result = await db.execute(sa_text(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_schema='public' AND table_name=:t AND column_name='__seq'"
+                        ), {"t": table_name})
+                        if not col_result.fetchone():
+                            return False
+            return True
+        except Exception as e:
+            logger.warning(f"[FillTablePlan] 检查 __seq 列失败（退化为无行号）: {e}")
+            return False
+
+    @staticmethod
+    async def _fetch_sheet_names(doc_ids: List[str]) -> Dict[str, str]:
+        """数据表名 → sheet 名（表名 = {doc_id前8位}_{sheet名}，sheet 名可能含下划线）
+
+        多文档表名前缀可能相同（doc_id 前8位撞车）时，长前缀优先匹配。
+        查询失败返回 {}（溯源退化为只到文档级）。
+        """
+        if not doc_ids:
+            return {}
+        patterns = [f"{str(did)[:8]}%" for did in doc_ids if len(str(did)) >= 8]
+        if not patterns:
+            return {}
+        from sqlalchemy import text as sa_text
+        mapping: Dict[str, str] = {}
+        try:
+            async with async_session() as db:
+                for pattern in patterns:
+                    result = await db.execute(sa_text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema='public' AND table_name LIKE :p"
+                    ), {"p": pattern})
+                    for (table_name,) in result.fetchall():
+                        # sheet 名 = 表名去掉 {doc_id前8位}_ 前缀
+                        prefix_len = pattern.index("%")  # 8
+                        sheet = table_name[prefix_len + 1:] if len(table_name) > prefix_len else table_name
+                        mapping[table_name] = sheet
+        except Exception as e:
+            logger.warning(f"[FillTablePlan] 查询数据表 sheet 映射失败（溯源退化为文档级）: {e}")
+        return mapping
+
+    @staticmethod
+    def _tag_records(records: List[Dict[str, Any]], doc_ids: List[str],
+                     doc_names: Dict[str, str],
+                     sheet_names: Optional[Dict[str, str]] = None) -> None:
+        """为 SQL 取数结果打行级溯源标签（原地修改）
+
+        - 单文档：全部记录直接归属该文档；有 __seq/__row_no 时 detail=「第N行」
+        - 多文档：读取 SQL 服务按提示输出的 __source_table 列，按表名前缀（doc_id 前8位）
+          反查所属文档；该列缺失/无法反查时标记为"多文档混合查询"，标签降级但不丢数据
+        - 行号取 __seq（物理序号，= sheet 行号-1，模型直接 SELECT），兼容旧 __row_no；
+          sheet 第2行=表第1行，故 sheet 行号=行号+1
+        """
+        sheet_names = sheet_names or {}
+        prefix_map = {str(did)[:8]: (str(did), doc_names.get(str(did), str(did))) for did in doc_ids}
+
+        for record in records:
+            table_name = record.pop("__source_table", None)
+            # 行号优先取 __seq（物理序号，= sheet 行号-1），兼容旧提示的 __row_no。
+            # __seq 是模型直接 SELECT 的列；__row_no 是早期窗口函数方案（保留向后兼容）。
+            row_no = record.pop("__seq", None)
+            if row_no is None:
+                row_no = record.pop("__row_no", None)
+            sheet_row = None
+            if isinstance(row_no, (int, float)) and not isinstance(row_no, bool):
+                sheet_row = int(row_no) + 1  # 表第1行 = sheet 第2行（表头占第1行）
+
+            matched = None
+            if table_name:
+                matched = prefix_map.get(str(table_name)[:8])
+
+            if matched:
+                doc_id, doc_name = matched
+                sheet = sheet_names.get(str(table_name))
+                tag_record(
+                    record, doc_id=doc_id, doc_name=doc_name, origin="sql_query",
+                    detail=_row_detail(sheet, sheet_row, str(table_name)),
+                    meta={"row_no": sheet_row, "sheet": sheet, "table": str(table_name) or None},
+                )
+            elif len(doc_ids) == 1:
+                doc_id = str(doc_ids[0])
+                doc_name = doc_names.get(doc_id, doc_id)
+                tag_record(
+                    record, doc_id=doc_id, doc_name=doc_name, origin="sql_query",
+                    detail=_row_detail(None, sheet_row, None),
+                    meta={"row_no": sheet_row},
+                )
+            else:
+                tag_record(
+                    record, doc_id=None, doc_name="多文档混合查询", origin="sql_query",
+                    detail=_row_detail(None, sheet_row, "、".join(doc_names.values())),
+                    meta={"row_no": sheet_row},
+                )
+
 
     @staticmethod
     async def _suggest_column_map(template_headers: List[str], source_columns: List[str]) -> Dict[str, str]:
@@ -281,3 +433,16 @@ class FillTablePlanTool(BaseTool):
             names = [s.get("name") for s in sheets]
             return f"工作簿有 {len(sheets)} 个工作表 {names}，请在 target.sheet 中显式指定"
         return "单工作表，target.sheet 可省略"
+
+
+def _row_detail(sheet: Optional[str], sheet_row: Optional[int],
+                fallback: Optional[str]) -> Optional[str]:
+    """溯源定位文案：优先 sheet+行号，退而行号，再退源表名/文档"""
+    parts = []
+    if sheet:
+        parts.append(f"工作表[{sheet}]")
+    if sheet_row:
+        parts.append(f"第{sheet_row}行")
+    if parts:
+        return " ".join(parts)
+    return fallback or None

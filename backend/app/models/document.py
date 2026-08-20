@@ -113,5 +113,6 @@ class TemplateUsageEvent(Base):
     template_id = Column(UUID(as_uuid=True), ForeignKey('documents.id'), nullable=False, index=True)
     template_name = Column(String(255), nullable=False)
     source_file_count = Column(Integer, default=0)
+    source_file_ids = Column(JSON, default=[])  # 溯源：本次填表的源文档 ID 列表
     output_file_id = Column(UUID(as_uuid=True), nullable=True)
     used_at = Column(DateTime, default=datetime.utcnow, index=True)

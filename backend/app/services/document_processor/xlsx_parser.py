@@ -453,7 +453,8 @@ class XlsxParser:
                 col_types.append(col_type)
 
             # 创建表（所有类型都用 TEXT/BIGINT/DOUBLE PRECISION，日期用 TEXT 避免序列化问题）
-            col_defs = []
+            # __seq：源行物理序号（1-based，= sheet 行号-1），供溯源 ROW_NUMBER 排序
+            col_defs = ['"__seq" BIGINT']
             for j, cn in enumerate(col_names):
                 pg_type = "TEXT"
                 if j < len(col_types):
@@ -485,8 +486,9 @@ class XlsxParser:
                 })
 
                 # 准备插入 SQL
-                col_list = ", ".join([f'"{cn}"' for cn in col_names])
-                param_list = ", ".join([f":{cn}" for cn in col_names])
+                all_cols = ["__seq"] + col_names
+                col_list = ", ".join([f'"{cn}"' for cn in all_cols])
+                param_list = ", ".join([f":{cn}" for cn in all_cols])
                 insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({param_list})'
 
                 # 分批插入
@@ -494,7 +496,7 @@ class XlsxParser:
                 batch = []
 
                 def _build_row_dict(row):
-                    row_dict = {}
+                    row_dict = {"__seq": total_rows + len(batch) + 1}
                     for col_idx in range(len(col_names)):
                         val = row[col_idx] if col_idx < len(row) else None
                         row_dict[col_names[col_idx]] = _convert_value(val, col_types[col_idx] if col_idx < len(col_types) else "string")
@@ -596,7 +598,8 @@ class XlsxParser:
                 col_types.append(col_type)
 
             # 创建表
-            col_defs = []
+            # __seq：源行物理序号（1-based，= sheet 行号-1），供溯源 ROW_NUMBER 排序
+            col_defs = ['"__seq" BIGINT']
             for j, cn in enumerate(col_names):
                 pg_type = "TEXT"
                 if j < len(col_types):
@@ -629,8 +632,9 @@ class XlsxParser:
                 })
 
                 # 准备插入 SQL
-                col_list = ", ".join([f'"{cn}"' for cn in col_names])
-                param_list = ", ".join([f":{cn}" for cn in col_names])
+                all_cols = ["__seq"] + col_names
+                col_list = ", ".join([f'"{cn}"' for cn in all_cols])
+                param_list = ", ".join([f":{cn}" for cn in all_cols])
                 insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({param_list})'
 
                 # 流式读取 + 分批插入（使用类型转换）
@@ -638,7 +642,7 @@ class XlsxParser:
                 batch = []
 
                 def _build_row_dict(row):
-                    row_dict = {}
+                    row_dict = {"__seq": total_rows + len(batch) + 1}
                     for col_idx in range(len(col_names)):
                         val = row[col_idx] if col_idx < len(row) else None
                         row_dict[col_names[col_idx]] = _convert_value(val, col_types[col_idx] if col_idx < len(col_types) else "string")

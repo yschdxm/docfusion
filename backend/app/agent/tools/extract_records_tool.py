@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 
 from app.agent.base.tool import BaseTool, ToolContext, ToolResult
 from app.agent.document_engine import data_stash, lifecycle
+from app.agent.document_engine.provenance import RESERVED_KEYS, SOURCE_KEY, strip_record, tag_record
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +90,39 @@ class ExtractRecordsTool(BaseTool):
             if not text.strip():
                 return ToolResult(success=False, error="文档内容为空")
 
+            # xlsx 源：预查各 sheet 行数，让 LLM 给每条记录标注 sheet 行号。
+            # 行号有两个用途：① 溯源可精确到行；② 分块重叠处的重复提取可按行号精确去重
+            # （此前按全字段去重，同一条记录在两个块里被提取成不同写法时去不掉，
+            #  曾导致 100 城市提取出 103 条、LLM 花十几轮找重复）
+            sheet_row_counts = self._xlsx_sheet_rows(doc_info) if doc_info["file_type"] == "xlsx" else {}
+
             chunks = self._split_chunks(text)
+            anchors = self._chunk_anchors(text, chunks)
             logger.info(f"[ExtractRecords] {doc_info['original_filename']}: "
                         f"{len(text)} 字符 → {len(chunks)} 块")
 
             records: List[Dict[str, Any]] = []
             failed_chunks = 0
             for i, chunk in enumerate(chunks):
-                chunk_records = await self._extract_chunk(chunk, columns, hint)
+                chunk_records = await self._extract_chunk(
+                    chunk, columns, hint, want_row_no=bool(sheet_row_counts)
+                )
                 if chunk_records is None:
                     failed_chunks += 1
                     logger.warning(f"[ExtractRecords] 块 {i + 1}/{len(chunks)} 提取失败")
                     continue
+                # 溯源标签：面向用户的定位信息（detail 直接展示）
+                for record in chunk_records:
+                    row_no = record.pop("__row_no", None)
+                    if isinstance(row_no, (int, float)) and not isinstance(row_no, bool):
+                        row_no = int(row_no)
+                    else:
+                        row_no = None
+                    detail = f"第{row_no}行" if row_no else anchors[i]
+                    tag_record(record, doc_id=doc_id,
+                               doc_name=doc_info["original_filename"],
+                               origin="extract_records", detail=detail,
+                               meta={"chunk": f"{i + 1}/{len(chunks)}", "row_no": row_no})
                 records.extend(chunk_records)
                 logger.info(f"[ExtractRecords] 块 {i + 1}/{len(chunks)} 提取 {len(chunk_records)} 条")
 
@@ -116,6 +138,9 @@ class ExtractRecordsTool(BaseTool):
 
             data_token = data_stash.put(records, meta={
                 "source_doc_id": doc_id,
+                "source_doc_name": doc_info["original_filename"],
+                "doc_ids": [doc_id],
+                "via": "extract_records",
                 "columns": columns,
                 "hint": hint,
             })
@@ -125,8 +150,10 @@ class ExtractRecordsTool(BaseTool):
                 data={
                     "data_token": data_token,
                     "total_records": len(records),
-                    "columns": list(records[0].keys()),
-                    "sample": records[:5],
+                    # 列名与样本均剥离内部保留键（溯源标签/行号辅助，不是数据列）
+                    "columns": [c for c in records[0].keys() if c not in RESERVED_KEYS],
+                    "sample": [strip_record(r) for r in records[:5]],
+                    "source_doc": doc_info["original_filename"],
                     "truncated_chunks": failed_chunks,
                     "note": "请核对 total_records 与 sample；数量不符预期时用 hint 补充说明后重试",
                 },
@@ -148,7 +175,12 @@ class ExtractRecordsTool(BaseTool):
 
     @staticmethod
     def _split_chunks(text: str) -> List[str]:
-        """按字符数分块（带重叠），尽量在段落边界断开"""
+        """按字符数分块（带重叠），尽量在段落边界断开
+
+        步进必须用实际块长（end - start）而非 _CHUNK_CHARS：尾部按换行截短时，
+        固定步进会让重叠区超过 _CHUNK_OVERLAP，块边界段落被完整重复进两块，
+        造成重复提取（曾导致 100 城市提取出 103 条）。
+        """
         if len(text) <= _CHUNK_CHARS:
             return [text]
         chunks = []
@@ -161,14 +193,65 @@ class ExtractRecordsTool(BaseTool):
                 if newline > start:
                     end = newline
             chunks.append(text[start:end])
-            start = max(end - _CHUNK_OVERLAP, start + 1) if end < len(text) else len(text)
+            if end >= len(text):
+                break
+            start = max(end - _CHUNK_OVERLAP, start + 1)
         return chunks
 
     @staticmethod
-    async def _extract_chunk(chunk: str, columns: List[str], hint: str) -> List[Dict[str, Any]] | None:
-        """对单个块调用 LLM 提取记录；失败返回 None"""
+    def _xlsx_sheet_rows(doc_info: Dict[str, Any]) -> Dict[str, int]:
+        """xlsx 各 sheet 的最大行号（预查，用于行号标注与按行号去重）；失败返回 {}"""
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(doc_info["file_path"], read_only=True, data_only=True)
+            counts = {name: (wb[name].max_row or 0) for name in wb.sheetnames}
+            wb.close()
+            return counts
+        except Exception as e:
+            logger.warning(f"[ExtractRecords] 预查 sheet 行数失败（按无行号模式提取）: {e}")
+            return {}
+
+    @staticmethod
+    def _chunk_anchors(text: str, chunks: List[str]) -> List[str]:
+        """每个块在原文中的起始位置 → 开头摘录（溯源定位用，用户可直接搜回原文）
+
+        块由 _split_chunks 按顺序生成（重叠只发生在前一块尾部），
+        从上一位置起 find 块头 32 字即可唯一锚定。
+        """
+        anchors: List[str] = []
+        pos = 0
+        for chunk in chunks:
+            probe = chunk[:32]
+            idx = text.find(probe, pos)
+            if idx < 0:
+                idx = pos  # 防御：找不到时按上一位置续（不会发生）
+            # 取块开头第一个非空行的前 30 字作为摘录
+            first_line = ""
+            for line in chunk.splitlines():
+                if line.strip():
+                    first_line = line.strip()
+                    break
+            snippet = first_line[:30]
+            if len(first_line) > 30:
+                snippet += "…"
+            anchors.append(f"原文约第{idx + 1}字起：「{snippet}」")
+            pos = idx + max(len(chunk) - _CHUNK_OVERLAP, 1)
+        return anchors
+
+    @staticmethod
+    async def _extract_chunk(chunk: str, columns: List[str], hint: str,
+                             want_row_no: bool = False) -> List[Dict[str, Any]] | None:
+        """对单个块调用 LLM 提取记录；失败返回 None
+
+        want_row_no（xlsx 源）：要求 LLM 额外输出 __row_no（记录所在 sheet 行号），
+        用于精确溯源与分块重叠处的按行号去重。
+        """
         from app.services.llm_service import llm_service
 
+        row_no_clause = (
+            "- 每条记录额外加一个键 __row_no，值为该条数据在表格中的行号（整数，表头为第1行，数据从第2行起）\n"
+            if want_row_no else ""
+        )
         prompt = f"""请从以下文档片段中提取结构化数据记录。
 
 目标列：{json.dumps(columns, ensure_ascii=False)}
@@ -176,7 +259,7 @@ class ExtractRecordsTool(BaseTool):
 
 要求：
 - 每条记录是一个 JSON 对象，键严格使用上述列名
-- 数值列提取为数字（去掉千分位逗号；带"修正值"等注释的只取数值部分；带单位的去掉单位）
+{row_no_clause}- 数值列提取为数字（去掉千分位逗号；带"修正值"等注释的只取数值部分；带单位的去掉单位）
 - 只提取片段中明确出现的数据，禁止编造；某列确实没有则给 null
 - 片段开头/结尾可能是残句（分块重叠所致），跳过信息不全的记录
 - 只返回 JSON 数组，不要任何其他内容
@@ -209,12 +292,29 @@ class ExtractRecordsTool(BaseTool):
 
     @staticmethod
     def _dedupe(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """按全字段去重（重叠块会产生重复记录）"""
-        seen = set()
+        """去重（重叠块会产生重复记录）。
+
+        两级策略：
+        1. xlsx 源且带 sheet 行号的记录按行号去重——同一条数据在两个块里被提取成
+           不同写法（如 "4,925.30" vs 4925.3）时，全字段比对去不掉，行号能精确命中；
+           保留首见（首块记录完整度更高，重叠区在块尾）
+        2. 其余记录按全字段去重（溯源标签等内部保留键不参与比对）
+        """
+        seen_rows = set()
+        seen_keys = set()
         unique = []
         for record in records:
-            key = tuple(sorted((k, str(v)) for k, v in record.items()))
-            if key not in seen:
-                seen.add(key)
-                unique.append(record)
+            src = record.get(SOURCE_KEY) or {}
+            row_no = (src.get("meta") or {}).get("row_no")
+            if row_no is not None:
+                if row_no in seen_rows:
+                    continue
+                seen_rows.add(row_no)
+            else:
+                key = tuple(sorted((k, str(v)) for k, v in record.items()
+                                   if k not in RESERVED_KEYS))
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+            unique.append(record)
         return unique
